@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +14,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-2025
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -29,57 +31,51 @@ jobs:
       - name: Install Rust and Zig
         run: |
           rustup toolchain install 1.100.0 --profile minimal --target aarch64-unknown-linux-musl
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup override set 1.100.0
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $zig = 'zig-x86_64-windows-0.17.1'
-          $archive = Join-Path $env:RUNNER_TEMP "$zig.zip"
-          Invoke-WebRequest "https://ziglang.org/download/0.17.1/$zig.zip" -OutFile $archive
-          $expected = 'b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e'
-          if ((Get-FileHash $archive).Hash -ne $expected) {
-            throw "Invalid Zig archive checksum."
-          }
-          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP
-          Join-Path $env:RUNNER_TEMP $zig | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          zig=zig-x86_64-linux-0.17.1
+          archive="$RUNNER_TEMP/$zig.tar.xz"
+          curl -fsSL --retry 3 "https://ziglang.org/download/0.17.1/$zig.tar.xz" -o "$archive"
+          echo "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a  $archive" | sha256sum -c
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$zig" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --version 0.24.1 --locked
 
       - name: Prepare release notes
         run: |
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          $version = ($metadata.packages | Where-Object name -eq 'goodwin').version
-          if ($env:GITHUB_REF_NAME -cne "v$version") {
-            throw "Release tag must match the Goodwin version v$version."
-          }
+          version=$(cargo metadata --locked --no-deps --format-version 1 |
+            jq -er '.packages[] | select(.name == "goodwin") | .version')
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Release tag must match the Goodwin version v$version." >&2
+            exit 1
+          fi
 
-          $heading = [regex]::Escape("## [$version]")
-          $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw -Encoding utf8
-          $entry = [regex]::Match($changelog, "(?ms)^$heading[^\r\n]*\r?\n(.*?)(?=^## |\z)")
-          $notes = $entry.Groups[1].Value.Trim()
-          if (-not $notes) {
-            throw "No release notes for $version in CHANGELOG.md."
+          mkdir -p target/release-assets
+          awk -v heading="## [$version] - " '
+            /^## / { if (found) exit; found = index($0, heading) == 1; next }
+            found && (printed || NF) { print; printed = 1 }
+            END { if (!printed) exit 1 }
+          ' CHANGELOG.md > target/release-assets/release-notes.md || {
+            echo "No release notes for $version in CHANGELOG.md." >&2
+            exit 1
           }
-          New-Item -ItemType Directory -Force target/release-assets | Out-Null
-          Set-Content -LiteralPath target/release-assets/release-notes.md -Value $notes -Encoding utf8NoBOM
 
       - name: Build, test and package
         run: |
-          ./scripts/build-station.ps1
+          npm ci --prefix web
+          npm run build --prefix web
           cargo test --locked --workspace
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          target=aarch64-unknown-linux-musl
+          cargo zigbuild --locked --workspace --release --target "$target"
 
-          python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx `
+          python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx \
             --encoders models --output target/release-assets/goodwin-mini3-aarch64.tar.gz
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item target/plugins/probe-linux-aarch64.tar.gz,target/plugins/timers-linux-aarch64.tar.gz `
-            -Destination target/release-assets
+          for plugin in probe timers; do
+            python scripts/package-plugin.py "plugins/$plugin" "target/$target/release/goodwin-$plugin" \
+              linux-aarch64 "target/release-assets/$plugin-linux-aarch64.tar.gz"
+          done
 
-          $checksums = Get-ChildItem -LiteralPath target/release-assets -Filter '*.tar.gz' |
-            Sort-Object Name | ForEach-Object {
-              $hash = (Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-              "$hash  $($_.Name)"
-            }
-          Set-Content -LiteralPath target/release-assets/SHA256SUMS -Value (($checksums -join "`n") + "`n") `
-            -Encoding ascii -NoNewline
+          (cd target/release-assets && sha256sum -- *.tar.gz > SHA256SUMS)
 
       - uses: actions/upload-artifact@v6
         with:
@@ -90,7 +86,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
