@@ -1,3 +1,5 @@
+import { createComponent, render } from "@solidjs/web";
+import type { Component } from "solid-js";
 import { api, type Plugin } from "./api";
 import type { Language } from "./words";
 
@@ -9,7 +11,8 @@ export interface PluginContext {
 }
 
 interface Module {
-  mount: (container: HTMLElement, context: PluginContext) => void | (() => void);
+  default?: Component<PluginContext>;
+  mount?: (container: HTMLElement, context: PluginContext) => void | (() => void);
 }
 
 export function pluginPagePath(id: string, path: string) {
@@ -29,7 +32,11 @@ export function loadPlugin(plugin: Plugin, container: HTMLElement, context: Plug
     return link;
   });
   void import(/* @vite-ignore */ base + web.entry).then((module: Module) => {
-    if (!stopped) mounted = module.mount(container, context);
+    if (stopped) return;
+    const Page = module.default;
+    if (typeof module.mount === "function") mounted = module.mount(container, context);
+    else if (typeof Page === "function") mounted = render(() => createComponent(Page, context), container);
+    else failed();
   }).catch(() => {
     if (!stopped) failed();
   });

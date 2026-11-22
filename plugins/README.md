@@ -1,21 +1,23 @@
 # Goodwin plugins
 
-Goodwin starts trusted native plugins as independent processes. The probe plugin has a page and a persistent counter that exercise installation, navigation and HTTP calls. The timers plugin adds a local scheduler and assistant tools. Both use the Rust SDK in [`sdk/`](sdk/).
+Goodwin starts trusted native plugins as independent processes. The [Timers plugin](timers/) uses the Rust SDK in [`sdk/`](sdk/) and provides a Solid page, a local scheduler, and assistant tools.
 
 ## Build a package
 
 For a Windows development instance, run these commands from the repository root.
 
 ```powershell
-cargo build --locked -p goodwin-probe --release
-python scripts/package-plugin.py plugins/probe target/release/goodwin-probe.exe windows-x86_64 target/plugins/probe-windows-x86_64.tar.gz
+npm ci --prefix web
+npm run build --prefix web
+cargo build --locked -p goodwin-timers --release
+python scripts/package-plugin.py plugins/timers target/release/goodwin-timers.exe windows-x86_64 target/plugins/timers-windows-x86_64.tar.gz
 ```
 
-Use `./scripts/build-station.ps1` on Windows to produce separate Linux ARM64 packages for the probe and timers. Open **Plugins** in a password-protected panel to upload an archive. The manifest ID identifies the plugin across updates.
+Use `./scripts/build-station.ps1` on Windows to produce the separate Linux ARM64 package for Timers. Open **Plugins** in a password-protected panel to upload an archive. The manifest ID identifies the plugin across updates.
 
 ## Package and process contract
 
-A `.tar.gz` package contains `manifest.json`, an executable under `bin/`, and optional prebuilt files under `ui/`. Use [the probe manifest](probe/manifest.json) as a starting point. The packaging script adds `target` and `executable`. Keep the upload under 16 MiB and the expanded files under 48 MiB. Package paths use lowercase ASCII and forward slashes. Use regular files and include no explicit directory entries.
+A `.tar.gz` package contains `manifest.json`, an executable under `bin/`, and optional prebuilt files under `ui/`. Use [the Timers manifest](timers/manifest.json) as a starting point. The packaging script adds `target` and `executable`. Keep the upload under 16 MiB and the expanded files under 48 MiB. Package paths use lowercase ASCII and forward slashes. Use regular files and include no explicit directory entries.
 
 Goodwin runs the executable in its data directory and sets `GOODWIN_PLUGIN_DATA` to that directory. Keep persistent state there. Treat stdout as newline-delimited JSON-RPC 2.0 and send logs to stderr. The host sends `initialize` with `apiVersion: 1`. Reply with the same ID and a result containing `apiVersion` and any `routes`, `pages`, or `tools`. Publish readiness after the process can handle requests. The host waits up to five seconds for this response and closes stdin to stop the process.
 
@@ -27,6 +29,8 @@ Goodwin runs the executable in its data directory and sets `GOODWIN_PLUGIN_DATA`
 
 ## Web entry point
 
-Export `mount(container, context)` from your packaged `.mjs` entry. Return a cleanup function that removes event listeners, pending work and timers. The context provides `pageId`, `language`, `request(path, method, body)` for your API, and `navigate(pagePath)` for declared pages.
+For a Solid page, set `web.solidRuntimeVersion` to `1` and export the page component as the default export of `ui/index.tsx`. With `web.entry` set to `ui/index.mjs`, the packaging script compiles the TSX into that module. List CSS files separately in `web.styles`. Imports declared by the [shared runtime](../web/src/helpers/plugin-runtime.ts) resolve to the Solid instance used by the panel.
+
+The component receives `pageId`, `language`, `request(path, method, body)` for your API, and `navigate(pagePath)` for declared pages as props. Use `onCleanup` to release timers and other resources when the panel unmounts the page. A prebuilt `.mjs` entry can also export `mount(container, context)` and return its own cleanup function.
 
 The panel provides `gw-button` with `variant="primary"` and `disabled`, `gw-card`, the `.gw-row` and `.gw-stack` utilities, and `--gw-color-*`, `--gw-space-*`, and `--gw-radius` CSS variables. Scope your styles to your page. The web module runs on the panel's origin with the current session, and the executable runs with the Goodwin service account's OS permissions.

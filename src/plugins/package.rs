@@ -45,6 +45,8 @@ pub struct Manifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Web {
     ui_kit_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solid_runtime_version: Option<u32>,
     pub entry: String,
     #[serde(default)]
     pub styles: Vec<String>,
@@ -138,6 +140,10 @@ impl Manifest {
             ensure!(
                 web.ui_kit_version == UI_KIT_VERSION,
                 "Unsupported UI kit version"
+            );
+            ensure!(
+                matches!(web.solid_runtime_version, None | Some(1)),
+                "Unsupported Solid runtime version"
             );
             ensure!(
                 web.entry.ends_with(".mjs") && web_file(root, &web.entry).is_some(),

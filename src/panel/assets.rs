@@ -9,6 +9,7 @@ use super::Panel;
 
 const INDEX: &str = include_str!("../../web/dist/index.html");
 const SCRIPT: &str = include_str!("../../web/dist/panel.js");
+const PLUGIN_RUNTIME: &str = include_str!("../../web/dist/plugin-runtime-v1.js");
 const STYLE: &str = include_str!("../../web/dist/panel.css");
 
 pub(super) fn routes() -> Router<Panel> {
@@ -22,6 +23,10 @@ pub(super) fn routes() -> Router<Panel> {
         .route(
             "/panel.js",
             get(|| async { asset("text/javascript; charset=utf-8", SCRIPT) }),
+        )
+        .route(
+            "/plugin-runtime-v1.js",
+            get(|| async { asset("text/javascript; charset=utf-8", PLUGIN_RUNTIME) }),
         )
         .route(
             "/panel.css",

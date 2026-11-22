@@ -8,7 +8,7 @@ Goodwin is a Rust voice assistant for Yandex Station Mini 3 (`bergamot`) with an
 - `src/station/` handles microphone capture and playback. `src/wake.rs` and `src/wake/` handle LiveKit Standard and Micro ONNX inference.
 - `src/panel.rs` registers HTTP APIs, `src/panel/auth.rs` handles first-run setup and sessions, and `src/panel/assets.rs` serves the embedded frontend. Register core page URLs in both `web/src/router.ts` and `src/panel/assets.rs` so direct links work.
 - Keep page-specific components under their page directory in `web/src/pages/` and shared UI in `web/src/components/`.
-- `src/plugins/` hosts native plugin processes. The Cargo workspace includes the SDK, probe, and timers in `plugins/`. Plugin packages declare their own routes and pages. See [the plugin development guide](plugins/README.md) for the process protocol, package format, and UI kit.
+- `src/plugins/` hosts native plugin processes. The Cargo workspace includes the SDK and timers in `plugins/`. Plugin packages declare their own routes and pages. See [the plugin development guide](plugins/README.md) for the process protocol, package format, and UI kit.
 
 ## Build and Run
 

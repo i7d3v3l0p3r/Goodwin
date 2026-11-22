@@ -32,7 +32,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         "/settings",
         "/settings/?from=bookmark",
         "/plugins",
-        "/plugins/probe",
+        "/plugins/timers",
     ] {
         let response = client.get(format!("{panel}{path}")).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -42,6 +42,17 @@ async fn panel_serves_direct_navigation_to_settings() {
         );
         assert!(response.text().await.unwrap().contains("/panel.js"));
     }
+    let response = client
+        .get(format!("{panel}/plugin-runtime-v1.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/javascript; charset=utf-8"
+    );
+    assert!(response.text().await.unwrap().contains("createSignal"));
     let response = client
         .get(format!("{panel}/api/settings-typo"))
         .send()

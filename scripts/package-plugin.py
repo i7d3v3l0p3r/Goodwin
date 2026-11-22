@@ -4,6 +4,7 @@ import argparse
 import gzip
 import io
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -21,28 +22,37 @@ def main():
     parser.add_argument("target", help="Runtime platform such as linux-aarch64 or windows-x86_64")
     parser.add_argument("output", type=Path)
     parser.add_argument("--version", help="Override the package version for this build")
-    parser.add_argument("--probe-mode", choices=("delay", "fail", "timeout"), help="Readiness test mode for the probe")
     args = parser.parse_args()
 
     manifest = json.loads((args.plugin / "manifest.json").read_text(encoding="utf-8"))
-    if args.probe_mode and manifest["id"] != "probe":
-        parser.error("--probe-mode is only available for the probe plugin")
     suffix = ".exe" if args.target.startswith("windows-") else ""
     manifest["executable"] = f"bin/{manifest['id']}{suffix}"
     manifest["target"] = args.target
     if args.version:
         manifest["version"] = args.version
 
+    web = manifest.get("web")
+    compiled_entry = None
+    if web and web.get("solidRuntimeVersion") == 1:
+        source = (args.plugin / web["entry"]).with_suffix(".tsx")
+        if source.is_file():
+            builder = Path(__file__).resolve().parents[1] / "web" / "build-plugin.mjs"
+            compiled_entry = subprocess.check_output(["node", str(builder), str(source)])
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
             add_bytes(archive, "manifest.json", json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
             add_bytes(archive, manifest["executable"], args.executable.read_bytes())
-            if args.probe_mode:
-                add_bytes(archive, "bin/probe-mode", args.probe_mode.encode("ascii"))
+            if compiled_entry is not None:
+                add_bytes(archive, web["entry"], compiled_entry)
             for file in sorted((args.plugin / "ui").rglob("*")):
-                if file.is_file():
-                    add_bytes(archive, file.relative_to(args.plugin).as_posix(), file.read_bytes())
+                if not file.is_file():
+                    continue
+                relative = file.relative_to(args.plugin).as_posix()
+                if compiled_entry is not None and (relative == web["entry"] or file.suffix in (".ts", ".tsx")):
+                    continue
+                add_bytes(archive, relative, file.read_bytes())
     print(args.output)
 
 

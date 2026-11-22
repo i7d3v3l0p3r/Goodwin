@@ -516,17 +516,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "goodwin-probe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "goodwin-plugin",
- "serde_json",
-]
-
-[[package]]
 name = "goodwin-timers"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "goodwin-plugin",

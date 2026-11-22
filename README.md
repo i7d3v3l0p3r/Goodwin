@@ -110,7 +110,7 @@ Sign in to the panel and use **Plugins → Upload package** to install a trusted
 
 If you previously set up open access, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Your saved settings and API key are retained.
 
-The Windows Station build produces `target/plugins/probe-linux-aarch64.tar.gz` and `target/plugins/timers-linux-aarch64.tar.gz`. Use the probe to check installation and the counter on its page. Upload Timers to create, list and cancel timers in the panel. For voice commands, select an OpenRouter answer model that supports tool calling. Panel timers and their sounds run locally.
+The Windows Station build produces `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. For voice commands, select an OpenRouter answer model that supports tool calling. Panel timers and their sounds run locally.
 
 See the [plugin development guide](plugins/README.md) for the package format, process protocol, and UI kit.
 
