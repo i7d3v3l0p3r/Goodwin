@@ -11,6 +11,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -66,7 +67,10 @@ jobs:
           npm run build --prefix web
           cargo test --locked --workspace
           target=aarch64-unknown-linux-musl
-          cargo zigbuild --locked --workspace --release --target "$target"
+          linker="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
+          # Keep Rust's Cortex-A53 erratum workaround when linking the Station binaries.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C linker=$linker -C linker-flavor=ld.lld" \
+            cargo zigbuild --locked --workspace --release --target "$target"
 
           python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx \
             --encoders models --output target/release-assets/goodwin-mini3-aarch64.tar.gz
