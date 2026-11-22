@@ -26,7 +26,7 @@ use crate::{
 
 use auth::{
     Auth, access, login, logout, require_owner, require_password_owner, require_same_origin,
-    response_headers,
+    response_headers, setup_password,
 };
 use plugin_routes::{plugin_asset, plugin_catalog, plugin_http, remove_plugin, upload_plugin};
 
@@ -67,6 +67,7 @@ pub fn router(app: Arc<App>) -> Router {
 
     assets::routes()
         .route("/api/access", get(access))
+        .route("/api/setup", post(setup_password))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .merge(protected)

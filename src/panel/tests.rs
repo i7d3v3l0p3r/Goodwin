@@ -48,6 +48,13 @@ async fn panel_serves_direct_navigation_to_settings() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let response = client
+        .post(format!("{panel}/api/setup"))
+        .json(&serde_json::json!({"password": "test password", "confirmation": "test password"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let response = client
         .post(format!("{panel}/api/plugin-packages"))
         .send()
         .await

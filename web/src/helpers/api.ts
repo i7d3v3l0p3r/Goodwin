@@ -55,6 +55,7 @@ export interface Plugin {
 export interface Access {
   protected: boolean;
   authorized: boolean;
+  setup_required: boolean;
 }
 
 export class ApiError extends Error {

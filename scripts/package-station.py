@@ -19,9 +19,12 @@ cd goodwin-mini3
 sha256sum -c SHA256SUMS
 ./goodwin wake-check models/standard.onnx
 ./goodwin wake-check models/micro.onnx
-./goodwin setup ./goodwin-data password
+./goodwin setup ./goodwin-data
 GOODWIN_PANEL_ADDRESS=0.0.0.0:8787 ./start.sh standard
 ```
+
+Open the Station's address on port 8787 to create the panel password and sign in.
+The first visitor who completes setup sets the password.
 
 For an existing Goodwin installation, reuse its configured data directory with
 `GOODWIN_DATA_DIR` and skip setup. Stop the current Goodwin process before

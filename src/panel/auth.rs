@@ -18,7 +18,7 @@ use blake2::{Blake2s256, Digest};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::{Access, random_bytes, verify_password};
+use crate::config::{Access, random_bytes, valid_password_length, verify_password};
 
 use super::{Panel, problem};
 
@@ -119,6 +119,7 @@ fn token(headers: &HeaderMap) -> Option<&str> {
 async fn authorized(panel: &Panel, headers: &HeaderMap) -> bool {
     match panel.app.configuration().access() {
         Access::Open => true,
+        Access::PendingPassword => false,
         Access::Password { hash } => has_session(panel, headers, &hash).await,
     }
 }
@@ -174,11 +175,57 @@ pub(super) async fn require_owner(
 }
 
 pub(super) async fn access(State(panel): State<Panel>, headers: HeaderMap) -> impl IntoResponse {
-    let (protected, authorized) = match panel.app.configuration().access() {
-        Access::Open => (false, true),
-        Access::Password { hash } => (true, has_session(&panel, &headers, &hash).await),
+    let (protected, authorized, setup_required) = match panel.app.configuration().access() {
+        Access::Open => (false, true, false),
+        Access::PendingPassword => (true, false, true),
+        Access::Password { hash } => (true, has_session(&panel, &headers, &hash).await, false),
     };
-    Json(json!({ "protected": protected, "authorized": authorized }))
+    Json(json!({
+        "protected": protected, "authorized": authorized, "setup_required": setup_required
+    }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct SetupPassword {
+    password: String,
+    confirmation: String,
+}
+
+pub(super) async fn setup_password(
+    State(panel): State<Panel>,
+    Json(setup): Json<SetupPassword>,
+) -> Response {
+    if !matches!(panel.app.configuration().access(), Access::PendingPassword) {
+        return problem(StatusCode::CONFLICT, "setup_complete");
+    }
+    if !valid_password_length(&setup.password) {
+        return problem(StatusCode::BAD_REQUEST, "invalid_password");
+    }
+    if setup.password != setup.confirmation {
+        return problem(StatusCode::BAD_REQUEST, "password_mismatch");
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let Some(hash) = panel
+            .app
+            .configuration()
+            .set_initial_password(&setup.password)?
+        else {
+            return Ok::<_, anyhow::Error>(problem(StatusCode::CONFLICT, "setup_complete"));
+        };
+        // The password is already durable, so a session failure leaves the normal sign-in flow.
+        Ok(match create_session(&panel, &hash) {
+            Ok(cookie) => session_response(cookie),
+            Err(error) => {
+                eprintln!("Could not create initial panel session: {error:#}");
+                StatusCode::NO_CONTENT.into_response()
+            }
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => response,
+        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "password_save_failed"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -187,9 +234,10 @@ pub(super) struct Login {
 }
 
 pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) -> Response {
-    let access = panel.app.configuration().access();
-    let Access::Password { hash } = access else {
-        return StatusCode::NO_CONTENT.into_response();
+    let hash = match panel.app.configuration().access() {
+        Access::Open => return StatusCode::NO_CONTENT.into_response(),
+        Access::PendingPassword => return problem(StatusCode::CONFLICT, "setup_required"),
+        Access::Password { hash } => hash,
     };
     {
         let mut auth = panel.auth.lock().await;
@@ -207,12 +255,14 @@ pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) 
     })
     .await;
     match result {
-        Ok(Ok(Some(cookie))) => {
-            (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
-        }
+        Ok(Ok(Some(cookie))) => session_response(cookie),
         Ok(Ok(None)) => problem(StatusCode::UNAUTHORIZED, "wrong_password"),
         _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     }
+}
+
+fn session_response(cookie: String) -> Response {
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
 
 fn create_session(panel: &Panel, password_hash: &str) -> Result<String> {

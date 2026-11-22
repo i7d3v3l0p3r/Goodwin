@@ -42,11 +42,11 @@ Copy the Linux binary to a writable, executable directory on a prepared Mini 3. 
 
 ```sh
 chmod +x ./goodwin
-./goodwin setup ./goodwin-data password
+./goodwin setup ./goodwin-data
 ./goodwin serve ./goodwin-data 0.0.0.0:8787
 ```
 
-Setup prompts for a password. Use `open` in place of `password` if all devices on the network should have access. Open the Station's address on port 8787 and add an OpenRouter API key in **Settings**. Keep the panel on a trusted network. It uses plain HTTP.
+Open the Station's address on port 8787 and create a panel password. Goodwin signs you in so you can add an OpenRouter API key in **Settings**. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
 
 To enable voice activation, place a LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` and restart the service. Goodwin selects the input format from the ONNX graph. Run `goodwin wake-check model.onnx` to check loading, warm-up, and one inference step without the microphone.
 

@@ -28,10 +28,8 @@ async fn main() -> Result<()> {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("setup") if (2..=3).contains(&args.len()) => {
             let dir = PathBuf::from(&args[1]);
-            let mode = match args.get(2) {
-                Some(value) => value.to_string_lossy().into_owned(),
-                None => rpassword::prompt_password("Panel access (open/password): ")?,
-            };
+            let mode = args.get(2).map(|value| value.to_string_lossy());
+            let mode = mode.as_deref().unwrap_or("password");
             setup(dir, mode.trim())
         }
         Some("set-password") if args.len() == 2 => {
@@ -83,7 +81,7 @@ fn setup(dir: PathBuf, mode: &str) -> Result<()> {
     );
     let access = match mode {
         "open" => Access::Open,
-        "password" => prompt_password()?,
+        "password" => Access::PendingPassword,
         _ => bail!("Choose panel access: open or password"),
     };
     Config {
@@ -92,7 +90,11 @@ fn setup(dir: PathBuf, mode: &str) -> Result<()> {
         key: String::new(),
     }
     .save(&dir, true)?;
-    println!("Panel access configured.");
+    if mode == "password" {
+        println!("Open the web panel after starting Goodwin to create a password.");
+    } else {
+        println!("Open panel access configured.");
+    }
     Ok(())
 }
 

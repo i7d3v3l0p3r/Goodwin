@@ -15,7 +15,7 @@ export function createPanel() {
   let timer = 0;
 
   function requireLogin() {
-    setAccess({ protected: true, authorized: false });
+    setAccess({ protected: true, authorized: false, setup_required: false });
     setSnapshot(undefined);
   }
 
@@ -41,7 +41,7 @@ export function createPanel() {
   }
 
   async function poll() {
-    if (!pending()) await refresh();
+    if (!pending()) await refresh(!access()?.authorized);
     if (!stopped) timer = window.setTimeout(poll, 750);
   }
 
@@ -77,6 +77,9 @@ export function createPanel() {
       const code = reason instanceof ApiError ? reason.code : "internal";
       if (code === "login_required") {
         requireLogin();
+      } else if (code === "setup_complete" || code === "setup_required") {
+        await refresh(true);
+        if (code === "setup_complete") setError(code);
       } else {
         setError(code);
       }
@@ -100,6 +103,8 @@ export function createPanel() {
   return {
     access, snapshot, reachable, pending, error, language, t, status, changeLanguage, clearError,
     busy: () => pending() || !!snapshot()?.active,
+    setupPassword: (password: string, confirmation: string) =>
+      action(() => api("setup", "POST", { password, confirmation }), true),
     login: (password: string) => action(async () => {
       await api("login", "POST", { password });
       setAccess(undefined);

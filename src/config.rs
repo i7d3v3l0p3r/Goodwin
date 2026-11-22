@@ -18,6 +18,7 @@ mod tests;
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum Access {
     Open,
+    PendingPassword,
     Password { hash: String },
 }
 
@@ -140,6 +141,19 @@ impl ConfigStore {
         self.current().access.clone()
     }
 
+    pub(crate) fn set_initial_password(&self, password: &str) -> Result<Option<String>> {
+        let _writer = self.writer.lock().expect("configuration writer mutex");
+        let mut draft = self.current().clone();
+        if !matches!(draft.access, Access::PendingPassword) {
+            return Ok(None);
+        }
+        let hash = hash_password(password)?;
+        draft.access = Access::Password { hash: hash.clone() };
+        draft.save(&self.dir, false)?;
+        *self.current() = draft;
+        Ok(Some(hash))
+    }
+
     pub(crate) fn wake_settings(&self) -> (bool, f32) {
         let config = self.current();
         (config.settings.listening, config.settings.sensitivity)
@@ -165,9 +179,13 @@ pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
     Ok(bytes)
 }
 
+pub(crate) fn valid_password_length(password: &str) -> bool {
+    (8..=256).contains(&password.len())
+}
+
 pub fn hash_password(password: &str) -> Result<String> {
     ensure!(
-        (8..=256).contains(&password.len()),
+        valid_password_length(password),
         "Use a password between 8 and 256 bytes"
     );
     let salt =
