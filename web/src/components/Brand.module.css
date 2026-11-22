@@ -25,12 +25,12 @@
 .mark::before {
   content: "";
   position: absolute;
-  top: 50%;
-  inset-inline: 43%;
-  height: 1.5px;
-  border-radius: 2px;
-  background: currentColor;
-  transform: translateY(-50%);
+  top: calc(50% - 1.4px);
+  inset-inline: 42%;
+  height: 3px;
+  border: 1.5px solid currentColor;
+  border-bottom: 0;
+  border-radius: 50% 50% 0 0 / 58% 58% 0 0;
 }
 
 .mark i {

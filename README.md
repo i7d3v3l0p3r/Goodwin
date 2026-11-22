@@ -4,7 +4,27 @@ Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`)
 
 The Station detects the wake word locally, sends the recording to OpenRouter for transcription, generation and speech synthesis, and plays the answer. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
-Download the Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
+Download the desktop installer, Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
+
+## Desktop installer
+
+The Rust installer runs on Windows, Linux and macOS. It installs Goodwin on a prepared Yandex Station Mini 3 over network ADB with root access and support for the `/data/init.d` service directory. Install [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) and put ADB on your `PATH`, or select the ADB executable under **Дополнительные настройки**.
+
+1. Select a Station from the list. The installer starts an mDNS search for Mini 3 on launch. Click **Обновить** to search again or **Указать адрес вручную** to enter an IP address or hostname. Add an ADB port if it differs from 5555.
+2. Click **Установить или обновить**. The installer downloads the latest stable Station package from GitHub, verifies its SHA-256, starts the service and enables it at boot.
+3. Open the panel from the installer and create a password on a fresh installation.
+
+For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs `goodwin`, both ONNX files and the model attribution files in `models/`. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
+
+Updates to the managed Station service reuse its data directory at `/data/opt/etc/goodwin` and keep its wake model selection by default. If the new service fails the startup check, the installer restores the previous executable and models and restarts the previous service if it was running.
+
+To build and launch the desktop installer locally, run:
+
+```sh
+cargo run --locked --manifest-path installer/Cargo.toml --release
+```
+
+The installer is a separate Rust project and builds without the Goodwin web panel or ARM cross-compiler. On Linux it uses OpenGL with Wayland or X11, and the native folder picker uses the desktop portal.
 
 ## Build
 
@@ -42,7 +62,7 @@ To package the wake-word models shipped with Goodwin, use `python scripts/packag
 
 ## Publish a release
 
-Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions uses Ubuntu and Zig to build the ARM64 Station package and both plugin archives, runs the workspace tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
+Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, both plugin archives and the desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
 
 To start the workflow manually for an existing release tag, run `gh workflow run release.yml --ref v<version>`.
 

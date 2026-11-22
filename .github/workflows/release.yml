@@ -88,8 +88,69 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  installer:
+    if: github.ref_type == 'tag'
+    strategy:
+      matrix:
+        include:
+          - runner: windows-2022
+            platform: windows-x64
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: macos-15
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl-dev libwayland-dev libxkbcommon-dev
+      - name: Build and test the installer
+        shell: bash
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal
+          cargo +1.100.0 test --locked --release --manifest-path installer/Cargo.toml
+          cargo +1.100.0 build --locked --release --manifest-path installer/Cargo.toml
+      - name: Test the Station deployment script
+        if: runner.os == 'Linux'
+        run: sh installer/tests/station-install.sh
+      - name: Package the installer
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          name="goodwin-installer-$PLATFORM"
+          binary=installer/target/release/goodwin-installer
+          mkdir -p target/installer-assets
+          case "$RUNNER_OS" in
+            Windows) cp "$binary.exe" "target/installer-assets/$name.exe" ;;
+            Linux) tar -czf "target/installer-assets/$name.tar.gz" -C installer/target/release goodwin-installer ;;
+            macOS)
+              app="target/installer-package/Goodwin Installer.app"
+              mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+              cp "$binary" "$app/Contents/MacOS/"
+              cp installer/Info.plist "$app/Contents/"
+              cp installer/icons/goodwin.icns "$app/Contents/Resources/"
+              codesign --force --sign - "$app"
+              tar -czf "target/installer-assets/$name.tar.gz" -C target/installer-package "Goodwin Installer.app"
+              ;;
+          esac
+      - uses: actions/upload-artifact@v6
+        with:
+          name: installer-${{ matrix.platform }}
+          path: target/installer-assets/
+          if-no-files-found: error
+          overwrite: true
+
   publish:
-    needs: build
+    needs: [build, installer]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -98,13 +159,21 @@ jobs:
       - uses: actions/download-artifact@v6
         with:
           name: release-assets
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: installer-*
+          merge-multiple: true
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag="$GITHUB_REF_NAME"
-          assets=(goodwin-mini3-aarch64.tar.gz probe-linux-aarch64.tar.gz timers-linux-aarch64.tar.gz SHA256SUMS)
+          installers=(goodwin-installer-windows-x64.exe goodwin-installer-linux-x64.tar.gz
+            goodwin-installer-macos-arm64.tar.gz goodwin-installer-macos-x64.tar.gz)
+          assets=(goodwin-mini3-aarch64.tar.gz probe-linux-aarch64.tar.gz timers-linux-aarch64.tar.gz
+            "${installers[@]}" SHA256SUMS)
+          sha256sum -- "${installers[@]}" >> SHA256SUMS
           sha256sum -c SHA256SUMS
 
           if draft=$(gh release view "$tag" --json isDraft --jq .isDraft); then

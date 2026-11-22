@@ -3,6 +3,7 @@
 /web/dist/
 /web/node_modules/
 /goodwin-data/
+/installer/target/
 /.env
 /datasets/
 .codex
