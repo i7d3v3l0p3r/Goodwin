@@ -5,7 +5,7 @@ mod plugin_routes;
 #[cfg(test)]
 mod tests;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
@@ -17,6 +17,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Mutex;
 
 use crate::{
     app::{App, Failure, Source},
@@ -36,9 +37,14 @@ struct Panel {
 }
 
 pub fn router(app: Arc<App>) -> Router {
+    let auth = if app.configuration().password_protected() {
+        Auth::load(&app.dir)
+    } else {
+        Auth::default()
+    };
     let panel = Panel {
         app,
-        auth: Arc::default(),
+        auth: Arc::new(Mutex::new(auth)),
     };
     let protected = Router::new()
         .route("/api/state", get(snapshot))

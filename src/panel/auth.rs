@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    fs, io,
+    path::Path,
+    time::{Duration, Instant, SystemTime},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Json,
     extract::{Request, State},
@@ -12,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use blake2::{Blake2s256, Digest};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -24,11 +27,38 @@ mod tests;
 
 const SESSION_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
 const COOKIE: &str = "goodwin_session";
+const SESSION_FILE: &str = "panel-sessions.json";
 
 #[derive(Default)]
 pub(super) struct Auth {
-    sessions: HashMap<String, Instant>,
+    sessions: HashMap<String, SystemTime>,
     next_login: Option<Instant>,
+}
+
+impl Auth {
+    pub(super) fn load(dir: &Path) -> Self {
+        let sessions = match fs::read(dir.join(SESSION_FILE)) {
+            Ok(data) => serde_json::from_slice(&data).context("Read panel sessions"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(error).context("Open panel sessions"),
+        };
+        Self {
+            sessions: sessions.unwrap_or_else(|error| {
+                eprintln!("Could not restore panel sessions: {error:#}");
+                HashMap::new()
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn save(&mut self, dir: &Path, sessions: HashMap<String, SystemTime>) -> Result<()> {
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        serde_json::to_writer(&mut file, &sessions)?;
+        file.as_file().sync_all()?;
+        file.persist(dir.join(SESSION_FILE))?;
+        self.sessions = sessions;
+        Ok(())
+    }
 }
 
 pub(super) async fn response_headers(request: axum::extract::Request, next: Next) -> Response {
@@ -86,24 +116,35 @@ fn token(headers: &HeaderMap) -> Option<&str> {
         .find_map(|(key, value)| (key == COOKIE).then_some(value))
 }
 
-fn authorized(panel: &Panel, headers: &HeaderMap) -> bool {
-    if !panel.app.configuration().password_protected() {
-        return true;
+async fn authorized(panel: &Panel, headers: &HeaderMap) -> bool {
+    match panel.app.configuration().access() {
+        Access::Open => true,
+        Access::Password { hash } => has_session(panel, headers, &hash).await,
     }
-    has_session(panel, headers)
 }
 
-fn has_session(panel: &Panel, headers: &HeaderMap) -> bool {
+fn session_key(password_hash: &str, token: &str) -> String {
+    // Binding the token to the configured hash revokes it when the panel password changes.
+    URL_SAFE_NO_PAD.encode(
+        Blake2s256::new()
+            .chain_update(password_hash)
+            .chain_update(token)
+            .finalize(),
+    )
+}
+
+async fn has_session(panel: &Panel, headers: &HeaderMap, password_hash: &str) -> bool {
     let Some(token) = token(headers) else {
         return false;
     };
+    let key = session_key(password_hash, token);
     panel
         .auth
         .lock()
-        .expect("session mutex")
+        .await
         .sessions
-        .get(token)
-        .is_some_and(|expiry| Instant::now() < *expiry)
+        .get(&key)
+        .is_some_and(|expiry| SystemTime::now() < *expiry)
 }
 
 pub(super) async fn require_password_owner(
@@ -111,10 +152,10 @@ pub(super) async fn require_password_owner(
     request: Request,
     next: Next,
 ) -> Response {
-    if !panel.app.configuration().password_protected() {
+    let Access::Password { hash } = panel.app.configuration().access() else {
         return problem(StatusCode::FORBIDDEN, "plugin_password_required");
-    }
-    if !has_session(&panel, request.headers()) {
+    };
+    if !has_session(&panel, request.headers(), &hash).await {
         return problem(StatusCode::UNAUTHORIZED, "login_required");
     }
     next.run(request).await
@@ -125,7 +166,7 @@ pub(super) async fn require_owner(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if authorized(&panel, request.headers()) {
+    if authorized(&panel, request.headers()).await {
         next.run(request).await
     } else {
         problem(StatusCode::UNAUTHORIZED, "login_required")
@@ -133,8 +174,11 @@ pub(super) async fn require_owner(
 }
 
 pub(super) async fn access(State(panel): State<Panel>, headers: HeaderMap) -> impl IntoResponse {
-    let protected = panel.app.configuration().password_protected();
-    Json(json!({ "protected": protected, "authorized": authorized(&panel, &headers) }))
+    let (protected, authorized) = match panel.app.configuration().access() {
+        Access::Open => (false, true),
+        Access::Password { hash } => (true, has_session(&panel, &headers, &hash).await),
+    };
+    Json(json!({ "protected": protected, "authorized": authorized }))
 }
 
 #[derive(Deserialize)]
@@ -148,41 +192,46 @@ pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) 
         return StatusCode::NO_CONTENT.into_response();
     };
     {
-        let mut auth = panel.auth.lock().expect("session mutex");
+        let mut auth = panel.auth.lock().await;
         let now = Instant::now();
         if auth.next_login.is_some_and(|next| now < next) {
             return problem(StatusCode::TOO_MANY_REQUESTS, "login_retry");
         }
         auth.next_login = Some(now + Duration::from_secs(2));
     }
-    let matched = tokio::task::spawn_blocking(move || verify_password(&hash, &login.password))
-        .await
-        .unwrap_or(false);
-    if !matched {
-        return problem(StatusCode::UNAUTHORIZED, "wrong_password");
-    }
-    match create_session(&panel) {
-        Ok(cookie) => (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response(),
-        Err(_) => problem(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    let result = tokio::task::spawn_blocking(move || {
+        if !verify_password(&hash, &login.password) {
+            return Ok(None);
+        }
+        create_session(&panel, &hash).map(Some)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(cookie))) => {
+            (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
+        }
+        Ok(Ok(None)) => problem(StatusCode::UNAUTHORIZED, "wrong_password"),
+        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     }
 }
 
-fn create_session(panel: &Panel) -> Result<String> {
+fn create_session(panel: &Panel, password_hash: &str) -> Result<String> {
     let token = URL_SAFE_NO_PAD.encode(random_bytes::<32>()?);
-    let now = Instant::now();
-    let mut auth = panel.auth.lock().expect("session mutex");
-    auth.sessions.retain(|_, deadline| *deadline > now);
-    if auth.sessions.len() >= 32 {
-        let oldest = auth
-            .sessions
+    let mut auth = panel.auth.blocking_lock();
+    let now = SystemTime::now();
+    let mut sessions = auth.sessions.clone();
+    sessions.retain(|_, deadline| *deadline > now);
+    if sessions.len() >= 32 {
+        let oldest = sessions
             .iter()
             .min_by_key(|(_, deadline)| *deadline)
-            .map(|(token, _)| token.clone());
-        if let Some(token) = oldest {
-            auth.sessions.remove(&token);
+            .map(|(key, _)| key.clone());
+        if let Some(key) = oldest {
+            sessions.remove(&key);
         }
     }
-    auth.sessions.insert(token.clone(), now + SESSION_DURATION);
+    sessions.insert(session_key(password_hash, &token), now + SESSION_DURATION);
+    auth.save(&panel.app.dir, sessions)?;
     Ok(cookie(&token, SESSION_DURATION.as_secs()))
 }
 
@@ -195,13 +244,23 @@ pub(super) async fn logout(
     headers: HeaderMap,
     Json(_): Json<serde_json::Value>,
 ) -> Response {
-    if let Some(token) = token(&headers) {
-        panel
-            .auth
-            .lock()
-            .expect("session mutex")
-            .sessions
-            .remove(token);
+    if let (Some(token), Access::Password { hash }) =
+        (token(&headers), panel.app.configuration().access())
+    {
+        let key = session_key(&hash, token);
+        let result = tokio::task::spawn_blocking(move || {
+            let mut auth = panel.auth.blocking_lock();
+            if auth.sessions.contains_key(&key) {
+                let mut sessions = auth.sessions.clone();
+                sessions.remove(&key);
+                auth.save(&panel.app.dir, sessions)?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            return problem(StatusCode::INTERNAL_SERVER_ERROR, "internal");
+        }
     }
     (
         StatusCode::NO_CONTENT,
