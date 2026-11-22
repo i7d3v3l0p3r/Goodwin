@@ -41,6 +41,7 @@ async fn wait_for(mut check: impl FnMut() -> bool) {
 
 #[tokio::test]
 async fn voice_request_through_microphone_panel_and_openrouter() {
+    const PROMPT: &str = "Ты домашний помощник.\nОтвечай дружелюбно.";
     let provider = Router::new()
         .route(
             "/audio/transcriptions",
@@ -73,7 +74,16 @@ async fn voice_request_through_microphone_panel_and_openrouter() {
                         Json(json!({"error": "service unavailable"})),
                     );
                 }
-                assert_eq!(text, "Сколько будет два плюс два?");
+                assert_eq!(messages[0]["role"], "system");
+                if text == "Что ты умеешь?" {
+                    assert_eq!(messages[0]["content"], PROMPT);
+                } else {
+                    assert_eq!(text, "Сколько будет два плюс два?");
+                    assert_eq!(
+                        messages[0]["content"],
+                        format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.")
+                    );
+                }
                 (
                     StatusCode::OK,
                     Json(json!({ "choices": [{ "message": { "content": "Четыре" } }] })),
@@ -101,6 +111,7 @@ async fn voice_request_through_microphone_panel_and_openrouter() {
             ..Settings::default()
         },
         key: "mock-key".into(),
+        system_prompt: String::new(),
     };
     let sink = TestSink::default();
     let app = App::new(
@@ -152,6 +163,15 @@ async fn voice_request_through_microphone_panel_and_openrouter() {
     })
     .await
     .unwrap();
+
+    let status = client
+        .put(format!("{panel}/api/settings/system-prompt"))
+        .json(&json!({"system_prompt": PROMPT}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let status = client
         .post(format!("{panel}/api/test"))
@@ -224,6 +244,18 @@ async fn voice_request_through_microphone_panel_and_openrouter() {
     assert_eq!(state["last"]["error"], "cloud");
     assert_eq!(sink.lock().unwrap().len(), 1);
 
+    let status = client
+        .post(format!("{panel}/api/chat"))
+        .json(&json!({"message": "Что ты умеешь?"}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, StatusCode::ACCEPTED);
+    wait_for(|| app.active().is_none()).await;
+    let state = serde_json::to_value(app.snapshot()).unwrap();
+    assert_eq!(state["last"]["error"], Value::Null);
+
     for task in [capture, mic_task, panel_task, cloud_task] {
         task.abort();
     }
@@ -244,6 +276,7 @@ async fn wake_word_without_a_transcribed_question_plays_a_local_retry_prompt() {
             access: Access::Open,
             settings: Settings::default(),
             key: "mock-key".into(),
+            system_prompt: String::new(),
         },
         OpenRouter::new().unwrap().pointed_at(cloud),
         Player::recording_to(sink.clone()),

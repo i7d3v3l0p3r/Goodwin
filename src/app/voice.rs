@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 use anyhow::{Result, ensure};
 use serde_json::json;
@@ -40,7 +40,9 @@ impl App {
     }
 
     async fn voice_answer(&self, id: u64, samples: Vec<i16>, woke: bool) -> Result<(), Failure> {
-        let (key, settings) = self.credentials(id).ok_or(Failure::Busy)?;
+        let request = self.request_settings(id).ok_or(Failure::Busy)?;
+        let key = &request.key;
+        let models = &request.settings.models;
 
         if key.is_empty() {
             return Err(Failure::MissingKey);
@@ -66,7 +68,7 @@ impl App {
             .map_err(|_| Failure::Microphone)?;
         let text = self
             .openrouter
-            .transcribe(&key, &settings.models, &wav)
+            .transcribe(key, models, &wav)
             .await
             .map_err(|_| Failure::Cloud)?;
         let text = if woke {
@@ -87,9 +89,10 @@ impl App {
         };
         let answer = reply_with_tools(
             &self.openrouter,
-            &key,
-            &settings.models,
+            key,
+            models,
             text,
+            &request.system_prompt,
             self.plugins.voice_tools(voice_turn),
         )
         .await
@@ -98,7 +101,7 @@ impl App {
         self.stage(id, Stage::Synthesizing);
         let audio = self
             .openrouter
-            .synthesize(&key, &settings.models, &answer)
+            .synthesize(key, models, &answer)
             .await
             .map_err(|_| Failure::Cloud)?;
         let mut wav = Vec::with_capacity(audio.data.len() + 44);
@@ -113,17 +116,25 @@ async fn reply_with_tools(
     key: &str,
     models: &Models,
     text: &str,
+    system_prompt: &str,
     tools: VoiceTools,
 ) -> Result<String> {
     const MAX_CALLS: usize = 4;
+    let voice_instructions = if system_prompt.is_empty() {
+        Cow::Borrowed(VOICE_INSTRUCTIONS)
+    } else {
+        Cow::Owned(format!(
+            "{system_prompt}\n\nUse plain text suitable for speaking aloud."
+        ))
+    };
     let definitions = tools.definitions();
     if definitions.len() == 0 {
         return openrouter
-            .reply(key, models, text, VOICE_INSTRUCTIONS, [])
+            .reply(key, models, text, &voice_instructions, [])
             .await;
     }
     let context = tools.context().await;
-    let mut instructions = format!("{VOICE_INSTRUCTIONS}\n{TOOL_INSTRUCTIONS}");
+    let mut instructions = format!("{voice_instructions}\n{TOOL_INSTRUCTIONS}");
     if !context.is_empty() {
         instructions.push('\n');
         instructions.push_str(CONTEXT_INSTRUCTIONS);

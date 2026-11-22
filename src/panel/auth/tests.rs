@@ -24,6 +24,7 @@ fn setup(dir: &Path) {
         },
         settings: Settings::default(),
         key: "initial-key".into(),
+        system_prompt: String::new(),
     };
     config.save(dir, true).unwrap();
 }
@@ -72,6 +73,7 @@ async fn first_visit_sets_one_password_and_signs_in() {
             ..Settings::default()
         },
         key: "initial-key".into(),
+        system_prompt: String::new(),
     }
     .save(dir.path(), true)
     .unwrap();
@@ -197,6 +199,13 @@ async fn password_mode_protects_settings_and_session_survives_restart_until_logo
     let (panel, task) = start_panel(dir.path()).await;
     assert_eq!(state_status(&client, &panel, &cookie).await, StatusCode::OK);
     let settings_url = format!("{panel}/api/settings");
+    let response = client
+        .put(format!("{settings_url}/system-prompt"))
+        .json(&json!({"system_prompt": "Untrusted prompt"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let settings = Settings {
         listening: false,
         ..Settings::default()

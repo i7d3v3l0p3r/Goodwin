@@ -4,6 +4,7 @@ import { usePanel } from "../../helpers/panel";
 import { errorLabel } from "../../helpers/words";
 import { OpenRouterForm } from "./components/OpenRouterForm";
 import { Preferences } from "./components/Preferences";
+import { SystemPromptForm } from "./components/SystemPromptForm";
 import { VoiceCheck } from "./components/VoiceCheck";
 import styles from "./SettingsPage.module.css";
 
@@ -20,6 +21,8 @@ export function SettingsPage() {
             const settings = state().settings;
             void panel.saveSettings({ ...settings, listening: !settings.listening });
           }} />
+        <SystemPromptForm t={panel.t()} systemPrompt={state().system_prompt}
+          pending={pending()} save={panel.saveSystemPrompt} />
         <VoiceCheck t={panel.t()} snapshot={state()} disabled={panel.busy() || pending()} test={panel.testStation} />
         <OpenRouterForm t={panel.t()} snapshot={state()} pending={pending()} error={panel.error()} save={panel.saveSettings} />
         <Show when={panel.error()}><p class={styles.error} role="alert">{errorLabel(panel.t(), panel.error())}</p></Show>

@@ -1,0 +1,24 @@
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #b5cbbd;
+  border-radius: 8px;
+  background: var(--paper);
+  resize: vertical;
+}
+
+.hint, .saved { font-size: .86rem; }
+.hint { color: var(--muted); }
+.saved { color: var(--accent); }
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}

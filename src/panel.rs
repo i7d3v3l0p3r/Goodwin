@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     app::{App, Failure, Source},
-    config::Settings,
+    config::{Settings, normalize_system_prompt},
 };
 
 use auth::{
@@ -49,6 +49,7 @@ pub fn router(app: Arc<App>) -> Router {
     let protected = Router::new()
         .route("/api/state", get(snapshot))
         .route("/api/settings", put(settings))
+        .route("/api/settings/system-prompt", put(system_prompt))
         .route("/api/chat", post(chat))
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))
@@ -105,6 +106,27 @@ async fn settings(State(panel): State<Panel>, Json(update): Json<UpdateSettings>
             .await;
     match saved {
         Ok(Ok(())) => snapshot(State(panel)).await.into_response(),
+        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateSystemPrompt {
+    system_prompt: String,
+}
+
+async fn system_prompt(
+    State(panel): State<Panel>,
+    Json(update): Json<UpdateSystemPrompt>,
+) -> Response {
+    let Ok(prompt) = normalize_system_prompt(&update.system_prompt) else {
+        return problem(StatusCode::BAD_REQUEST, "invalid_system_prompt");
+    };
+    let saved =
+        tokio::task::spawn_blocking(move || panel.app.configuration().update_system_prompt(prompt))
+            .await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
     }
 }

@@ -1,7 +1,9 @@
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 
-use super::{reply_with_tools, strip_wake_word};
+use super::{
+    CONTEXT_INSTRUCTIONS, TOOL_INSTRUCTIONS, VOICE_INSTRUCTIONS, reply_with_tools, strip_wake_word,
+};
 use crate::{
     openrouter::{Models, OpenRouter},
     plugins::VoiceTools,
@@ -17,6 +19,10 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
             assert_eq!(body["provider"]["require_parameters"], true);
             assert!(body.get("parallel_tool_calls").is_none());
             let messages = body["messages"].as_array().unwrap();
+            assert_eq!(messages[0], json!({
+                "role": "system",
+                "content": format!("{VOICE_INSTRUCTIONS}\n{TOOL_INSTRUCTIONS}")
+            }));
             let last = messages.last().unwrap();
             let message = if last["role"] == "tool" {
                 assert_eq!(last["tool_call_id"], "test-call");
@@ -45,6 +51,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
         "fixture",
         &models,
         "Сколько минут ждать?",
+        "",
         VoiceTools::mock(|_| panic!("A question must not call a tool")),
     )
     .await
@@ -55,6 +62,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
         "fixture",
         &models,
         "Отмени таймер",
+        "",
         VoiceTools::mock(|call| {
             assert_eq!(
                 call,
@@ -81,10 +89,15 @@ fn strips_only_a_leading_wake_word() {
 
 #[tokio::test]
 async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
+    const PROMPT: &str = "Обращайся ко мне на ты.\nОтвечай спокойно.";
     let (cloud, task) = serve(Router::new().route(
         "/chat/completions",
         post(|Json(body): Json<Value>| async move {
             let messages = body["messages"].as_array().unwrap();
+            assert_eq!(messages[0], json!({
+                "role": "system",
+                "content": format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.\n{TOOL_INSTRUCTIONS}\n{CONTEXT_INSTRUCTIONS}")
+            }));
             let snapshot: Value = serde_json::from_str(messages[1]["content"].as_str().unwrap()).unwrap();
             assert_eq!(snapshot, json!({"pluginContext": {"probe": {"active": [
                 {"name": "для яиц", "seconds": 120}, {"name": "для картошки", "seconds": 300}
@@ -121,6 +134,7 @@ async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
         "fixture",
         &Models::default(),
         "Отмени таймер картошка",
+        PROMPT,
         tools,
     )
     .await

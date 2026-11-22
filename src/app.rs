@@ -8,7 +8,7 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    config::{Config, ConfigStore, Settings},
+    config::{Config, ConfigStore, RequestSettings, Settings},
     openrouter::OpenRouter,
     plugins::{Plugins, View as PluginView},
     station::Player,
@@ -17,6 +17,9 @@ use crate::{
 mod voice;
 
 pub(crate) use voice::VOICE_INSTRUCTIONS;
+
+const CHAT_INSTRUCTIONS: &str =
+    "You are Goodwin, a home assistant. Reply concisely in the user's language.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,8 +72,7 @@ struct Turn {
     id: u64,
     started: Instant,
     report: Report,
-    settings: Settings,
-    key: String,
+    request: RequestSettings,
 }
 
 #[derive(Clone, Serialize)]
@@ -104,6 +106,7 @@ pub struct App {
 #[derive(Serialize)]
 pub struct Snapshot {
     settings: Settings,
+    system_prompt: String,
     key_configured: bool,
     microphone: bool,
     model: bool,
@@ -136,10 +139,15 @@ impl App {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let (settings, key) = self.config.request_settings();
+        let RequestSettings {
+            settings,
+            key,
+            system_prompt,
+        } = self.config.request_settings();
         let runtime = self.runtime();
         Snapshot {
             settings,
+            system_prompt,
             key_configured: !key.is_empty(),
             microphone: runtime.microphone,
             model: runtime.model,
@@ -165,13 +173,13 @@ impl App {
                 turn.report.source,
                 turn.report.stage,
                 turn.started,
-                turn.settings.sensitivity,
+                turn.request.settings.sensitivity,
             )
         })
     }
 
     pub fn start(&self, source: Source) -> Result<u64, Failure> {
-        let (settings, key) = self.config.request_settings();
+        let request = self.config.request_settings();
         let mut runtime = self.runtime();
         if runtime.active.is_some() {
             return Err(Failure::Busy);
@@ -182,10 +190,10 @@ impl App {
         if matches!(source, Source::Wake | Source::WakeTest) && !runtime.model {
             return Err(Failure::Model);
         }
-        if source == Source::Wake && !settings.listening {
+        if source == Source::Wake && !request.settings.listening {
             return Err(Failure::Busy);
         }
-        if key.is_empty() && source != Source::Wake {
+        if request.key.is_empty() && source != Source::Wake {
             return Err(Failure::MissingKey);
         }
 
@@ -205,8 +213,7 @@ impl App {
                 timings: Vec::new(),
                 error: None,
             },
-            settings,
-            key,
+            request,
         });
         Ok(id)
     }
@@ -248,17 +255,22 @@ impl App {
         }
     }
 
-    fn credentials(&self, id: u64) -> Option<(String, Settings)> {
+    fn request_settings(&self, id: u64) -> Option<RequestSettings> {
         self.runtime()
             .active
             .as_ref()
             .filter(|turn| turn.id == id)
-            .map(|turn| (turn.key.clone(), turn.settings.clone()))
+            .map(|turn| turn.request.clone())
     }
 
     pub async fn chat(&self, id: u64, text: String) {
-        let Some((key, settings)) = self.credentials(id) else {
+        let Some(request) = self.request_settings(id) else {
             return;
+        };
+        let instructions = if request.system_prompt.is_empty() {
+            CHAT_INSTRUCTIONS
+        } else {
+            &request.system_prompt
         };
         let context: Vec<_> = self
             .runtime()
@@ -272,10 +284,10 @@ impl App {
         let error = match self
             .openrouter
             .reply(
-                &key,
-                &settings.models,
+                &request.key,
+                &request.settings.models,
                 &text,
-                "You are Goodwin, a home assistant. Reply concisely in the user's language.",
+                instructions,
                 context
                     .iter()
                     .rev()

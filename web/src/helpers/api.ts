@@ -23,6 +23,7 @@ export interface Message {
 
 export interface Snapshot {
   settings: Settings;
+  system_prompt: string;
   key_configured: boolean;
   microphone: boolean;
   model: boolean;

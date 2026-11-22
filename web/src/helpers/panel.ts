@@ -116,6 +116,8 @@ export function createPanel() {
     send: (message: string) => action(() => api("chat", "POST", { message })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),
     saveSettings: (settings: Settings, key?: string) => action(() => api("settings", "PUT", { settings, key })),
+    saveSystemPrompt: (systemPrompt: string) =>
+      action(() => api("settings/system-prompt", "PUT", { system_prompt: systemPrompt })),
     testStation: (mode: "manual" | "wake") => action(() => api("test", "POST", { mode })),
     uploadPlugin: (file: File) => action(() => api("plugin-packages", "POST", file)),
     removePlugin: (id: string) => action(() => api(`plugin-packages/${id}`, "DELETE")),

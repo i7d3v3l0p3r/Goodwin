@@ -88,6 +88,7 @@ fn setup(dir: PathBuf, mode: &str) -> Result<()> {
         access,
         settings: Settings::default(),
         key: String::new(),
+        system_prompt: String::new(),
     }
     .save(&dir, true)?;
     if mode == "password" {

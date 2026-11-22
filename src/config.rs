@@ -68,6 +68,8 @@ pub struct Config {
     pub settings: Settings,
     #[serde(default)]
     pub key: String,
+    #[serde(default)]
+    pub system_prompt: String,
 }
 
 impl Config {
@@ -80,6 +82,7 @@ impl Config {
             .context("Open config.json (run goodwin setup first)")?;
         let mut config: Self = serde_json::from_reader(file).context("Read config.json")?;
         config.settings.validate()?;
+        config.system_prompt = normalize_system_prompt(&config.system_prompt)?;
         Ok(config)
     }
 
@@ -109,6 +112,22 @@ impl Config {
     }
 }
 
+pub(crate) fn normalize_system_prompt(prompt: &str) -> Result<String> {
+    let prompt = prompt.trim().replace("\r\n", "\n").replace('\r', "\n");
+    ensure!(
+        prompt.encode_utf16().count() <= 4_000,
+        "System prompt exceeds 4,000 UTF-16 code units"
+    );
+    Ok(prompt)
+}
+
+#[derive(Clone)]
+pub(crate) struct RequestSettings {
+    pub settings: Settings,
+    pub key: String,
+    pub system_prompt: String,
+}
+
 pub(crate) struct ConfigStore {
     dir: PathBuf,
     current: Mutex<Config>,
@@ -128,9 +147,13 @@ impl ConfigStore {
         self.current.lock().expect("configuration mutex")
     }
 
-    pub(crate) fn request_settings(&self) -> (Settings, String) {
+    pub(crate) fn request_settings(&self) -> RequestSettings {
         let config = self.current();
-        (config.settings.clone(), config.key())
+        RequestSettings {
+            settings: config.settings.clone(),
+            key: config.key(),
+            system_prompt: config.system_prompt.clone(),
+        }
     }
 
     pub(crate) fn password_protected(&self) -> bool {
@@ -160,13 +183,22 @@ impl ConfigStore {
     }
 
     pub(crate) fn update_settings(&self, settings: Settings, key: Option<String>) -> Result<()> {
-        // Serialize the write so an update without a key uses the last committed key.
+        self.update(|draft| {
+            draft.settings = settings;
+            if let Some(key) = key {
+                draft.key = key;
+            }
+        })
+    }
+
+    pub(crate) fn update_system_prompt(&self, prompt: String) -> Result<()> {
+        self.update(|draft| draft.system_prompt = prompt)
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Config)) -> Result<()> {
         let _writer = self.writer.lock().expect("configuration writer mutex");
         let mut draft = self.current().clone();
-        draft.settings = settings;
-        if let Some(key) = key {
-            draft.key = key;
-        }
+        change(&mut draft);
         draft.save(&self.dir, false)?;
         *self.current() = draft;
         Ok(())

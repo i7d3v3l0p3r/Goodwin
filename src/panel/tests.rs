@@ -1,5 +1,5 @@
 use axum::http::{StatusCode, header};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::router;
 use crate::{
@@ -17,6 +17,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         access: Access::Open,
         settings: Settings::default(),
         key: String::new(),
+        system_prompt: String::new(),
     };
     let app = App::new(
         dir.path().into(),
@@ -64,5 +65,63 @@ async fn panel_serves_direct_navigation_to_settings() {
         response.json::<Value>().await.unwrap()["error"],
         "plugin_password_required"
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn panel_validates_persists_and_resets_the_system_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            key: String::new(),
+            system_prompt: String::new(),
+        },
+        OpenRouter::new().unwrap(),
+        Player::new(),
+    );
+    let (panel, task) = serve(router(app)).await;
+    let client = reqwest::Client::new();
+    let url = format!("{panel}/api/settings/system-prompt");
+
+    for (input, status, expected) in [
+        (
+            "  Говори на ты.\r\nНа вопросы отвечай спокойно.  ".into(),
+            StatusCode::NO_CONTENT,
+            "Говори на ты.\nНа вопросы отвечай спокойно.",
+        ),
+        (
+            "я".repeat(4_001),
+            StatusCode::BAD_REQUEST,
+            "Говори на ты.\nНа вопросы отвечай спокойно.",
+        ),
+        (" \t\n".into(), StatusCode::NO_CONTENT, ""),
+    ] {
+        let response = client
+            .put(&url)
+            .json(&json!({"system_prompt": input}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        if status == StatusCode::BAD_REQUEST {
+            assert_eq!(
+                response.json::<Value>().await.unwrap()["error"],
+                "invalid_system_prompt"
+            );
+        }
+        let state = client
+            .get(format!("{panel}/api/state"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert_eq!(state["system_prompt"], expected);
+        assert_eq!(Config::load(dir.path()).unwrap().system_prompt, expected);
+    }
     task.abort();
 }

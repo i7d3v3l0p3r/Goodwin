@@ -84,6 +84,8 @@ On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz 
 
 The text chat and push-button Station test work without a wake model. In Settings you can pause background detection, change sensitivity, test the speaker and microphone, and see timings for the last request. Pausing detection leaves the button test available. Goodwin keeps transcripts in the current conversation and does not save recordings or diagnostic transcripts to disk.
 
+Use **Settings → System prompt** to define Goodwin’s role, personality, and tone for both text and voice replies. Save the prompt to apply it to subsequent requests. Clear the field and save to restore the built-in instructions. Goodwin keeps the instructions for spoken output and voice plugin calls when a custom prompt is set.
+
 On a development computer, use the default loopback address.
 
 ```sh
