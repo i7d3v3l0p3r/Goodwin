@@ -62,7 +62,7 @@ To package the wake-word models shipped with Goodwin, use `python scripts/packag
 
 ## Publish a release
 
-Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, both plugin archives and the desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
+Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, the Timers plugin archive and the desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
 
 To start the workflow manually for an existing release tag, run `gh workflow run release.yml --ref v<version>`.
 

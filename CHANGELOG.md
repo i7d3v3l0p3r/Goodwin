@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.0] - 2026-11-23
+
+### English
+
+- The desktop installer for Windows, Linux and macOS finds prepared Yandex Station Mini 3 devices on the local network and installs or updates Goodwin. It verifies the downloaded package against `SHA256SUMS` and restores the previous installation if the updated service fails to start.
+- Set a custom system prompt in the web panel to guide how Goodwin responds in chat and by voice.
+- The Timers plugin now uses SolidJS for its panel interface. The Probe plugin is no longer shipped.
+
+See the [desktop installer guide](https://github.com/i7d3v3l0p3r/Goodwin/blob/v0.1.0/README.md#desktop-installer).
+
+### Русский
+
+- Установщик для Windows, Linux и macOS находит подготовленные Яндекс Станции Мини 3 в локальной сети и устанавливает или обновляет Goodwin. Он сверяет скачанный пакет с `SHA256SUMS` и восстанавливает предыдущую установку, если после обновления сервис не запускается.
+- В настройках веб-панели можно задать системный промпт для ответов Goodwin в чате и голосом.
+- Интерфейс плагина «Таймеры» переведён на SolidJS. Плагин Probe исключён из поставки.
+
+См. [инструкцию по работе с установщиком](https://github.com/i7d3v3l0p3r/Goodwin/blob/v0.1.0/README.md#desktop-installer) на английском.
+
 ## [0.0.1] - 2026-11-23
 
 ### English
