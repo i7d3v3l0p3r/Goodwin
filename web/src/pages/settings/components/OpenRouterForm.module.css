@@ -1,0 +1,58 @@
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 5px;
+  font-size: .9rem;
+  font-weight: 610;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: .86rem;
+  font-weight: 450;
+}
+
+.removeKey {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .87rem;
+  font-weight: 450;
+}
+
+.advanced { border-bottom: 1px solid var(--edge); }
+
+.advanced summary {
+  padding: 15px 3px;
+  cursor: pointer;
+  font-weight: 615;
+}
+
+.modelFields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 3px 3px 18px;
+}
+
+.modelFields label { align-content: start; }
+.modelFields output { color: var(--accent); }
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.saved {
+  color: var(--accent);
+  font-size: .86rem;
+}
+
+@media (max-width: 455px) {
+  .modelFields { grid-template-columns: 1fr; }
+}

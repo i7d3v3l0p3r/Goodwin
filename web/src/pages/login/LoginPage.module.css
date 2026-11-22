@@ -1,0 +1,26 @@
+.entry {
+  min-height: 100dvh;
+  display: grid;
+  align-content: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 22px;
+}
+
+.brand { margin-bottom: 4px; }
+
+.entry form {
+  display: grid;
+  gap: 14px;
+  width: min(290px, 100%);
+  max-width: 350px;
+}
+
+.entry label {
+  display: grid;
+  gap: 5px;
+  font-size: .9rem;
+  font-weight: 610;
+}
+
+.error { color: var(--danger); }

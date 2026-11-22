@@ -1,0 +1,11 @@
+{
+  "id": "timers",
+  "version": "0.1.4",
+  "title": { "en": "Timers", "ru": "Таймеры" },
+  "apiVersion": 1,
+  "web": {
+    "uiKitVersion": 1,
+    "entry": "ui/index.mjs",
+    "styles": ["ui/style.css"]
+  }
+}

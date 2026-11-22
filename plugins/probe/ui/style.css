@@ -1,0 +1,3 @@
+.probe-content { max-width: 28rem; }
+.probe-content p { color: var(--gw-color-muted); }
+.probe-content gw-button { justify-self: start; }

@@ -1,0 +1,147 @@
+.chat {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.threadScroll {
+  overflow: auto;
+  scrollbar-color: #bdd4c5 transparent;
+}
+
+.thread {
+  width: calc(100% - 56px);
+  max-width: 720px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 39px 0 25px;
+}
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 29px;
+}
+
+.message[data-from="user"] { justify-content: flex-end; }
+
+.messageContent {
+  min-width: 0;
+  max-width: min(540px, 88%);
+}
+
+.messageMeta {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 620;
+}
+
+.message p {
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message[data-from="user"] .messageMeta { text-align: end; }
+
+.message[data-from="user"] p {
+  padding: 10px 15px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--active);
+}
+
+.message[data-from="assistant"] .messageContent { padding-top: 1px; }
+
+.emptyChat {
+  min-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  text-align: center;
+}
+
+.emptyMark {
+  --mark-width: 43px;
+  --mark-height: 43px;
+  margin-bottom: 3px;
+}
+
+.emptyChat h2 {
+  font-size: 1.65rem;
+  font-weight: 710;
+  letter-spacing: -.035em;
+}
+
+.emptyChat p { color: var(--muted); }
+
+.composeArea {
+  padding: 13px 28px 24px;
+  background: var(--surface);
+}
+
+.compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  max-width: 720px;
+  margin: auto;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid #c7d9ce;
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: 0 4px 16px #163f2b0b;
+}
+
+.compose:focus-within { border-color: #508970; }
+
+.compose textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 35px;
+  max-height: 8rem;
+  padding: 7px 1px 4px;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  background: transparent;
+}
+
+.send {
+  --button-padding: 0;
+  --button-radius: 10px;
+  --button-disabled-background: #d9ebe0;
+  --button-disabled-color: #4a6d5b;
+  width: 39px;
+  height: 39px;
+  flex: 0 0 39px;
+}
+
+.error {
+  max-width: 720px;
+  margin: 0 auto 9px;
+  color: var(--danger);
+  font-size: .88rem;
+}
+
+@media (max-width: 650px) {
+  .thread {
+    width: calc(100% - 27px);
+    padding-top: 24px;
+  }
+
+  .message {
+    gap: 7px;
+    margin-bottom: 22px;
+  }
+
+  .messageMark {
+    --mark-width: 27px;
+    --mark-height: 29px;
+  }
+
+  .composeArea { padding: 8px 13px max(12px, env(safe-area-inset-bottom)); }
+}

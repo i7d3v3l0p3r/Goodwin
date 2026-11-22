@@ -1,0 +1,28 @@
+.settings {
+  min-height: 0;
+  overflow: auto;
+  padding: 37px max(24px, calc((100% - 720px) / 2)) 35px;
+}
+
+.settings > section {
+  padding: 19px 0;
+  border-bottom: 1px solid var(--edge);
+}
+
+.settings > section:first-child { padding-top: 0; }
+
+.settings > section > h2 {
+  margin-bottom: 8px;
+  font-size: 1.13rem;
+}
+
+.error {
+  max-width: 720px;
+  margin: 0 auto 9px;
+  color: var(--danger);
+  font-size: .88rem;
+}
+
+@media (max-width: 650px) {
+  .settings { padding: 18px 15px 25px; }
+}

@@ -1,0 +1,9 @@
+/docs/
+/target/
+/web/dist/
+/web/node_modules/
+/goodwin-data/
+/.env
+/datasets/
+.codex
+prototypes

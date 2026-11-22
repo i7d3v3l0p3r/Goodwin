@@ -1,0 +1,32 @@
+.note {
+  color: var(--muted);
+  font-size: .86rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.details { margin-top: 15px; }
+
+.details h3 {
+  margin: 0 0 4px;
+  font-size: .92rem;
+}
+
+.details dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  max-width: 370px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: .84rem;
+}
+
+.details dd { font-variant-numeric: tabular-nums; }
+.error { color: var(--danger); }

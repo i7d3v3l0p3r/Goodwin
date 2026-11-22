@@ -1,0 +1,6 @@
+.body {
+  overflow-y: auto;
+  padding: 26px clamp(14px, 4vw, 34px) 36px;
+}
+
+.error { color: var(--danger); }

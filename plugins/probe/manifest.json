@@ -1,0 +1,11 @@
+{
+  "id": "probe",
+  "version": "0.1.0",
+  "title": { "en": "Plugin check", "ru": "Проверка плагина" },
+  "apiVersion": 1,
+  "web": {
+    "uiKitVersion": 1,
+    "entry": "ui/index.mjs",
+    "styles": ["ui/style.css"]
+  }
+}
