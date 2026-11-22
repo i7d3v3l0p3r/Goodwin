@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust and Zig
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --target aarch64-unknown-linux-musl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set 1.100.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $zig = 'zig-x86_64-windows-0.17.1'
+          $archive = Join-Path $env:RUNNER_TEMP "$zig.zip"
+          Invoke-WebRequest "https://ziglang.org/download/0.17.1/$zig.zip" -OutFile $archive
+          $expected = 'b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e'
+          if ((Get-FileHash $archive).Hash -ne $expected) {
+            throw "Invalid Zig archive checksum."
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP
+          Join-Path $env:RUNNER_TEMP $zig | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Prepare release notes
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'goodwin').version
+          if ($env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Release tag must match the Goodwin version v$version."
+          }
+
+          $heading = [regex]::Escape("## [$version]")
+          $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw -Encoding utf8
+          $entry = [regex]::Match($changelog, "(?ms)^$heading[^\r\n]*\r?\n(.*?)(?=^## |\z)")
+          $notes = $entry.Groups[1].Value.Trim()
+          if (-not $notes) {
+            throw "No release notes for $version in CHANGELOG.md."
+          }
+          New-Item -ItemType Directory -Force target/release-assets | Out-Null
+          Set-Content -LiteralPath target/release-assets/release-notes.md -Value $notes -Encoding utf8NoBOM
+
+      - name: Build, test and package
+        run: |
+          ./scripts/build-station.ps1
+          cargo test --locked --workspace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx `
+            --encoders models --output target/release-assets/goodwin-mini3-aarch64.tar.gz
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item target/plugins/probe-linux-aarch64.tar.gz,target/plugins/timers-linux-aarch64.tar.gz `
+            -Destination target/release-assets
+
+          $checksums = Get-ChildItem -LiteralPath target/release-assets -Filter '*.tar.gz' |
+            Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+          Set-Content -LiteralPath target/release-assets/SHA256SUMS -Value (($checksums -join "`n") + "`n") `
+            -Encoding ascii -NoNewline
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-assets
+          path: target/release-assets/
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-assets
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          assets=(goodwin-mini3-aarch64.tar.gz probe-linux-aarch64.tar.gz timers-linux-aarch64.tar.gz SHA256SUMS)
+          sha256sum -c SHA256SUMS
+
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft); then
+            if [[ "$draft" == false ]]; then
+              gh release view "$tag" --json url --jq .url
+              exit 0
+            fi
+          else
+            gh release create "$tag" --verify-tag --draft --title "Goodwin $tag" --notes-file release-notes.md
+          fi
+
+          gh release upload "$tag" "${assets[@]}" --clobber
+          gh release edit "$tag" --draft=false --title "Goodwin $tag" --notes-file release-notes.md

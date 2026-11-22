@@ -4,6 +4,8 @@ Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`)
 
 The Station detects the wake word locally, sends the recording to OpenRouter for transcription, generation and speech synthesis, and plays the answer. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
+Download the Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
+
 ## Build
 
 Use Rust, Node.js 22.12+ or 24 LTS, and npm.
@@ -35,6 +37,12 @@ With the trained Standard and Micro models in `datasets/goodwin/training/`, run
 and the launcher in `target/goodwin-mini3-aarch64.tar.gz`.
 The packager takes `LICENSE` and `NOTICE` from the [extracted LiveKit encoders](#fine-tune-on-a-local-dataset) in
 `target/wakeword-v2/encoders/`. Pass `--encoders <directory>` if you extracted them elsewhere.
+
+To package the wake-word models shipped with Goodwin, use `python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx --encoders models`.
+
+## Publish a release
+
+Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push a `v<version>` tag on that commit. GitHub Actions builds the ARM64 Station package and both plugin archives, runs the workspace tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
 
 ## Run on the Station
 
