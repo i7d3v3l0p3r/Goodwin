@@ -48,12 +48,14 @@ export interface Report {
   source: "chat" | "wake" | "manual_test" | "wake_test";
   timings: { stage: Stage; ms: number }[];
   error: string | null;
+  message_id?: number;
 }
 
 export interface Message {
   id: number;
   role: "user" | "assistant";
   text: string;
+  error?: string;
 }
 
 export interface Snapshot {
@@ -65,6 +67,7 @@ export interface Snapshot {
   wake_model: WakeModel | null;
   active: Report | null;
   last: Report | null;
+  last_voice_test?: Report | null;
   messages: Message[];
   plugins: Plugin[];
 }

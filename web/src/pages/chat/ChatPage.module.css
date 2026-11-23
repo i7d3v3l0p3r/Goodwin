@@ -1,7 +1,9 @@
 @media (max-width: 650px) {
   .newChat {
-    --button-padding: 7px 5px;
-    min-width: 36px;
+    --button-padding: 0;
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
   }
 
   .newChat span { display: none; }

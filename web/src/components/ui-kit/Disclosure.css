@@ -1,0 +1,38 @@
+.gw-disclosure { min-width: 0; }
+
+.gw-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--gw-disclosure-height, 44px);
+  padding: 7px 2px;
+  border-radius: var(--gw-control-radius);
+  font-size: .94rem;
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  overflow-wrap: anywhere;
+}
+
+.gw-disclosure > summary::-webkit-details-marker { display: none; }
+.gw-disclosure > summary::after {
+  content: "";
+  flex: 0 0 8px;
+  height: 8px;
+  margin-inline: 5px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.gw-disclosure[open] > summary::after { transform: rotate(225deg); }
+.gw-disclosure > summary:active { background: var(--gw-color-pressed); }
+
+@media (hover: hover) and (pointer: fine) {
+  .gw-disclosure > summary:hover { background: var(--gw-color-hover); }
+}
+
+.gw-disclosure-label { display: grid; min-width: 0; gap: 2px; }
+.gw-disclosure-description { color: var(--gw-color-muted); font-size: .82rem; font-weight: 400; }

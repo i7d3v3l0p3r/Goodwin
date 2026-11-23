@@ -1,7 +1,8 @@
-import css from "./UiKit.module.css?inline";
+import buttonCss from "./Button.css?inline";
+import cardCss from "./UiKit.module.css?inline";
 
 const sheet = new CSSStyleSheet();
-sheet.replaceSync(css);
+sheet.replaceSync(buttonCss + "\n" + cardCss);
 
 function shadow(host: HTMLElement) {
   const root = host.attachShadow({ mode: "open" });
@@ -16,6 +17,7 @@ class GoodwinButton extends HTMLElement {
   constructor() {
     super();
     this.#button.type = "button";
+    this.#button.className = "gw-button";
     this.#button.append(document.createElement("slot"));
     shadow(this).append(this.#button);
   }

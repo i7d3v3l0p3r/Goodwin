@@ -1,4 +1,9 @@
 import "./style.css";
+import "./components/ui-kit/Button.css";
+import "./components/ui-kit/Fields.css";
+import "./components/ui-kit/Feedback.css";
+import "./components/ui-kit/Disclosure.css";
+import "./components/ui-kit/SaveActions.css";
 import "./components/ui-kit/register";
 
 import { render } from "@solidjs/web";

@@ -1,17 +1,24 @@
 .header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 17px;
   min-width: 0;
   padding: 0 31px;
   border-bottom: 1px solid var(--edge);
 }
 
 .header h1 {
+  min-width: 0;
   font-size: 1.05rem;
   font-weight: 680;
   letter-spacing: -.02em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .actions {
@@ -27,8 +34,12 @@
   gap: 7px;
   color: var(--muted);
   font-size: .86rem;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: min(33vw, 360px);
 }
+
+.status > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status[data-local-status] { visibility: hidden; }
 
 .status i {
   width: 7px;
@@ -73,14 +84,22 @@
 
 @media (max-width: 650px) {
   .header {
-    gap: 9px;
-    padding: 6px 13px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+    padding: 5px 13px 8px;
   }
 
-  .actions { gap: 7px; }
+  .actions {
+    grid-area: 1 / 2;
+    gap: 7px;
+  }
 
   .status {
+    grid-area: 2 / 1 / 3 / -1;
+    max-width: none;
     font-size: .76rem;
-    white-space: normal;
   }
+
+  .actions .microphone { width: 44px; min-height: 44px; touch-action: manipulation; }
+  .actions .microphone:active:not(:disabled) { background: var(--active); }
 }

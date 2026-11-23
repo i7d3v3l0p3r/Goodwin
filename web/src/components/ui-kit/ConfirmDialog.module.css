@@ -1,0 +1,27 @@
+.dialog {
+  width: min(100% - 32px, 420px);
+  max-height: calc(100dvh - 32px);
+  padding: 20px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--paper);
+  overscroll-behavior: contain;
+}
+
+.dialog::backdrop { background: rgb(23 40 32 / 38%); }
+.dialog h2 { font-size: 1.15rem; }
+.dialog > p { margin-top: 8px; overflow-wrap: anywhere; }
+.dialog > p[id] { color: var(--muted); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.actions button { min-height: 44px; touch-action: manipulation; }
+.actions .danger, .actions .danger:hover:not(:disabled) { background: var(--danger); }
+.actions .danger:active:not(:disabled) { background: #79291f; }

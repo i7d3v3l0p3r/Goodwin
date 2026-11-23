@@ -18,6 +18,8 @@ use crate::{
     wake_catalog::Selection,
 };
 
+#[cfg(test)]
+mod tests;
 mod voice;
 
 pub(crate) use voice::VOICE_INSTRUCTIONS;
@@ -71,6 +73,8 @@ pub struct Report {
     stage: Stage,
     timings: Vec<Timing>,
     error: Option<Failure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<u64>,
 }
 
 struct Turn {
@@ -96,6 +100,8 @@ pub struct Message {
     id: u64,
     role: &'static str,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Failure>,
 }
 
 #[derive(Default)]
@@ -105,6 +111,7 @@ struct Runtime {
     voice_turn: u64,
     active: Option<Turn>,
     last: Option<Report>,
+    last_voice_test: Option<Report>,
     microphone: bool,
     model: bool,
     wake_model: Option<Selection>,
@@ -133,6 +140,7 @@ pub struct Snapshot {
     wake_model: Option<Selection>,
     active: Option<Report>,
     last: Option<Report>,
+    last_voice_test: Option<Report>,
     messages: VecDeque<Message>,
     plugins: Vec<PluginView>,
 }
@@ -184,6 +192,7 @@ impl App {
             wake_model: runtime.wake_model.clone(),
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
+            last_voice_test: runtime.last_voice_test.clone(),
             messages: runtime.messages.clone(),
             plugins: self.plugins.catalog(),
         }
@@ -295,6 +304,7 @@ impl App {
                 stage,
                 timings: Vec::new(),
                 error: None,
+                message_id: None,
             },
             request,
             wake_word: runtime
@@ -333,6 +343,18 @@ impl App {
             if turn.report.stage == Stage::AwaitingWake {
                 self.wake_models.changed.notify_one();
             }
+            if let Some(id) = turn.report.message_id
+                && let Some(message) = runtime
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.id == id)
+            {
+                message.error = error;
+            }
+            if matches!(turn.report.source, Source::ManualTest | Source::WakeTest) {
+                runtime.last_voice_test = Some(turn.report.clone());
+            }
             runtime.last = Some(turn.report);
         }
     }
@@ -347,41 +369,31 @@ impl App {
     }
 
     fn push(&self, role: &'static str, text: String) {
-        let mut runtime = self.runtime();
-        runtime.next_message += 1;
-        let id = runtime.next_message;
-        runtime.messages.push_back(Message { id, role, text });
-        if runtime.messages.len() > 60 {
-            runtime.messages.pop_front();
-        }
-    }
-
-    fn request_settings(&self, id: u64) -> Option<RequestSettings> {
-        self.runtime()
-            .active
-            .as_ref()
-            .filter(|turn| turn.id == id)
-            .map(|turn| turn.request.clone())
+        self.runtime().push_message(role, text);
     }
 
     pub async fn chat(&self, id: u64, text: String) {
-        let Some(request) = self.request_settings(id) else {
-            return;
+        let (request, context) = {
+            let mut runtime = self.runtime();
+            let Some(turn) = runtime.active.as_ref().filter(|turn| turn.id == id) else {
+                return;
+            };
+            let request = turn.request.clone();
+            let context: Vec<_> = runtime.messages.iter().rev().take(12).cloned().collect();
+            let message_id = runtime.push_message("user", text.clone());
+            runtime
+                .active
+                .as_mut()
+                .expect("matching active turn")
+                .report
+                .message_id = Some(message_id);
+            (request, context)
         };
         let instructions = if request.system_prompt.is_empty() {
             CHAT_INSTRUCTIONS
         } else {
             &request.system_prompt
         };
-        let context: Vec<_> = self
-            .runtime()
-            .messages
-            .iter()
-            .rev()
-            .take(12)
-            .cloned()
-            .collect();
-        self.push("user", text.clone());
         let provider = match request
             .settings
             .assistant
@@ -411,6 +423,23 @@ impl App {
             Err(error) => Some(Provider::failure(error)),
         };
         self.finish(id, error);
+    }
+}
+
+impl Runtime {
+    fn push_message(&mut self, role: &'static str, text: String) -> u64 {
+        self.next_message += 1;
+        let id = self.next_message;
+        self.messages.push_back(Message {
+            id,
+            role,
+            text,
+            error: None,
+        });
+        if self.messages.len() > 60 {
+            self.messages.pop_front();
+        }
+        id
     }
 }
 

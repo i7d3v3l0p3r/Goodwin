@@ -10,3 +10,8 @@ export const settingsSections = [
 export function settingsSectionPath(section: typeof settingsSections[number]["id"]) {
   return `${settingsPath}/${section}` as const;
 }
+
+export function isSettingsPath(pathname: string) {
+  const path = pathname.replace(/\/$/, "");
+  return path === settingsPath || settingsSections.some(section => path === settingsSectionPath(section.id));
+}

@@ -1,62 +1,125 @@
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { SymbolMark } from "../../../components/Brand";
-import { Button } from "../../../components/Button";
+import { Button } from "../../../components/ui-kit/Button";
+import { InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { Icon } from "../../../components/icons";
 import type { Message, Snapshot } from "../../../helpers/api";
 import { errorLabel, type Words } from "../../../helpers/words";
+import { EmptyConversation } from "./EmptyConversation";
 import styles from "./Conversation.module.css";
 
-function ThreadMessage(props: { entry: Message; t: Words }) {
+function ThreadMessage(props: { entry: Message; t: Words; progress?: string }) {
   return <article class={styles.message} data-from={props.entry.role}>
     <Show when={props.entry.role === "assistant"}><SymbolMark class={styles.messageMark} /></Show>
     <div class={styles.messageContent}>
       <div class={styles.messageMeta}>{props.entry.role === "assistant" ? "Goodwin" : props.t.you}</div>
       <p>{props.entry.text}</p>
+      <Show when={props.progress || props.entry.error}>
+        <div class={styles.messageFeedback}>
+          <Show when={props.progress}><StatusIndicator tone="pending">{props.progress}</StatusIndicator></Show>
+          <Show when={props.entry.error}>
+            {code => <InlineError announce={false}>{errorLabel(props.t, code())}</InlineError>}
+          </Show>
+        </div>
+      </Show>
     </div>
   </article>;
 }
 
 export function Conversation(props: {
-  t: Words; snapshot?: Snapshot; disabled: boolean; error: string;
+  t: Words; snapshot?: Snapshot; reachable: boolean; disabled: boolean; error: string;
   send: (text: string) => Promise<boolean>;
 }) {
   const [draft, setDraft] = createSignal("");
+  const [sending, setSending] = createSignal(false);
+  const [unread, setUnread] = createSignal(false);
   let scroll!: HTMLDivElement;
-  const lastMessage = () => props.snapshot?.messages.at(-1)?.id;
+  let following = true;
   const messages = () => props.snapshot?.messages ?? [];
+  const lastId = createMemo(() => messages().at(-1)?.id);
+  const lastError = createMemo(() => messages().at(-1)?.error);
+  const request = () => props.snapshot?.active?.source === "chat" ? props.snapshot.active : undefined;
+  const progress = createMemo(() => {
+    const stage = request()?.stage;
+    return stage ? props.t.stages[stage] : undefined;
+  });
+  const awaitingMessage = () => request()?.message_id === undefined;
 
-  createEffect(lastMessage, () => {
-    requestAnimationFrame(() => { if (scroll?.isConnected) scroll.scrollTop = scroll.scrollHeight; });
+  function followLatest() {
+    following = true;
+    setUnread(false);
+    scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  function trackScroll() {
+    following = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 64;
+    if (following) setUnread(false);
+  }
+
+  createEffect(() => [lastId(), lastError(), progress(), sending()] as const, ([id, error], previous) => {
+    if (id === undefined) {
+      following = true;
+      setUnread(false);
+    }
+    const updated = id !== undefined && (id !== previous?.[0] || Boolean(error && error !== previous?.[1]));
+    if (!following) {
+      if (updated) setUnread(true);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      if (!scroll.isConnected) return;
+      if (following) followLatest();
+      else if (updated) setUnread(true);
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   async function send() {
     const text = draft().trim();
-    if (!text || props.disabled) return;
-    if (await props.send(text) && draft().trim() === text) setDraft("");
+    if (!text || props.disabled || sending()) return;
+    setSending(true);
+    try {
+      if (await props.send(text) && draft().trim() === text) setDraft("");
+    } finally {
+      setSending(false);
+    }
   }
 
   return <section class={styles.chat} aria-label={props.t.chat}>
-    <div class={styles.threadScroll} ref={scroll}>
-      <div class={styles.thread} role="log" aria-live="polite" aria-relevant="additions">
-        <Show when={messages().length} fallback={<div class={styles.emptyChat}>
-          <SymbolMark class={styles.emptyMark} />
-          <h2>{props.t.empty}</h2>
-          <p>{props.snapshot?.model && props.snapshot.microphone && props.snapshot.settings.listening
-            ? props.t.sayOrWrite(props.snapshot.wake_model?.wake_word ?? props.t.defaultWakeWord) : props.t.write}</p>
-        </div>}>
-          <For each={messages()} keyed={(entry) => entry.id}>{(entry) => <ThreadMessage entry={entry()} t={props.t} />}</For>
-        </Show>
+    <div class={styles.threadArea}>
+      <div class={styles.threadScroll} ref={scroll} tabindex={0} onScroll={trackScroll}>
+        <div class={styles.thread} role="log" aria-label={props.t.chatHistory} aria-relevant="additions">
+          <Show when={messages().length} fallback={<EmptyConversation t={props.t} snapshot={props.snapshot} reachable={props.reachable} />}>
+            <For each={messages()} keyed={entry => entry.id}>{entry =>
+              <ThreadMessage entry={entry()} t={props.t} progress={request()?.message_id === entry().id ? progress() : undefined} />
+            }</For>
+          </Show>
+        </div>
       </div>
+      <Show when={unread()}>
+        <Button class={styles.jump} type="button" onClick={() => {
+          followLatest();
+          scroll.focus({ preventScroll: true });
+        }}>{props.t.jumpToLatest}</Button>
+      </Show>
     </div>
     <div class={styles.composeArea}>
-      <Show when={props.error}><p class={styles.error} role="alert">{errorLabel(props.t, props.error)}</p></Show>
+      <div class={styles.composeFeedback} role="status">
+        <Show when={awaitingMessage() && (progress() || (sending() && props.t.sendingMessage))}>
+          {status => <StatusIndicator tone="pending">{status()}</StatusIndicator>}
+        </Show>
+      </div>
+      <Show when={props.error}>
+        <div class={styles.composeFeedback}><InlineError>{errorLabel(props.t, props.error)}</InlineError></div>
+      </Show>
       <form class={styles.compose} onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <textarea rows={1} maxlength={2000} aria-label={props.t.draft} placeholder={props.t.draft} value={draft()}
           onInput={(event) => setDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
           }} />
-        <Button variant="primary" type="submit" class={styles.send} aria-label={props.t.send} disabled={props.disabled || !draft().trim()}>
+        <Button variant="primary" type="submit" class={styles.send} aria-label={props.t.send}
+          disabled={props.disabled || sending() || !draft().trim()}>
           <Icon name="send" size={21} />
         </Button>
       </form>

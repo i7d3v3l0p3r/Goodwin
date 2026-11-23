@@ -1,0 +1,80 @@
+.gw-field { display: grid; min-width: 0; gap: 5px; }
+.gw-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gw-field-label {
+  min-width: 0;
+  color: var(--gw-color-text);
+  font-size: .9rem;
+  font-weight: 610;
+  overflow-wrap: anywhere;
+}
+.gw-field-hint, .gw-field-value { color: var(--gw-color-muted); font-size: .86rem; }
+.gw-field-value { font-variant-numeric: tabular-nums; }
+.gw-field-error { color: var(--gw-color-danger); font-size: .86rem; }
+
+.gw-control {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  color: var(--gw-color-text);
+}
+
+.gw-control:not([type="range"]) {
+  min-height: var(--gw-control-height);
+  padding: 7px 10px;
+  border: 1px solid var(--gw-color-control-border);
+  border-radius: var(--gw-control-radius);
+  background: var(--gw-color-paper);
+}
+
+textarea.gw-control { resize: vertical; }
+.gw-control[type="range"] { min-height: 28px; margin: 0; accent-color: var(--gw-color-accent); }
+.gw-control[aria-invalid="true"] { border-color: var(--gw-color-danger); }
+.gw-control:disabled { color: var(--gw-color-muted); background-color: var(--gw-color-surface); }
+
+.gw-switch {
+  display: grid;
+  flex: 0 0 44px;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--gw-control-radius);
+  background: transparent;
+  touch-action: manipulation;
+}
+
+.gw-switch-track {
+  display: flex;
+  align-items: center;
+  width: 36px;
+  height: 21px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--gw-color-control-border);
+}
+
+.gw-switch-track::before {
+  content: "";
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--gw-color-paper);
+}
+
+.gw-switch[aria-checked="true"] .gw-switch-track { background: var(--gw-color-accent); }
+.gw-switch[aria-checked="true"] .gw-switch-track::before { transform: translateX(15px); }
+.gw-switch:disabled { opacity: .6; }
+.gw-switch:active:not(:disabled) { background: var(--gw-color-pressed); }
+
+@media (hover: hover) and (pointer: fine) {
+  .gw-switch:hover:not(:disabled) { background: var(--gw-color-hover); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gw-switch:not(:focus-visible) .gw-switch-track::before { transition: transform 150ms var(--ease); }
+}
+
+@media (pointer: coarse) {
+  .gw-control:not([type="range"]) { min-height: 44px; }
+}

@@ -1,9 +1,11 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import { Icon } from "../../../components/icons";
+import { Button } from "../../../components/ui-kit/Button";
+import { Disclosure } from "../../../components/ui-kit/Disclosure";
+import { Field } from "../../../components/ui-kit/Field";
+import { Switch } from "../../../components/ui-kit/Switch";
 import { api, type Capability, type ModelCatalog, type Plugin } from "../../../helpers/api";
 import type { Language, Words } from "../../../helpers/words";
 import styles from "./AssistantForm.module.css";
-import switchStyles from "./WakeWordSettings.module.css";
 
 export interface StageDraft {
   provider: string;
@@ -53,7 +55,7 @@ export function PipelineStageForm(props: {
   createEffect(() => props.invalidParameters, invalid => {
     if (!invalid) return;
     stage.open = true;
-    if (parameters) {
+    if (parameters?.isConnected) {
       parameters.open = true;
       parameters.querySelector("textarea")?.focus();
     }
@@ -72,19 +74,12 @@ export function PipelineStageForm(props: {
   const providerLabel = () => current()?.title[props.language] ?? `${props.draft.provider} (${props.t.plugins.status.error})`;
   const modelLabel = () => models().find(model => model.id === props.draft.model)?.name || props.draft.model || defaultLabel();
 
-  return <details ref={stage} class={styles.stage} name="assistant-stages"
+  return <Disclosure ref={node => { stage = node; }} class={styles.stage} name="assistant-stages"
+    title={props.t[headings[props.capability]]} description={`${providerLabel()} · ${modelLabel()}`}
     onToggle={event => { if (event.currentTarget.open) setVisited(true); }}>
-    <summary class={styles.stageSummary}>
-      <span>
-        <strong>{props.t[headings[props.capability]]}</strong>
-        <small>{providerLabel()} · {modelLabel()}</small>
-      </span>
-      <Icon name="chevronDown" size={17} />
-    </summary>
     <div class={styles.stageFields}>
-      <label class={`${styles.field} ${styles.primaryField}`}>
-        {props.t.modelProvider}
-        <select value={props.draft.provider} onChange={event => {
+      <Field class={styles.primaryField} label={props.t.modelProvider}>
+        {control => <select {...control} value={props.draft.provider} onChange={event => {
           setManual(false);
           props.change({ provider: event.currentTarget.value, model: "", voice: "", speed: undefined, parameters: "" });
         }}>
@@ -94,13 +89,12 @@ export function PipelineStageForm(props: {
           <For each={providers()}>{plugin =>
             <option value={plugin.id} selected={plugin.id === props.draft.provider}>{plugin.title[props.language]}</option>
           }</For>
-        </select>
-      </label>
+        </select>}
+      </Field>
       <Show when={current() && !current()?.model_catalog}><p class={styles.note}>{props.t.providerUpdate}</p></Show>
       <Show when={current()?.model_catalog}>
-        <label class={`${styles.field} ${styles.primaryField}`}>
-          {props.t.modelName}
-          <select value={modelValue()} onChange={event => {
+        <Field class={styles.primaryField} label={props.t.modelName}>
+          {control => <select {...control} value={modelValue()} onChange={event => {
             const value = event.currentTarget.value;
             setManual(value === manualModel);
             if (value !== manualModel) edit("model", value ? value.slice(6) : "");
@@ -110,62 +104,50 @@ export function PipelineStageForm(props: {
               {model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id}
             </option>}</For>
             <option value={manualModel} selected={manualActive()}>{props.t.manualModel}</option>
-          </select>
-        </label>
+          </select>}
+        </Field>
         <Show when={loading()}><p class={styles.note} role="status">{props.t.modelCatalogLoading}</p></Show>
         <Show when={visited() && !loading() && !catalog()?.available}>
           <div class="gw-row">
             <p class={styles.note}>{props.t.modelCatalogMissing}</p>
-            <button type="button" class={styles.retry} onClick={() => setReloadCount(value => value + 1)}>{props.t.plugins.retry}</button>
+            <Button type="button" variant="quiet" onClick={() => setReloadCount(value => value + 1)}>{props.t.plugins.retry}</Button>
           </div>
         </Show>
         <Show when={manualActive()}>
-          <label class={styles.field}>
-            {props.t.modelId}
-            <input value={props.draft.model} required maxlength={256} onInput={event => edit("model", event.currentTarget.value)}
-              onInvalid={() => { stage.open = true; }} />
-          </label>
+          <Field label={props.t.modelId}>
+            {control => <input {...control} value={props.draft.model} required maxlength={256}
+              onInput={event => edit("model", event.currentTarget.value)} onInvalid={() => { stage.open = true; }} />}
+          </Field>
         </Show>
         <Show when={props.capability === "speech"}>
-          <label class={styles.field}>
-            {props.t.voice}
-            <input list={voiceList()} value={props.draft.voice} maxlength={256} onInput={event => edit("voice", event.currentTarget.value)} />
-            <datalist id={voiceList()}><For each={voices()}>{voice => <option value={voice} />}</For></datalist>
-          </label>
-          <div class={styles.field}>
-            <label for="speech-speed" class={styles.rangeLabel}>
-              {props.t.speechSpeed}
-              <output aria-hidden="true">{speedLabel()}</output>
-            </label>
-            <input id="speech-speed" class={styles.range} type="range" min={speechSpeed.min} max={speechSpeed.max}
-              step={speechSpeed.step} value={speed()} aria-valuetext={speedLabel()} aria-describedby="speech-speed-hint"
-              onInput={event => props.change({ speed: event.currentTarget.valueAsNumber })} />
-            <p id="speech-speed-hint" class={styles.note}>{props.t.speechSpeedHint}</p>
-          </div>
+          <Field label={props.t.voice}>
+            {control => <>
+              <input {...control} list={voiceList()} value={props.draft.voice} maxlength={256}
+                onInput={event => edit("voice", event.currentTarget.value)} />
+              <datalist id={voiceList()}><For each={voices()}>{voice => <option value={voice} />}</For></datalist>
+            </>}
+          </Field>
+          <Field id="speech-speed" label={props.t.speechSpeed} hint={props.t.speechSpeedHint} valueLabel={speedLabel()}>
+            {control => <input {...control} type="range" min={speechSpeed.min} max={speechSpeed.max}
+              step={speechSpeed.step} value={speed()} aria-valuetext={speedLabel()}
+              onInput={event => props.change({ speed: event.currentTarget.valueAsNumber })} />}
+          </Field>
         </Show>
-        <details ref={node => { parameters = node; }} class={styles.parameters}>
-          <summary>{props.t.modelParameters}</summary>
-          <textarea aria-label={`${props.t.modelParameters} · ${props.t[headings[props.capability]]}`}
-            placeholder={"{ }"} value={props.draft.parameters} maxlength={2048} rows={3} spellcheck={false}
-            aria-invalid={props.invalidParameters ? "true" : undefined} onInput={event => edit("parameters", event.currentTarget.value)} />
-          <Show when={props.invalidParameters}><p role="alert" class={styles.error}>{props.t.badModelParameters}</p></Show>
-        </details>
+        <Disclosure ref={node => { parameters = node; }} title={props.t.modelParameters}>
+          <Field label={`${props.t.modelParameters} · ${props.t[headings[props.capability]]}`} hideLabel
+            error={props.invalidParameters ? props.t.badModelParameters : undefined}>
+            {control => <textarea {...control} class={[control.class, styles.parametersInput]}
+              placeholder={"{ }"} value={props.draft.parameters} maxlength={2048} rows={3} spellcheck={false}
+              onInput={event => edit("parameters", event.currentTarget.value)} />}
+          </Field>
+        </Disclosure>
       </Show>
       <Show when={props.capability === "speech"}>
-        <div class={styles.field}>
-          <div class={styles.rangeLabel}>
-            <span id="speech-streaming-label">{props.t.speechStreaming}</span>
-            <button type="button" role="switch" class={switchStyles.listeningSwitch} aria-labelledby="speech-streaming-label"
-              aria-describedby="speech-streaming-hint" aria-checked={streamingAvailable() && props.draft.streaming !== false ? "true" : "false"}
-              disabled={!streamingAvailable()} onClick={() => props.change({ streaming: props.draft.streaming === false })}>
-              <span />
-            </button>
-          </div>
-          <p id="speech-streaming-hint" class={styles.note}>
-            {streamingAvailable() ? props.t.speechStreamingHint : props.t.speechStreamingUnavailable}
-          </p>
-        </div>
+        <Switch label={props.t.speechStreaming}
+          hint={streamingAvailable() ? props.t.speechStreamingHint : props.t.speechStreamingUnavailable}
+          checked={streamingAvailable() && props.draft.streaming !== false}
+          disabled={!streamingAvailable()} onChange={streaming => props.change({ streaming })} />
       </Show>
     </div>
-  </details>;
+  </Disclosure>;
 }

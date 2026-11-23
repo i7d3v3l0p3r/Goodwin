@@ -77,4 +77,16 @@ For a Solid page, set `web.solidRuntimeVersion` to `1` and export the page compo
 
 The component receives `pageId`, `language`, `request(path, method, body)` for your API, and `navigate(pagePath)` for declared pages as props. Use `onCleanup` to release timers and other resources when the panel unmounts the page. A prebuilt `.mjs` entry can also export `mount(container, context)` and return its own cleanup function.
 
-The panel provides `gw-button` with `variant="primary"` and `disabled`, `gw-card`, the `.gw-row` and `.gw-stack` utilities, and `--gw-color-*`, `--gw-space-*`, and `--gw-radius` CSS variables. Scope your styles to your page. The web module runs on the panel's origin with the current session, and the executable runs with the Goodwin service account's OS permissions.
+The panel provides `gw-button` with `variant="primary"` and `disabled`, `gw-card`, the `.gw-row` and `.gw-stack` utilities, and `--gw-color-*`, `--gw-space-*`, and `--gw-radius` CSS variables.
+
+Use `.gw-button` on a native button and set `data-variant="primary"` for the primary action or `data-variant="quiet"` for a low-emphasis action. Set `type="submit"` on the native button for forms. The `gw-button` element continues to act as a regular action button.
+
+Use `.gw-field` to group a label and control, `.gw-field-label` for the label text, and `.gw-control` on a text or number input, select, textarea, or range. Use `.gw-field-hint` and `.gw-field-error` for text linked by `aria-describedby` and mark invalid controls with `aria-invalid="true"`. For an on/off control, use a native `button type="button"` with `.gw-switch`, `role="switch"`, an accessible name, and `aria-checked`. Add a decorative `.gw-switch-track` span inside the button.
+
+Use `.gw-status` with `data-tone="pending"`, `"success"`, or `"error"` and a readable status label. Use `.gw-inline-error` for error text and `.gw-empty-state` for a confirmed empty result. To announce changes, put loading or empty text in a persistent `role="status"` region and use `role="alert"` for newly reported errors.
+
+Use `.gw-disclosure` on a native `details` element with a `summary` to group collapsible content. Use `.gw-save-actions` around the native submit button and a `.gw-save-status` element with `role="status"` for progress and save results.
+
+Plugin pages can use `--gw-page-content-width` with a fallback for their own centered content. The host gives plugin pages the full available width.
+
+Scope your plugin styles to your page. The web module runs on the panel's origin with the current session, and the executable runs with the Goodwin service account's OS permissions.

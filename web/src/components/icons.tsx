@@ -4,6 +4,8 @@ import ArrowRight from "@lucide/solid/icons/arrow-right";
 import ArrowUp from "@lucide/solid/icons/arrow-up";
 import ChevronDown from "@lucide/solid/icons/chevron-down";
 import ChevronRight from "@lucide/solid/icons/chevron-right";
+import Ellipsis from "@lucide/solid/icons/ellipsis";
+import Menu from "@lucide/solid/icons/menu";
 import MessageSquareText from "@lucide/solid/icons/message-square-text";
 import Mic from "@lucide/solid/icons/mic";
 import MicOff from "@lucide/solid/icons/mic-off";
@@ -12,6 +14,7 @@ import Plug from "@lucide/solid/icons/plug";
 import Plus from "@lucide/solid/icons/plus";
 import Settings from "@lucide/solid/icons/settings";
 import Sparkles from "@lucide/solid/icons/sparkles";
+import X from "@lucide/solid/icons/x";
 import { Dynamic } from "@solidjs/web";
 
 const icons = {
@@ -29,6 +32,9 @@ const icons = {
   arrowRight: ArrowRight,
   chevronRight: ChevronRight,
   chevronDown: ChevronDown,
+  menu: Menu,
+  more: Ellipsis,
+  close: X,
 };
 
 export function Icon(props: { name: keyof typeof icons; size?: number }) {

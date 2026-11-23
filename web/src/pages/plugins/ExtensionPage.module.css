@@ -1,6 +1,3 @@
-.body {
-  overflow-y: auto;
-  padding: 26px clamp(14px, 4vw, 34px) 36px;
-}
+section.body { display: block; }
 
 .error { color: var(--danger); }

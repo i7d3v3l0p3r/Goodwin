@@ -2,25 +2,17 @@
   min-height: 100dvh;
   display: grid;
   align-content: center;
+  grid-template-columns: minmax(0, 350px);
   justify-content: center;
-  gap: 16px;
+  gap: 12px;
   padding: 22px;
 }
 
 .brand { margin-bottom: 4px; }
+.entry h1 { font-size: 1.5rem; line-height: 1.2; letter-spacing: -.02em; }
+.note { color: var(--muted); font-size: .92rem; }
 
 .entry form {
   display: grid;
   gap: 14px;
-  width: min(290px, 100%);
-  max-width: 350px;
 }
-
-.entry label {
-  display: grid;
-  gap: 5px;
-  font-size: .9rem;
-  font-weight: 610;
-}
-
-.error { color: var(--danger); }

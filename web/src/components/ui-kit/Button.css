@@ -1,0 +1,61 @@
+.gw-button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: var(--gw-control-height);
+  padding: var(--button-padding, 7px 12px);
+  border: 1px solid var(--gw-color-border);
+  border-radius: var(--button-radius, var(--gw-control-radius));
+  font: inherit;
+  font-size: .88rem;
+  font-weight: 620;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  color: var(--gw-color-text);
+  background: var(--gw-color-paper);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.gw-button[data-variant="primary"] {
+  border-color: transparent;
+  color: #fff;
+  background: var(--gw-color-accent);
+}
+
+.gw-button[data-variant="quiet"] {
+  border-color: transparent;
+  color: var(--gw-color-accent);
+  background: transparent;
+}
+
+.gw-button:focus-visible {
+  outline: 2px solid var(--gw-color-accent);
+  outline-offset: 3px;
+}
+
+.gw-button:disabled {
+  color: var(--gw-color-muted);
+  cursor: default;
+}
+
+.gw-button[data-variant="primary"]:disabled {
+  color: var(--button-disabled-color, #fff);
+  background: var(--button-disabled-background, var(--gw-color-accent));
+  opacity: .65;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .gw-button:hover:not(:disabled) { background: var(--gw-color-hover); }
+  .gw-button[data-variant="primary"]:hover:not(:disabled) { background: var(--gw-color-accent-hover); }
+}
+
+.gw-button:active:not(:disabled) { background: var(--gw-color-pressed); }
+.gw-button[data-variant="primary"]:active:not(:disabled) { background: var(--gw-color-accent-hover); }
+
+@media (pointer: coarse) {
+  .gw-button { min-height: 44px; }
+}

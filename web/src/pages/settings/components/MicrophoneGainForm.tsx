@@ -1,7 +1,9 @@
 import { createMemo, createSignal, Show } from "solid-js";
-import { Button } from "../../../components/Button";
+import { Button } from "../../../components/ui-kit/Button";
 import type { Settings, Snapshot } from "../../../helpers/api";
+import { protectDraft } from "../../../helpers/drafts";
 import type { Words } from "../../../helpers/words";
+import { isSettingsPath } from "../sections";
 import styles from "./MicrophoneGainForm.module.css";
 
 export function MicrophoneGainForm(props: {
@@ -14,10 +16,20 @@ export function MicrophoneGainForm(props: {
   const transcriptionGain = createMemo(() => props.snapshot.settings.transcription_gain);
   const [saved, setSaved] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
+  const [edited, setEdited] = createSignal({ wake_gain: false, transcription_gain: false });
+  const dirty = () => edited().wake_gain || edited().transcription_gain;
+  protectDraft(dirty, isSettingsPath);
 
   function clearStatus() {
     setSaved(false);
     setFailed(false);
+  }
+
+  function edit(field: keyof ReturnType<typeof edited>, input: HTMLInputElement) {
+    const saved = props.snapshot.settings[field];
+    const value = input.value === "" ? null : input.valueAsNumber;
+    setEdited(previous => ({ ...previous, [field]: input.validity.badInput || value !== saved }));
+    clearStatus();
   }
 
   async function save(event: SubmitEvent & { currentTarget: HTMLFormElement }) {
@@ -34,6 +46,7 @@ export function MicrophoneGainForm(props: {
       wake_gain: gain("wake_gain"),
       transcription_gain: gain("transcription_gain"),
     });
+    if (ok) setEdited({ wake_gain: false, transcription_gain: false });
     setSaved(ok);
     setFailed(!ok);
   }
@@ -46,14 +59,14 @@ export function MicrophoneGainForm(props: {
           {props.t.wakeGain}
           <input type="number" inputmode="decimal" name="wake_gain" min={0.1} max={64} step="any"
             value={wakeGain() ?? ""} placeholder={String(props.snapshot.default_microphone_gain)}
-            aria-describedby="wake-gain-hint" onInput={clearStatus} />
+            aria-describedby="wake-gain-hint" onInput={event => edit("wake_gain", event.currentTarget)} />
           <span id="wake-gain-hint" class={styles.hint}>{props.t.defaultGainHint}</span>
         </label>
         <label class={styles.field}>
           {props.t.transcriptionGain}
           <input type="number" inputmode="decimal" name="transcription_gain" min={0.1} max={64} step="any"
             value={transcriptionGain() ?? ""} placeholder={props.t.automaticGain}
-            aria-describedby="transcription-gain-hint" onInput={clearStatus} />
+            aria-describedby="transcription-gain-hint" onInput={event => edit("transcription_gain", event.currentTarget)} />
           <span id="transcription-gain-hint" class={styles.hint}>{props.t.automaticGainHint}</span>
         </label>
       </fieldset>
@@ -61,6 +74,7 @@ export function MicrophoneGainForm(props: {
         <Button variant="primary" type="submit" disabled={props.pending}>{props.t.save}</Button>
         <Show when={saved()}><span class={styles.saved} role="status">{props.t.saved}</span></Show>
         <Show when={failed()}><span class={styles.error} role="alert">{props.t.errors.save_failed}</span></Show>
+        <Show when={dirty() && !failed()}><span class={styles.hint}>{props.t.unsaved}</span></Show>
       </div>
     </form>
   </section>;

@@ -16,9 +16,29 @@
 
 .sidebar > .brand { margin: 0 10px 30px; }
 
-.navigation {
+.desktopNavigation {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.navigation, .extensions {
   display: grid;
+  align-content: start;
   gap: 4px;
+}
+
+.navigation {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+}
+
+.extensions {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--edge);
 }
 
 .navigation a {
@@ -32,32 +52,36 @@
   font-size: .93rem;
   font-weight: 510;
   text-decoration: none;
+  touch-action: manipulation;
 }
 
-.navigation a:hover {
-  background: #e3efe6;
-  color: var(--text);
+.navigation a span { min-width: 0; overflow-wrap: anywhere; }
+.navigation a:active { background: var(--active); }
+
+@media (hover: hover) and (pointer: fine) {
+  .navigation a:hover { background: var(--active-soft); color: var(--text); }
 }
 
-.navigation a[data-current] {
+.navigation a[aria-current] {
   background: var(--active);
   color: var(--accent);
   font-weight: 640;
 }
 
-.navigation a:last-child { margin-top: 9px; }
-
 .main {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 65px minmax(0, 1fr);
+  grid-template-rows: minmax(65px, auto) minmax(0, 1fr);
 }
 
 .logout {
   align-self: flex-start;
   margin: auto 10px 0;
+  flex-shrink: 0;
 }
+
+.sidebar .menuButton, .menu { display: none; }
 
 @media (max-width: 650px) {
   .shell {
@@ -66,9 +90,10 @@
   }
 
   .sidebar {
-    flex-flow: row wrap;
+    flex-flow: row nowrap;
     align-items: center;
-    gap: 5px 9px;
+    justify-content: space-between;
+    gap: 10px;
     padding: 6px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--edge);
@@ -77,28 +102,75 @@
   .sidebar > .brand {
     --mark-width: 27px;
     gap: 4px;
-    margin: 0 auto 0 0;
+    margin: 0;
     font-size: 1.03rem;
   }
 
-  .navigation {
+  .desktopNavigation { display: none; }
+
+  .sidebar .menuButton, .menuHeader .menuClose {
     display: flex;
-    flex-wrap: wrap;
+    --button-padding: 0;
+    width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
   }
+
+  .sidebar .menuButton:active, .menuHeader .menuClose:active, .menuLogout:active { background: var(--active); }
+
+  .menu[open] {
+    position: fixed;
+    inset: 8px 12px auto auto;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    width: min(370px, 100% - 24px);
+    max-height: calc(100dvh - 16px);
+    margin: 0;
+    padding: 8px;
+    overflow: hidden;
+    border: 1px solid var(--edge);
+    border-radius: 14px;
+    color: var(--text);
+    background: var(--paper);
+  }
+
+  .menu::backdrop { background: rgb(23 40 32 / 38%); }
+
+  .menuHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px;
+  }
+
+  .menuHeader h2 { font-size: 1rem; }
 
   .navigation a {
-    gap: 5px;
-    min-height: 36px;
-    padding: 6px 8px;
-    font-size: .82rem;
+    gap: 10px;
+    min-height: 44px;
+    font-size: .93rem;
   }
 
-  .navigation a:last-child, .logout { margin: 0; }
-
-  .navigation svg {
-    width: 16px;
-    height: 16px;
+  .menu .menuLogout {
+    justify-self: start;
+    min-height: 44px;
+    margin: 8px 4px 4px;
+    touch-action: manipulation;
   }
 
   .main { grid-template-rows: minmax(51px, auto) minmax(0, 1fr); }
 }
+.skip {
+  position: fixed;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--accent);
+}
+
+.skip:not(:focus) { clip-path: inset(50%); }
+.main:focus-visible { outline-offset: -2px; }

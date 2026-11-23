@@ -1,11 +1,12 @@
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
 
 const copy = {
   en: {
     minutes: "Minutes", seconds: "Seconds", name: "Name (optional)", start: "Start timer",
     active: "Active", completed: "Completed", unnamed: "Timer", cancel: "Cancel",
-    empty: "No active timers.", failed: "Could not reach the timer plugin.",
+    loading: "Loading timers…", empty: "No active timers.", failed: "Could not reach the timer plugin.",
     errors: {
       invalid_timer_duration: "Enter a duration between one second and seven days.",
       invalid_timer_name: "Enter a name of up to 64 characters.",
@@ -16,7 +17,7 @@ const copy = {
   ru: {
     minutes: "Минуты", seconds: "Секунды", name: "Имя (необязательно)", start: "Поставить таймер",
     active: "Активные", completed: "Завершённые", unnamed: "Таймер", cancel: "Отменить",
-    empty: "Активных таймеров нет.", failed: "Не удалось обратиться к плагину таймеров.",
+    loading: "Загружаем таймеры…", empty: "Активных таймеров нет.", failed: "Не удалось обратиться к плагину таймеров.",
     errors: {
       invalid_timer_duration: "Укажите длительность от одной секунды до семи дней.",
       invalid_timer_name: "Введите имя длиной до 64 символов.",
@@ -38,8 +39,7 @@ interface TimerSnapshot {
   timers: Timer[];
 }
 
-function countdown(ms: number) {
-  const total = Math.max(0, Math.ceil(ms / 1000));
+function countdown(total: number) {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor(total / 60) % 60;
   const seconds = String(total % 60).padStart(2, "0");
@@ -49,18 +49,19 @@ function countdown(ms: number) {
 export default function TimersPage({ language, request }: PluginContext) {
   const text = copy[language];
   const formatter = new Intl.DateTimeFormat(language, { dateStyle: "short", timeStyle: "short" });
-  const [timers, setTimers] = createSignal<Timer[]>([]);
+  const [timers, setTimers] = createSignal<Timer[]>();
   const [now, setNow] = createSignal(0);
-  const [error, setError] = createSignal("");
+  const [connectionFailed, setConnectionFailed] = createSignal(false);
+  const [operationError, setOperationError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
-  const active = createMemo(() => timers().filter(timer => !timer.completed));
-  const completed = createMemo(() => timers().filter(timer => timer.completed).sort((a, b) => b.expiresAt - a.expiresAt));
-  let form!: HTMLFormElement;
+  const active = createMemo(() => timers()?.filter(timer => !timer.completed) ?? []);
+  const completed = createMemo(() => timers()?.filter(timer => timer.completed).sort((a, b) => b.expiresAt - a.expiresAt) ?? []);
   let nameInput!: HTMLInputElement;
   let clockOffset = 0;
   let changing = false;
   let stopped = false;
   let generation = 0;
+  let poll = 0;
 
   async function refresh() {
     const version = ++generation;
@@ -70,9 +71,15 @@ export default function TimersPage({ language, request }: PluginContext) {
       clockOffset = snapshot.now - performance.now();
       setNow(snapshot.now);
       setTimers(snapshot.timers);
+      setConnectionFailed(false);
     } catch {
-      if (!stopped && generation === version) setError(text.failed);
+      if (!stopped && generation === version) setConnectionFailed(true);
     }
+  }
+
+  async function pollTimers() {
+    if (!changing) await refresh();
+    if (!stopped) poll = window.setTimeout(pollTimers, 1500);
   }
 
   async function change(operation: () => Promise<unknown>) {
@@ -80,7 +87,7 @@ export default function TimersPage({ language, request }: PluginContext) {
     changing = true;
     generation++;
     setBusy(true);
-    setError("");
+    setOperationError("");
     try {
       await operation();
       if (stopped) return false;
@@ -89,10 +96,11 @@ export default function TimersPage({ language, request }: PluginContext) {
     } catch (reason) {
       if (!stopped) {
         const code = reason instanceof Error && "code" in reason ? reason.code : undefined;
-        const message = typeof code === "string" && Object.hasOwn(text.errors, code)
-          ? text.errors[code as keyof typeof text.errors]
-          : text.failed;
-        setError(message);
+        if (typeof code === "string" && Object.hasOwn(text.errors, code)) {
+          setOperationError(text.errors[code as keyof typeof text.errors]);
+        } else {
+          setConnectionFailed(true);
+        }
       }
       return false;
     } finally {
@@ -101,64 +109,75 @@ export default function TimersPage({ language, request }: PluginContext) {
     }
   }
 
-  async function submit(event: SubmitEvent) {
+  async function submit(event: SubmitEvent & { currentTarget: HTMLFormElement }) {
     event.preventDefault();
-    const data = new FormData(form);
+    const data = new FormData(event.currentTarget);
     const seconds = Number(data.get("minutes")) * 60 + Number(data.get("seconds"));
-    if (await change(() => request("/timers", "POST", { seconds, name: nameInput.value.trim() }))) {
+    const name = String(data.get("name") ?? "");
+    if (await change(() => request("/timers", "POST", { seconds, name: name.trim() })) && nameInput.value === name) {
       nameInput.value = "";
     }
   }
 
   const clock = window.setInterval(() => setNow(performance.now() + clockOffset), 250);
-  const poll = window.setInterval(() => { if (!changing) void refresh(); }, 1500);
   onCleanup(() => {
     stopped = true;
     window.clearInterval(clock);
-    window.clearInterval(poll);
+    window.clearTimeout(poll);
   });
-  void refresh();
+  void pollTimers();
 
   return (
     <div class="timers-page gw-stack">
       <gw-card>
-        <form ref={form} onSubmit={event => void submit(event)}>
-          <label>
-            <span>{text.minutes}</span>
-            <input name="minutes" type="number" min={0} max={10080} step={1} value="5" />
+        <form onSubmit={event => void submit(event)}>
+          <label class="gw-field timer-duration">
+            <span class="gw-field-label">{text.minutes}</span>
+            <input class="gw-control" name="minutes" type="number" min={0} max={10080} step={1} value="5" />
           </label>
-          <label>
-            <span>{text.seconds}</span>
-            <input name="seconds" type="number" min={0} max={59} step={1} value="0" />
+          <label class="gw-field timer-duration">
+            <span class="gw-field-label">{text.seconds}</span>
+            <input class="gw-control" name="seconds" type="number" min={0} max={59} step={1} value="0" />
           </label>
-          <label>
-            <span>{text.name}</span>
-            <input ref={nameInput} type="text" maxlength={64} />
+          <label class="gw-field timer-name">
+            <span class="gw-field-label">{text.name}</span>
+            <input class="gw-control" ref={nameInput} name="name" type="text" maxlength={64} />
           </label>
-          <gw-button variant="primary" disabled={busy()} onClick={() => form.requestSubmit()}>
+          <button class="gw-button" data-variant="primary" type="submit" disabled={busy()}>
             {text.start}
-          </gw-button>
+          </button>
         </form>
       </gw-card>
-      <Show when={error()}>
-        <p class="timers-error" role="alert">{error()}</p>
-      </Show>
+      <Show when={operationError()}><InlineError>{operationError()}</InlineError></Show>
       <section>
         <h2>{text.active}</h2>
-        <ul>
-          <For each={active()} keyed={timer => timer.id}>
-            {timer => (
-              <li>
-                <span>{timer().name || text.unnamed}</span>
-                <time>{countdown(timer().expiresAt - now())}</time>
-                <gw-button onClick={() => void change(() => request(`/timers/${timer().id}`, "DELETE"))}>
-                  {text.cancel}
-                </gw-button>
-              </li>
-            )}
-          </For>
-        </ul>
-        <Show when={active().length === 0}><p>{text.empty}</p></Show>
+        <Show when={connectionFailed()}>
+          <div class="timer-list-error"><InlineError>{text.failed}</InlineError></div>
+        </Show>
+        <div class="timer-list-status" role="status">
+          <Show when={!connectionFailed()}>
+            <Show when={timers()} fallback={<StatusIndicator tone="pending">{text.loading}</StatusIndicator>}>
+              <Show when={active().length === 0}><EmptyState>{text.empty}</EmptyState></Show>
+            </Show>
+          </Show>
+        </div>
+        <Show when={active().length}>
+          <ul>
+            <For each={active()} keyed={timer => timer.id}>
+              {timer => {
+                const remaining = createMemo(() => Math.max(0, Math.ceil((timer().expiresAt - now()) / 1000)));
+                return <li class="timer-active">
+                  <span>{timer().name || text.unnamed}</span>
+                  <time datetime={`PT${remaining()}S`}>{countdown(remaining())}</time>
+                  <button class="gw-button" type="button" disabled={busy()}
+                    onClick={() => void change(() => request(`/timers/${timer().id}`, "DELETE"))}>
+                    {text.cancel}
+                  </button>
+                </li>;
+              }}
+            </For>
+          </ul>
+        </Show>
       </section>
       <Show when={completed().length > 0}>
         <section>
@@ -166,7 +185,7 @@ export default function TimersPage({ language, request }: PluginContext) {
           <ul>
             <For each={completed()} keyed={timer => timer.id}>
               {timer => (
-                <li>
+                <li class="timer-completed">
                   <span>{timer().name || text.unnamed}</span>
                   <time datetime={new Date(timer().expiresAt).toISOString()}>{formatter.format(timer().expiresAt)}</time>
                 </li>

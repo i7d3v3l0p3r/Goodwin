@@ -1,0 +1,52 @@
+.gw-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: .82rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.gw-status::before {
+  content: "";
+  flex: 0 0 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.gw-status[data-tone="pending"] {
+  color: var(--gw-color-pending);
+  background: var(--gw-color-pending-surface);
+}
+
+.gw-status[data-tone="success"] {
+  color: var(--gw-color-accent);
+  background: var(--gw-color-pressed);
+}
+
+.gw-status[data-tone="error"], .gw-inline-error {
+  color: var(--gw-color-danger);
+  background: var(--gw-color-danger-surface);
+}
+
+.gw-inline-error {
+  padding: 8px 12px;
+  border-inline-start: 2px solid var(--gw-color-danger);
+  border-radius: var(--gw-control-radius);
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}
+
+.gw-empty-state {
+  padding: 14px 16px;
+  border: 1px dashed var(--gw-color-border);
+  border-radius: var(--gw-radius);
+  color: var(--gw-color-muted);
+  background: var(--gw-color-paper);
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}

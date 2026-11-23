@@ -1,6 +1,6 @@
 {
   "id": "timers",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "title": { "en": "Timers", "ru": "Таймеры" },
   "apiVersion": 1,
   "web": {

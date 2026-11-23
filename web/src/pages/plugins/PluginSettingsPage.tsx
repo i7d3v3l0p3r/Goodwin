@@ -1,9 +1,15 @@
 import { useParams } from "@solidjs/router";
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { Button } from "../../components/Button";
+import { Button } from "../../components/ui-kit/Button";
+import { Disclosure } from "../../components/ui-kit/Disclosure";
+import { InlineError } from "../../components/ui-kit/Feedback";
+import { Field } from "../../components/ui-kit/Field";
+import { SaveActions } from "../../components/ui-kit/SaveActions";
 import { PageHeader } from "../../components/PageHeader";
 import { api, ApiError, type PluginSettings } from "../../helpers/api";
+import { protectDraft } from "../../helpers/drafts";
 import { usePanel } from "../../helpers/panel";
+import { pluginSettingsPath } from "../../helpers/plugins";
 import { errorLabel } from "../../helpers/words";
 import { ExtensionPage } from "./ExtensionPage";
 import styles from "./PluginSettingsPage.module.css";
@@ -33,7 +39,18 @@ function PluginSettingsPage() {
   const [busy, setBusy] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
   const [error, setError] = createSignal("");
+  const dirty = () => {
+    const settings = snapshot();
+    return removed().size > 0 || Boolean(settings?.fields.some(({ id }) =>
+      (draft()[id] ?? "") !== String(settings.values[id] ?? "")));
+  };
+  protectDraft(dirty, pathname => pathname.replace(/\/$/, "") === pluginSettingsPath(params.id));
   let generation = 0;
+  let fieldsDisclosure: HTMLDetailsElement;
+
+  function revealFields() {
+    fieldsDisclosure.open = true;
+  }
 
   function populate(settings: PluginSettings) {
     setSnapshot(settings);
@@ -123,14 +140,14 @@ function PluginSettingsPage() {
 
   return <>
     <PageHeader title={plugin()?.title[panel.language()] ?? panel.t().settings} />
-    <section class={styles.body} aria-label={panel.t().settings}>
+    <section class={["gw-page", styles.body]} aria-label={panel.t().settings}>
       <a class={styles.link} href="/plugins">{words().back}</a>
       <Show when={plugin()?.status === "error"}>
         <p class={styles.description}>{errorLabel(panel.t(), "plugin_unavailable")}</p>
       </Show>
       <Show when={!snapshot()}>
         <Show when={error()} fallback={<p role="status">{words().settingsLoading}</p>}>
-          <p role="alert" class={styles.error}>{message()}</p>
+          <InlineError>{message()}</InlineError>
           <Show when={error() !== "plugin_not_found"}>
             <Button type="button" onClick={() => void load(params.id)}>{words().retry}</Button>
           </Show>
@@ -138,62 +155,57 @@ function PluginSettingsPage() {
       </Show>
       <Show when={snapshot()}>
         {settings => <form onSubmit={event => { event.preventDefault(); void save(settings(), event.currentTarget); }}>
-          <fieldset class={styles.fields} disabled={busy()}>
-            <For each={settings().fields} keyed={field => field.id}>{field => {
-              const id = field().id;
-              const secretSaved = () => settings().configuredSecrets.includes(id);
-              const clearing = () => removed().has(id);
-              const descriptionId = `plugin-field-${id}-description`;
-              return <div class={styles.field}>
-                <label for={`plugin-field-${id}`}>{field().label[panel.language()]}</label>
-                <Switch>
-                  <Match when={field().type === "boolean"}>
-                    <select id={`plugin-field-${id}`} name={id} value={draft()[id] ?? ""}
-                      aria-describedby={descriptionId} required={field().required}
-                      onChange={event => edit(id, event.currentTarget.value)}>
-                      <option value="" selected={!draft()[id]}>{words().unset}</option>
-                      <option value="true" selected={draft()[id] === "true"}>{words().yes}</option>
-                      <option value="false" selected={draft()[id] === "false"}>{words().no}</option>
-                    </select>
-                  </Match>
-                  <Match when={field().type === "secret"}>
-                    <input id={`plugin-field-${id}`} name={id} type="password" autocomplete="new-password"
-                      aria-describedby={descriptionId} maxlength={field().maxLength ?? 512}
-                      required={field().required && !secretSaved()} disabled={clearing()}
-                      value={draft()[id] ?? ""}
-                      placeholder={secretSaved() ? words().replaceSecret : undefined}
-                      onInput={event => edit(id, event.currentTarget.value)} />
-                    <Show when={secretSaved() && !field().required}>
-                      <label class={styles.remove}>
-                        <input type="checkbox" checked={clearing()}
-                          onChange={event => removeSecret(id, event.currentTarget.checked)} />
-                        {words().removeSecret}
-                      </label>
-                    </Show>
-                  </Match>
-                  <Match when={true}>
-                    <input id={`plugin-field-${id}`} name={id}
-                      type={field().type === "integer" ? "number" : field().type}
-                      step={field().type === "integer" ? 1 : undefined}
-                      min={field().type === "integer" ? -Number.MAX_SAFE_INTEGER : undefined}
-                      max={field().type === "integer" ? Number.MAX_SAFE_INTEGER : undefined}
-                      aria-describedby={descriptionId} required={field().required}
-                      maxlength={field().maxLength ?? (field().type === "url" ? 2048 : 1024)}
-                      value={draft()[id] ?? ""} onInput={event => edit(id, event.currentTarget.value)} />
-                  </Match>
-                </Switch>
-                <div id={descriptionId} class={styles.description}>
-                  <Show when={field().description}>{description => <p>{description()[panel.language()]}</p>}</Show>
-                  <Show when={field().type === "secret" && secretSaved()}><p>{words().secretSaved}</p></Show>
-                </div>
-              </div>;
-            }}</For>
-          </fieldset>
-          <div class="gw-row">
-            <Button type="submit" variant="primary" disabled={busy()}>{panel.t().save}</Button>
-            <Show when={saved()}><span role="status" class={styles.saved}>{panel.t().saved}</span></Show>
-          </div>
-          <Show when={error()}><p role="alert" class={styles.error}>{message()}</p></Show>
+          <Disclosure title={words().settingsFields} class={styles.disclosure} open ref={node => { fieldsDisclosure = node; }}>
+            <fieldset class={styles.fields} disabled={busy()}>
+              <For each={settings().fields} keyed={field => field.id}>{field => {
+                const id = field().id;
+                const secretSaved = () => settings().configuredSecrets.includes(id);
+                const clearing = () => removed().has(id);
+                const hint = () => [field().description?.[panel.language()],
+                  field().type === "secret" && secretSaved() && words().secretSaved].filter(Boolean).join(" ");
+                return <Field id={`plugin-field-${id}`} label={field().label[panel.language()]} hint={hint()}>
+                  {control => <Switch>
+                    <Match when={field().type === "boolean"}>
+                      <select {...control} name={id} value={draft()[id] ?? ""}
+                        required={field().required}
+                        onChange={event => edit(id, event.currentTarget.value)} onInvalid={revealFields}>
+                        <option value="" selected={!draft()[id]}>{words().unset}</option>
+                        <option value="true" selected={draft()[id] === "true"}>{words().yes}</option>
+                        <option value="false" selected={draft()[id] === "false"}>{words().no}</option>
+                      </select>
+                    </Match>
+                    <Match when={field().type === "secret"}>
+                      <input {...control} name={id} type="password" autocomplete="new-password"
+                        maxlength={field().maxLength ?? 512}
+                        required={field().required && !secretSaved()} disabled={clearing()}
+                        value={draft()[id] ?? ""}
+                        placeholder={secretSaved() ? words().replaceSecret : undefined}
+                        onInput={event => edit(id, event.currentTarget.value)} onInvalid={revealFields} />
+                      <Show when={secretSaved() && !field().required}>
+                        <label class={styles.remove}>
+                          <input type="checkbox" checked={clearing()}
+                            onChange={event => removeSecret(id, event.currentTarget.checked)} />
+                          {words().removeSecret}
+                        </label>
+                      </Show>
+                    </Match>
+                    <Match when={true}>
+                      <input {...control} name={id}
+                        type={field().type === "integer" ? "number" : field().type}
+                        step={field().type === "integer" ? 1 : undefined}
+                        min={field().type === "integer" ? -Number.MAX_SAFE_INTEGER : undefined}
+                        max={field().type === "integer" ? Number.MAX_SAFE_INTEGER : undefined}
+                        required={field().required}
+                        maxlength={field().maxLength ?? (field().type === "url" ? 2048 : 1024)}
+                        value={draft()[id] ?? ""} onInput={event => edit(id, event.currentTarget.value)} onInvalid={revealFields} />
+                    </Match>
+                  </Switch>}
+                </Field>;
+              }}</For>
+            </fieldset>
+          </Disclosure>
+          <SaveActions labels={panel.t()} dirty={dirty()} saving={busy()} saved={saved()} />
+          <Show when={error()}><InlineError>{message()}</InlineError></Show>
         </form>}
       </Show>
     </section>

@@ -1,0 +1,9 @@
+.gw-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.gw-save-status { color: var(--gw-color-muted); font-size: .86rem; }
+.gw-save-status[data-saved="true"] { color: var(--gw-color-accent); }

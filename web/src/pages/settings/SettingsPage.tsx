@@ -8,7 +8,7 @@ import { AssistantForm } from "./components/AssistantForm";
 import { WakeWordSettings } from "./components/WakeWordSettings";
 import { MicrophoneGainForm } from "./components/MicrophoneGainForm";
 import { SystemPromptForm } from "./components/SystemPromptForm";
-import { VoiceCheck } from "./components/VoiceCheck";
+import { isVoiceTest, VoiceCheck } from "./components/VoiceCheck";
 import { settingsPath, settingsSectionPath, settingsSections } from "./sections";
 import styles from "./SettingsPage.module.css";
 
@@ -31,8 +31,9 @@ export function SettingsPage() {
   });
 
   return <>
-    <PageHeader title={panel.t().settings} />
-    <div ref={body} class={styles.settings}>
+    <PageHeader title={panel.t().settings}
+      showRequestStatus={active()?.id !== "diagnostics" || !isVoiceTest(panel.snapshot()?.active)} />
+    <div ref={body} class="gw-page">
       <nav aria-label={panel.t().settings} hidden={!!active()}>
         <For each={settingsSections}>{section =>
           <a id={`settings-link-${section.id}`} class={styles.destination} href={settingsSectionPath(section.id)}>
@@ -55,7 +56,7 @@ export function SettingsPage() {
             <WakeWordSettings t={panel.t()} listening={state().settings.listening} sensitivity={state().settings.sensitivity}
               visible={active()?.id === "activation"} currentModel={state().wake_model} modelLoaded={state().model}
               refresh={panel.refresh}
-              changeSensitivity={sensitivity => void panel.saveSettings({ ...state().settings, sensitivity })}
+              changeSensitivity={sensitivity => panel.saveSettings({ ...state().settings, sensitivity }, { showError: false })}
               pending={pending()} toggleListening={() => {
                 const settings = state().settings;
                 void panel.saveSettings({ ...settings, listening: !settings.listening });
@@ -72,7 +73,8 @@ export function SettingsPage() {
               pending={pending()} save={panel.saveSystemPrompt} />
           </>}</Show>}
           {section.id === "diagnostics" && <Show when={panel.snapshot()}>{state =>
-            <VoiceCheck t={panel.t()} snapshot={state()} disabled={panel.busy() || pending()} test={panel.testStation} />
+            <VoiceCheck t={panel.t()} language={panel.language()} snapshot={state()} reachable={panel.reachable()}
+              pending={panel.pending()} test={panel.testStation} />
           }</Show>}
           {section.id === "panel" && <div class={styles.group}>
             <label class={styles.language}>

@@ -1,11 +1,11 @@
 import { Show, type ParentProps } from "solid-js";
 import { usePanel } from "../helpers/panel";
 import { errorLabel } from "../helpers/words";
-import { Button } from "./Button";
+import { Button } from "./ui-kit/Button";
 import { Icon } from "./icons";
 import styles from "./PageHeader.module.css";
 
-export function PageHeader(props: ParentProps<{ title: string }>) {
+export function PageHeader(props: ParentProps<{ title: string; showRequestStatus?: boolean }>) {
   const panel = usePanel();
   const muted = () => panel.snapshot()?.settings.microphone_muted === true;
   const paused = () => {
@@ -14,9 +14,12 @@ export function PageHeader(props: ParentProps<{ title: string }>) {
   };
 
   return <header class={styles.header}>
-    <h1>{props.title}</h1>
+    <h1 title={props.title}>{props.title}</h1>
+    <span class={styles.status} role="status" data-paused={String(paused())} title={panel.status()}
+      data-local-status={props.showRequestStatus === false && panel.reachable() ? "" : undefined}>
+      <i aria-hidden="true" /><span>{panel.status()}</span>
+    </span>
     <div class={styles.actions}>
-      <span class={styles.status} role="status" data-paused={String(paused())}><i /><span>{panel.status()}</span></span>
       {props.children}
       <div class={styles.microphoneControl}>
         <Button type="button" class={styles.microphone} aria-label={panel.t().muteMicrophone}

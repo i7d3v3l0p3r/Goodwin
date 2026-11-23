@@ -1,7 +1,10 @@
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import { Button } from "../../../components/Button";
+import { createEffect, createSignal, For, Show } from "solid-js";
+import { Button } from "../../../components/ui-kit/Button";
+import { Switch } from "../../../components/ui-kit/Switch";
 import { api, ApiError, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
+import { protectDraft } from "../../../helpers/drafts";
 import { errorLabel, type Words } from "../../../helpers/words";
+import { isSettingsPath } from "../sections";
 import styles from "./WakeWordSettings.module.css";
 
 export function WakeWordSettings(props: {
@@ -14,10 +17,10 @@ export function WakeWordSettings(props: {
   pending: boolean;
   refresh: () => Promise<void>;
   toggleListening: () => void;
-  changeSensitivity: (value: number) => void;
+  changeSensitivity: (value: number) => Promise<boolean>;
 }) {
-  const savedSensitivity = createMemo(() => props.sensitivity);
-  const [sensitivity, setSensitivity] = createSignal(savedSensitivity);
+  const [preview, setPreview] = createSignal<number>();
+  const [failedSensitivity, setFailedSensitivity] = createSignal<number>();
   const [catalog, setCatalog] = createSignal<WakeModelCatalog>();
   const [id, setId] = createSignal("");
   const [loading, setLoading] = createSignal(false);
@@ -27,6 +30,21 @@ export function WakeWordSettings(props: {
   const [error, setError] = createSignal<string>();
   const selected = () => catalog()?.models.find(model => model.id === id());
   const modelLabel = (model: WakeModel) => `${model.wake_word} · ${model.tier === "micro" ? "Micro" : "Standard"}`;
+  const sensitivity = () => preview() ?? props.sensitivity;
+  const canInstall = () => Boolean(selected() && (!props.modelLoaded || selected()?.sha256 !== props.currentModel?.sha256));
+  protectDraft(() => !installing() && canInstall(), isSettingsPath);
+
+  async function saveSensitivity(value: number) {
+    setFailedSensitivity(undefined);
+    if (value === props.sensitivity) {
+      setPreview(undefined);
+      return;
+    }
+    setPreview(value);
+    const saved = await props.changeSensitivity(value);
+    setPreview(undefined);
+    if (!saved) setFailedSensitivity(value);
+  }
 
   async function loadCatalog() {
     if (loading()) return;
@@ -68,21 +86,25 @@ export function WakeWordSettings(props: {
 
   return <section aria-labelledby="wake-word-title">
     <h3 id="wake-word-title">{props.t.wakeWord}</h3>
-    <div class={styles.row}>
-      <span id="listening-label">{props.t.listening(props.currentModel?.wake_word ?? props.t.defaultWakeWord)}</span>
-      <button type="button" role="switch" class={styles.listeningSwitch} aria-labelledby="listening-label"
-        aria-checked={props.listening ? "true" : "false"} disabled={props.pending}
-        onClick={props.toggleListening}>
-        <span />
-      </button>
-    </div>
+    <Switch label={props.t.listening(props.currentModel?.wake_word ?? props.t.defaultWakeWord)}
+      checked={props.listening} disabled={props.pending} onChange={props.toggleListening} />
     <label class={styles.sensitivity} for="sensitivity">
       <span>{props.t.sensitivity} <output aria-hidden="true">{Math.round(sensitivity() * 100)}%</output></span>
       <input id="sensitivity" type="range" min={0} max={1} step={0.01} value={sensitivity()} disabled={props.pending}
+        aria-describedby={failedSensitivity() !== undefined ? "sensitivity-error" : undefined}
         aria-valuetext={`${Math.round(sensitivity() * 100)}%`}
-        onInput={event => setSensitivity(event.currentTarget.valueAsNumber)}
-        onChange={event => props.changeSensitivity(event.currentTarget.valueAsNumber)} />
+        onInput={event => { setPreview(event.currentTarget.valueAsNumber); setFailedSensitivity(undefined); }}
+        onChange={event => void saveSensitivity(event.currentTarget.valueAsNumber)} />
     </label>
+    <Show when={failedSensitivity() !== undefined}>
+      <div class={styles.modelActions}>
+        <p id="sensitivity-error" class={styles.modelError} role="alert">{props.t.sensitivitySaveFailed}</p>
+        <Button type="button" disabled={props.pending} onClick={() => {
+          const value = failedSensitivity();
+          if (value !== undefined) void saveSensitivity(value);
+        }}>{props.t.retryWakeCatalog}</Button>
+      </div>
+    </Show>
     <form class={styles.modelForm} onSubmit={event => void install(event)}>
       <label for="wake-model">{props.t.wakeModel}</label>
       <p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
@@ -96,8 +118,7 @@ export function WakeWordSettings(props: {
         }</For>
       </select>
       <div class={styles.modelActions}>
-        <Button variant="primary" type="submit" disabled={installing() || loading() || props.pending || !selected()
-          || (props.modelLoaded && selected()?.sha256 === props.currentModel?.sha256)}>
+        <Button variant="primary" type="submit" disabled={installing() || loading() || props.pending || !canInstall()}>
           {installing() ? props.t.installingWakeModel : props.t.installWakeModel}
         </Button>
         <Show when={catalogFailed()}>

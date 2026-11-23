@@ -4,9 +4,26 @@
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
+.threadArea {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
 .threadScroll {
   overflow: auto;
   scrollbar-color: #bdd4c5 transparent;
+}
+
+.threadScroll:focus-visible { outline-offset: -3px; }
+
+.threadArea .jump {
+  position: absolute;
+  inset: auto auto 10px 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 26px);
+  box-shadow: 0 3px 12px #163f2b19;
 }
 
 .thread {
@@ -38,7 +55,7 @@
   font-weight: 620;
 }
 
-.message p {
+.messageContent > p {
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -46,11 +63,13 @@
 
 .message[data-from="user"] .messageMeta { text-align: end; }
 
-.message[data-from="user"] p {
+.message[data-from="user"] .messageContent > p {
   padding: 10px 15px;
   border-radius: 14px 14px 4px 14px;
   background: var(--active);
 }
+
+.messageFeedback { display: grid; justify-items: end; gap: 6px; margin-top: 7px; }
 
 .message[data-from="assistant"] .messageContent { padding-top: 1px; }
 
@@ -77,6 +96,7 @@
 }
 
 .emptyChat p { color: var(--muted); }
+.setupAction { margin-top: 5px; }
 
 .composeArea {
   padding: 13px 28px 24px;
@@ -115,16 +135,14 @@
   --button-radius: 10px;
   --button-disabled-background: #d9ebe0;
   --button-disabled-color: #4a6d5b;
-  width: 39px;
-  height: 39px;
-  flex: 0 0 39px;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
 }
 
-.error {
+.composeFeedback:not(:empty) {
   max-width: 720px;
   margin: 0 auto 9px;
-  color: var(--danger);
-  font-size: .88rem;
 }
 
 @media (max-width: 650px) {

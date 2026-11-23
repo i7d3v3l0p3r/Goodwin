@@ -1,8 +1,10 @@
-import { createSignal, Show } from "solid-js";
-import { Button } from "../../../components/Button";
-import { Icon } from "../../../components/icons";
+import { createSignal } from "solid-js";
+import { Disclosure } from "../../../components/ui-kit/Disclosure";
+import { Field } from "../../../components/ui-kit/Field";
+import { SaveActions } from "../../../components/ui-kit/SaveActions";
+import { protectDraft } from "../../../helpers/drafts";
 import type { Words } from "../../../helpers/words";
-import styles from "./SystemPromptForm.module.css";
+import { isSettingsPath } from "../sections";
 
 export function SystemPromptForm(props: {
   t: Words;
@@ -14,7 +16,9 @@ export function SystemPromptForm(props: {
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
   const prompt = () => draft() ?? props.systemPrompt;
-  const canSave = () => !saving() && !props.pending && prompt() !== props.systemPrompt;
+  const dirty = () => prompt() !== props.systemPrompt;
+  const canSave = () => !saving() && !props.pending && dirty();
+  protectDraft(dirty, isSettingsPath);
 
   async function save() {
     if (!canSave()) return;
@@ -30,18 +34,15 @@ export function SystemPromptForm(props: {
     }
   }
 
-  return <details class={styles.prompt}>
-    <summary class={styles.summary}>{props.t.systemPrompt}<Icon name="chevronDown" size={17} /></summary>
-    <form class={styles.form} onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <label for="system-prompt" class={styles.hint}>{props.t.systemPromptHint}</label>
-      <textarea id="system-prompt" rows={5} maxlength={4000}
-        placeholder={props.t.systemPromptExample} value={prompt()} readonly={saving()}
-        onInput={(event) => { setDraft(event.currentTarget.value); setSaved(false); }} />
-      <div class={styles.actions}>
-        <Button variant="primary" type="submit" disabled={!canSave()}>{props.t.savePrompt}</Button>
-        <Show when={saved()}><span role="status" class={styles.saved}>{props.t.saved}</span></Show>
-        <Show when={!saved() && prompt() !== props.systemPrompt}><span class={styles.hint}>{props.t.unsaved}</span></Show>
-      </div>
+  return <Disclosure title={props.t.systemPrompt}>
+    <form class="gw-stack" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+      <Field id="system-prompt" label={props.t.systemPrompt} hideLabel hint={props.t.systemPromptHint}>
+        {control => <textarea {...control} rows={5} maxlength={4000}
+          placeholder={props.t.systemPromptExample} value={prompt()} readonly={saving()}
+          onInput={event => { setDraft(event.currentTarget.value); setSaved(false); }} />}
+      </Field>
+      <SaveActions labels={props.t} label={props.t.savePrompt} dirty={dirty()} saving={saving()} saved={saved()}
+        disabled={!canSave()} />
     </form>
-  </details>;
+  </Disclosure>;
 }

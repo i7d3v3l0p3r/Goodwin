@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin-timers"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "goodwin-plugin",

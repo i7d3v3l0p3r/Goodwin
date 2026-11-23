@@ -2,8 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-24
+
 ### English
 
+- First-run password setup shows its requirements and field errors. An empty chat offers a link to install, choose, or configure a provider when setup is needed.
+- Settings, Plugins, and Timers use aligned content widths. Plugin rows put opening and configuring first, with removal in the actions menu. Active timers show a larger countdown.
+- Chat keeps your place while you read earlier messages and offers a jump to the latest reply. Waiting and response errors appear beside the message they belong to.
+- Station diagnostics show the current voice test, its stages, and the latest completed test. The test result stays visible after unrelated chat or voice requests.
+- Assistant and plugin settings use shared disclosures and save controls with progress and result messages. Plugin removal asks for confirmation in a dialog that names the package and shows any removal error.
+- Timers and Plugins use shared status, error, and empty states. Timers show a loading status until the first response and clear connection errors when polling succeeds again.
+- Assistant settings and Timers share button and field styles. The assistant and wake-word settings share the same switches, and pressing Enter in the timer form starts the timer.
+- The panel asks before clearing the chat or leaving unsaved settings. On mobile, plugin pages are listed in a scrollable navigation menu, and long titles and status messages fit beside the microphone controls.
+- If saving wake-word sensitivity fails, the panel restores the saved value and offers to retry next to the slider.
 - Mute or unmute Goodwin’s microphone from any page in the web panel. Muting stops active recording and blocks wake-word listening and voice tests. Goodwin remembers the setting after a restart.
 - The web panel uses Lucide icons for navigation, chat, and settings.
 - Choose a wake-word model from Goodwin-wakeword during installation or switch models without restarting in **Settings → Activation and microphone**. The panel confirms the change once the detector is using the new model. The Station package contains the service and launcher. Updates keep the selected model by default.
@@ -20,6 +31,15 @@
 
 ### Русский
 
+- При первом запуске требования к паролю и ошибки видны у полей. Если для чата нужен провайдер, пустой экран ведёт к установке, выбору или настройке.
+- Настройки, плагины и таймеры выровнены по общей ширине. В строках плагинов на виду действия «Открыть» и «Настроить», а удаление находится в меню. У активных таймеров выделен отсчёт.
+- Чат сохраняет позицию при чтении истории и предлагает перейти к последним сообщениям. Ожидание ответа и ошибки видны рядом с сообщением, к которому относятся.
+- Проверка колонки показывает ход и этапы голосового теста. Результат последней проверки остаётся на экране после других текстовых и голосовых запросов.
+- В настройках ассистента и плагинов используются общие раскрывающиеся секции и кнопки с состоянием сохранения. Диалог удаления называет плагин и показывает ошибку, если удалить пакет не удалось.
+- В таймерах и списке плагинов используются общие статусы, ошибки и пустые состояния. Таймеры показывают загрузку до первого ответа и убирают ошибку связи после успешного обновления.
+- В настройках ассистента и таймерах используются общие кнопки и поля. В настройках ассистента и активации появились единые переключатели, а таймер можно запустить клавишей Enter в форме.
+- Веб-панель запрашивает подтверждение перед очисткой чата или выходом из настроек с несохранёнными изменениями. На телефоне страницы плагинов собраны в прокручиваемом меню, а длинные заголовки и статусы помещаются рядом с управлением микрофоном.
+- Если сохранить чувствительность активации не удалось, панель возвращает сохранённое значение и предлагает повторить попытку рядом с ползунком.
 - Включайте и отключайте микрофон Гудвина с любой страницы веб-панели. Отключение прерывает запись, поиск слова активации и голосовые тесты. Настройка сохраняется после перезапуска.
 - В навигации, чате и настройках веб-панели используются иконки Lucide.
 - Выбирайте модель активации из каталога Goodwin-wakeword при установке или меняйте её без перезапуска в разделе **Настройки → Активация и микрофон**. Панель подтверждает смену, когда детектор уже использует новую модель. Пакет для Станции содержит сервис и скрипт запуска. При обновлении выбранная модель сохраняется по умолчанию.

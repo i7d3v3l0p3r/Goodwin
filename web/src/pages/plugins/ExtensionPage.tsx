@@ -48,10 +48,10 @@ export function ExtensionPage() {
   return <>
     <PageHeader title={selection()?.page.title[panel.language()] ?? panel.t().plugins.title}>
       <Show when={selection()?.plugin.has_settings && selection()?.plugin}>
-        {plugin => <PluginSettingsLink plugin={plugin()} />}
+        {plugin => <PluginSettingsLink plugin={plugin()} quiet />}
       </Show>
     </PageHeader>
-    <section class={styles.body}>
+    <section class={["gw-page", styles.body]}>
       <div ref={setContainer} hidden={!selection()} />
       <Show when={!selection()}><p>{panel.snapshot() ? panel.t().plugins.missing : panel.t().plugins.loading}</p></Show>
       <Show when={error()}><p class={styles.error} role="alert">{panel.t().plugins.loadError}</p></Show>

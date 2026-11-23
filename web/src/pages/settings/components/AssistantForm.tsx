@@ -1,7 +1,9 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
-import { Button } from "../../../components/Button";
+import { createMemo, createSignal, For } from "solid-js";
+import { SaveActions } from "../../../components/ui-kit/SaveActions";
 import type { Capability, PipelineStage, Snapshot, Settings } from "../../../helpers/api";
+import { protectDraft } from "../../../helpers/drafts";
 import type { Language, Words } from "../../../helpers/words";
+import { isSettingsPath } from "../sections";
 import { PipelineStageForm, speechSpeed, type StageDraft } from "./PipelineStageForm";
 import styles from "./AssistantForm.module.css";
 
@@ -42,11 +44,13 @@ export function AssistantForm(props: {
   });
   const [draft, setDraft] = createSignal(savedSettings);
   const [saved, setSaved] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
   const [invalid, setInvalid] = createSignal<Capability>();
-  const dirty = () => JSON.stringify(draft()) !== JSON.stringify(savedSettings());
+  const dirty = createMemo(() => JSON.stringify(draft()) !== JSON.stringify(savedSettings()));
+  protectDraft(dirty, isSettingsPath);
 
   async function save() {
-    if (props.pending || !dirty()) return;
+    if (props.pending || saving() || !dirty()) return;
     setSaved(false);
     setInvalid(undefined);
     const pipeline = { ...props.snapshot.settings.assistant.pipeline };
@@ -72,7 +76,12 @@ export function AssistantForm(props: {
     }
     pipeline.speech_streaming = draft().speech.streaming !== false;
     const settings = { ...props.snapshot.settings, assistant: { engine: "pipeline" as const, pipeline } };
-    setSaved(await props.save(settings));
+    setSaving(true);
+    try {
+      setSaved(await props.save(settings));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return <section aria-labelledby="assistant-title">
@@ -90,11 +99,8 @@ export function AssistantForm(props: {
             }} />
         }</For>
       </fieldset>
-      <div class="gw-row">
-        <Button variant="primary" type="submit" disabled={props.pending || !dirty()}>{props.t.save}</Button>
-        <Show when={saved() && !dirty() && !props.error}><span role="status" class={styles.saved}>{props.t.saved}</span></Show>
-        <Show when={dirty()}><span class={styles.note}>{props.t.unsaved}</span></Show>
-      </div>
+      <SaveActions labels={props.t} dirty={dirty()} saving={saving()} saved={saved() && !props.error}
+        disabled={props.pending || !dirty()} />
     </form>
   </section>;
 }

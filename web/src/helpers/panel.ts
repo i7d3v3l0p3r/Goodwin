@@ -67,7 +67,9 @@ export function createPanel() {
     setError("");
   }
 
-  async function action(request: () => Promise<unknown>, options: { recheckAccess?: boolean; microphone?: boolean } = {}) {
+  async function action(request: () => Promise<unknown>, options: {
+    recheckAccess?: boolean; microphone?: boolean; showError?: boolean; onError?: (code: string) => void;
+  } = {}) {
     const [isPending, setActionPending, setActionError] = options.microphone
       ? [microphonePending, setMicrophonePending, setMicrophoneError] as const
       : [pending, setPending, setError] as const;
@@ -86,7 +88,9 @@ export function createPanel() {
       } else if (code === "setup_complete" || code === "setup_required") {
         await refresh(true);
         if (code === "setup_complete") setActionError(code);
-      } else {
+      } else if (options.onError) {
+        options.onError(code);
+      } else if (options.showError !== false) {
         setActionError(code);
       }
       return false;
@@ -124,10 +128,12 @@ export function createPanel() {
     }, { recheckAccess: true }),
     send: (message: string) => action(() => api("chat", "POST", { message })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),
-    saveSettings: (settings: Settings) => action(() => api("settings", "PUT", { settings })),
+    saveSettings: (settings: Settings, options?: { showError?: boolean }) =>
+      action(() => api("settings", "PUT", { settings }), options),
     saveSystemPrompt: (systemPrompt: string) =>
       action(() => api("settings/system-prompt", "PUT", { system_prompt: systemPrompt })),
-    testStation: (mode: "manual" | "wake") => action(() => api("test", "POST", { mode })),
+    testStation: (mode: "manual" | "wake", onError: (code: string) => void) =>
+      action(() => api("test", "POST", { mode }), { onError }),
     uploadPlugin: (file: File) => action(() => api("plugin-packages", "POST", file)),
     removePlugin: (id: string) => action(() => api(`plugin-packages/${id}`, "DELETE")),
   };

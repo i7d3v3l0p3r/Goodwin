@@ -8,8 +8,11 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 11px;
+  margin: 11px 0 6px;
 }
+
+.actions button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.startError { margin-top: 8px; }
 
 .details {
   margin-top: 19px;
@@ -18,21 +21,19 @@
 }
 
 .details h3 {
-  margin: 0 0 4px;
+  margin: 0 0 8px;
   font-size: .92rem;
 }
 
+.result { display: grid; justify-items: start; gap: 6px; }
 .details dl {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 12px;
   max-width: 370px;
-  margin-top: 9px;
+  margin: 0;
   color: var(--muted);
   font-size: .84rem;
 }
 
 .details dd { font-variant-numeric: tabular-nums; }
-.timings { color: var(--muted); font-size: .86rem; }
-.timings summary { cursor: pointer; padding-block: 9px; touch-action: manipulation; }
-.error { color: var(--danger); }
