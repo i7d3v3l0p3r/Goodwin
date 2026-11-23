@@ -39,19 +39,19 @@ export function MicrophoneGainForm(props: {
   }
 
   return <section aria-labelledby="microphone-settings-title">
-    <h2 id="microphone-settings-title">{props.t.audioInput}</h2>
+    <h3 id="microphone-settings-title">{props.t.audioInput}</h3>
     <form class={styles.form} onSubmit={event => void save(event)}>
       <fieldset class={styles.gains} disabled={props.pending}>
         <label class={styles.field}>
           {props.t.wakeGain}
-          <input type="number" name="wake_gain" min={0.1} max={64} step="any"
+          <input type="number" inputmode="decimal" name="wake_gain" min={0.1} max={64} step="any"
             value={wakeGain() ?? ""} placeholder={String(props.snapshot.default_microphone_gain)}
             aria-describedby="wake-gain-hint" onInput={clearStatus} />
           <span id="wake-gain-hint" class={styles.hint}>{props.t.defaultGainHint}</span>
         </label>
         <label class={styles.field}>
           {props.t.transcriptionGain}
-          <input type="number" name="transcription_gain" min={0.1} max={64} step="any"
+          <input type="number" inputmode="decimal" name="transcription_gain" min={0.1} max={64} step="any"
             value={transcriptionGain() ?? ""} placeholder={props.t.automaticGain}
             aria-describedby="transcription-gain-hint" onInput={clearStatus} />
           <span id="transcription-gain-hint" class={styles.hint}>{props.t.automaticGainHint}</span>

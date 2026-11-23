@@ -4,11 +4,11 @@ TEST_ROOT=$(mktemp -d /tmp/goodwin-installer-check.XXXXXX)
 case "$TEST_ROOT" in /tmp/goodwin-installer-check.??????) ;; *) exit 2 ;; esac
 trap 'rm -rf "$TEST_ROOT"' 0
 export TEST_ROOT
-mkdir -p "$TEST_ROOT/tools" "$TEST_ROOT/bkupgrade/data/opt" "$TEST_ROOT/bkupgrade/data/init.d"
+mkdir -p "$TEST_ROOT/tools" "$TEST_ROOT/bkupgrade/data/opt" "$TEST_ROOT/bkupgrade/data/init.d" "$TEST_ROOT/tmp"
 ln -s bkupgrade/data "$TEST_ROOT/data"
 PATH="$TEST_ROOT/tools:$PATH"
 export PATH
-sed "s,/data/opt,$TEST_ROOT/data/opt,g; s,/data/init.d,$TEST_ROOT/data/init.d,g; s,/tmp/goodwin.log,$TEST_ROOT/goodwin.log,g" installer/install-station.sh > "$TEST_ROOT/install-test.sh"
+sed "s,/data/opt,$TEST_ROOT/data/opt,g; s,/data/init.d,$TEST_ROOT/data/init.d,g; s,/tmp/goodwin.log,$TEST_ROOT/goodwin.log,g; s,|/tmp),|$TEST_ROOT/tmp),g" installer/install-station.sh > "$TEST_ROOT/install-test.sh"
 cat > "$TEST_ROOT/tools/id" <<'EOF'
 #!/bin/sh
 echo 0
@@ -46,6 +46,7 @@ EOF
 
 package() {
     version=$1
+    model_version=${2:-$version}
     cat > "$TEST_ROOT/payload/goodwin" <<EOF
 #!/bin/sh
 case "\$1" in
@@ -56,7 +57,7 @@ esac
 EOF
     cd "$TEST_ROOT/payload"
     for file in standard.onnx micro.onnx LICENSE NOTICE; do
-        echo "$version" > "models/$file"
+        echo "$model_version" > "models/$file"
     done
     sha256sum goodwin models/* > SHA256SUMS
     tar -czf "$upload/payload.tar.gz" goodwin models/* SHA256SUMS
@@ -76,13 +77,25 @@ sh "$TEST_ROOT/install-test.sh" "$upload" micro | tee "$TEST_ROOT/update.out"
 grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/update.out"
 test "$(cat "$TEST_ROOT/running")" = current
 test "$(cat "$data/model")" = micro
+install_init=$upload/init.sh
+upload="$TEST_ROOT/tmp/.goodwin-upload.test02"
+mkdir "$upload"
+cp "$install_init" "$upload/init.sh"
+models_inode=$(stat -c %i "$data/models")
+package compact current
+sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/compact.out"
+grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/compact.out"
+test "$(cat "$TEST_ROOT/running")" = compact
+test "$(stat -c %i "$data/models")" = "$models_inode"
+test ! -e "$upload/payload"
+for stage in "$TEST_ROOT/data/opt"/.goodwin-stage.*; do test ! -e "$stage"; done
 package broken
 if sh "$TEST_ROOT/install-test.sh" "$upload" standard > "$TEST_ROOT/failed.out" 2>&1; then
     echo "The update with a failed startup unexpectedly succeeded" >&2
     exit 1
 fi
 grep 'Restoring the previous state' "$TEST_ROOT/failed.out"
-test "$(cat "$TEST_ROOT/running")" = current
+test "$(cat "$TEST_ROOT/running")" = compact
 test "$(cat "$data/model")" = micro
 test "$(cat "$data/models/standard.onnx")" = current
 test "$(cat "$data/models/custom.onnx")" = custom

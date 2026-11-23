@@ -3,17 +3,26 @@
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  min-height: 69px;
-  padding: 10px 3px;
+  min-height: 48px;
 }
 
-.row + .row { border-top: 1px solid var(--edge); }
+.sensitivity {
+  display: grid;
+  gap: 5px;
+  font-size: .9rem;
+}
+
+.sensitivity > span { display: flex; justify-content: space-between; gap: 8px; }
+.sensitivity output { color: var(--accent); font-variant-numeric: tabular-nums; }
+.sensitivity input { width: 100%; min-height: 24px; margin: 0; }
 
 .listeningSwitch {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 39px;
+  min-height: 44px;
+  min-width: 44px;
+  justify-content: center;
   padding: 5px 3px;
   border: 0;
   border-radius: 8px;

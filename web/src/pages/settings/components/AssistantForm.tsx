@@ -43,8 +43,10 @@ export function AssistantForm(props: {
   const [draft, setDraft] = createSignal(savedSettings);
   const [saved, setSaved] = createSignal(false);
   const [invalid, setInvalid] = createSignal<Capability>();
+  const dirty = () => JSON.stringify(draft()) !== JSON.stringify(savedSettings());
 
   async function save() {
+    if (props.pending || !dirty()) return;
     setSaved(false);
     setInvalid(undefined);
     const pipeline = { ...props.snapshot.settings.assistant.pipeline };
@@ -74,27 +76,24 @@ export function AssistantForm(props: {
   }
 
   return <section aria-labelledby="assistant-title">
-    <h2 id="assistant-title">{props.t.assistant}</h2>
+    <h3 id="assistant-title">{props.t.modelsAndVoice}</h3>
     <form class={styles.form} onSubmit={event => { event.preventDefault(); void save(); }}>
-      <label class={styles.field}>
-        {props.t.engine}
-        <select value="pipeline">
-          <option value="pipeline">{props.t.pipeline}</option>
-          <option value="live" disabled>{props.t.liveSoon}</option>
-        </select>
-      </label>
-      <For each={capabilities}>{capability =>
-        <PipelineStageForm capability={capability} draft={draft()[capability]} plugins={props.snapshot.plugins}
-          t={props.t} language={props.language} invalidParameters={invalid() === capability}
-          change={changes => {
-            setDraft(previous => ({ ...previous, [capability]: { ...previous[capability], ...changes } }));
-            setSaved(false);
-            if (invalid() === capability) setInvalid(undefined);
-          }} />
-      }</For>
+      <p class={styles.note}>{props.t.pipeline}</p>
+      <fieldset class={styles.stages} disabled={props.pending} aria-labelledby="assistant-title">
+        <For each={capabilities}>{capability =>
+          <PipelineStageForm capability={capability} draft={draft()[capability]} plugins={props.snapshot.plugins}
+            t={props.t} language={props.language} invalidParameters={invalid() === capability}
+            change={changes => {
+              setDraft(previous => ({ ...previous, [capability]: { ...previous[capability], ...changes } }));
+              setSaved(false);
+              if (invalid() === capability) setInvalid(undefined);
+            }} />
+        }</For>
+      </fieldset>
       <div class="gw-row">
-        <Button variant="primary" type="submit" disabled={props.pending}>{props.t.save}</Button>
-        <Show when={saved() && !props.error}><span role="status" class={styles.saved}>{props.t.saved}</span></Show>
+        <Button variant="primary" type="submit" disabled={props.pending || !dirty()}>{props.t.save}</Button>
+        <Show when={saved() && !dirty() && !props.error}><span role="status" class={styles.saved}>{props.t.saved}</span></Show>
+        <Show when={dirty()}><span class={styles.note}>{props.t.unsaved}</span></Show>
       </div>
     </form>
   </section>;

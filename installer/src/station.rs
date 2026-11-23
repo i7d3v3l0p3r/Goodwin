@@ -161,22 +161,36 @@ pub(crate) fn install(
     }
 
     let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
-    let source = package::prepare(source, work.path(), &log)?;
+    let (source, scratch_kib) = package::prepare(source, work.path(), &log)?;
     for (name, script) in [("install-station.sh", INSTALL), ("init.sh", INIT)] {
         fs::write(work.path().join(name), script.replace("\r\n", "\n"))?;
     }
 
-    log("Отправляем пакет на Станцию…".into());
+    // Keep the upload and extraction off the persistent volume when tmpfs has room.
+    let tmp_available = adb.on_station(10, ["shell", "df -Pk /tmp"]).ok();
+    let tmp_has_room = tmp_available
+        .as_deref()
+        .and_then(|output| {
+            output
+                .lines()
+                .last()?
+                .split_whitespace()
+                .nth(3)?
+                .parse::<u64>()
+                .ok()
+        })
+        .is_some_and(|available| available >= scratch_kib + 1024);
+    let upload_parent = if tmp_has_room { "/tmp" } else { "/data/opt" };
+    let upload_prefix = format!("{upload_parent}/.goodwin-upload.");
+    log(format!("Отправляем пакет на Станцию ({upload_parent})…"));
     let remote = adb.on_station(
         15,
         [
             "shell",
-            "umask 077; mkdir -p /data/opt && mktemp -d /data/opt/.goodwin-upload.XXXXXX",
+            &format!("umask 077; mkdir -p {upload_parent} && mktemp -d {upload_prefix}XXXXXX"),
         ],
     )?;
-    let suffix = remote
-        .strip_prefix("/data/opt/.goodwin-upload.")
-        .unwrap_or_default();
+    let suffix = remote.strip_prefix(&upload_prefix).unwrap_or_default();
     ensure!(
         suffix.len() == 6 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()),
         "Не удалось создать временную папку на Станции"
@@ -185,7 +199,7 @@ pub(crate) fn install(
     let install = transfer_and_install(&adb, work.path(), &remote, model, &log);
     if adb.on_station(10, [
         "shell",
-        &format!("rm -f {remote}/payload.tar.gz {remote}/install-station.sh {remote}/init.sh; rmdir {remote}"),
+        &format!("rm -rf {remote}/payload; rm -f {remote}/payload.tar.gz {remote}/install-station.sh {remote}/init.sh; rmdir {remote}"),
     ]).is_err() {
         log(format!("На Станции осталась временная папка {remote}"));
     }

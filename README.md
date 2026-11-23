@@ -16,7 +16,7 @@ The Rust installer runs on Windows, Linux and macOS. It installs Goodwin on a pr
 
 For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs `goodwin`, both ONNX files and the model attribution files in `models/`. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
 
-Updates to the managed Station service reuse its data directory at `/data/opt/etc/goodwin` and keep its wake model selection by default. If the new service fails the startup check, the installer restores the previous executable and models and restarts the previous service if it was running.
+Updates to the managed Station service reuse its data directory at `/data/opt/etc/goodwin` and keep its wake model selection by default. When there is room, the installer uploads and extracts the package in `/tmp`. It reuses identical model files and keeps one temporary rollback copy. After the startup check passes, it removes that copy. If the check fails, it restores the previous version and restarts it if it was running.
 
 To build and launch the desktop installer locally, run:
 

@@ -1,28 +1,80 @@
 .settings {
   min-height: 0;
   overflow: auto;
-  padding: 37px max(24px, calc((100% - 720px) / 2)) 35px;
+  padding: 28px max(20px, calc((100% - 650px) / 2)) 32px;
 }
 
-.settings > section {
-  padding: 19px 0;
+.destination {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 74px;
+  padding: 12px 8px;
   border-bottom: 1px solid var(--edge);
+  color: var(--muted);
+  text-decoration: none;
+  touch-action: manipulation;
 }
 
-.settings > section:first-child { padding-top: 0; }
+.destinationText { display: grid; gap: 3px; }
+.destination strong { color: var(--text); font-size: .96rem; font-weight: 650; }
+.destination small { font-size: .84rem; }
 
-.settings > section > h2 {
-  margin-bottom: 8px;
-  font-size: 1.13rem;
+.inlineLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--accent);
+  font-size: .9rem;
+  font-weight: 620;
+  text-decoration: none;
+  touch-action: manipulation;
 }
 
-.error {
-  max-width: 720px;
-  margin: 0 auto 9px;
-  color: var(--danger);
-  font-size: .88rem;
+.destination:active { background: var(--active); }
+.inlineLink:active { text-decoration: underline; }
+
+@media (hover: hover) and (pointer: fine) {
+  .destination:hover { background: var(--active-soft); }
+  .inlineLink:hover { text-decoration: underline; }
 }
+
+.section > h2 {
+  margin: 4px 0 19px;
+  font-size: clamp(1.35rem, 3vw, 1.75rem);
+  letter-spacing: -.025em;
+}
+
+.section > :is(section, details, .group) {
+  margin-top: 19px;
+  padding-top: 13px;
+  border-top: 1px solid var(--edge);
+  min-width: 0;
+}
+
+.section > details { padding-top: 0; }
+.section > section > h3 { margin: 0 0 8px; font-size: 1rem; }
+.section > .inlineLink { margin-top: 10px; }
+
+.language {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  font-size: .95rem;
+  font-weight: 600;
+}
+
+.language select { flex: 0 1 175px; max-width: 100%; }
+.error { margin-top: 12px; color: var(--danger); font-size: .88rem; }
 
 @media (max-width: 650px) {
-  .settings { padding: 18px 15px 25px; }
+  .settings { padding: 12px 15px 26px; }
+}
+
+@media (pointer: coarse) {
+  .section :is(input:not([type="range"]), select, textarea) { font-size: 1rem; }
 }

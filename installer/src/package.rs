@@ -30,7 +30,7 @@ pub(crate) enum Source {
     Local(PathBuf),
 }
 
-pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Result<String> {
+pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Result<(String, u64)> {
     let unpack = work.join("payload");
     fs::create_dir_all(unpack.join("models"))?;
     let label = match source {
@@ -71,8 +71,8 @@ pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Res
             path.display().to_string()
         }
     };
-    build_payload(&unpack, &work.join("payload.tar.gz"))?;
-    Ok(label)
+    let scratch_kib = build_payload(&unpack, &work.join("payload.tar.gz"))?;
+    Ok((label, scratch_kib))
 }
 
 fn download_release(work: &Path, log: &impl Fn(String)) -> Result<String> {
@@ -252,7 +252,7 @@ fn verify(path: &Path, name: &str, sums: &HashMap<String, String>) -> Result<()>
     Ok(())
 }
 
-fn build_payload(input: &Path, output: &Path) -> Result<()> {
+fn build_payload(input: &Path, output: &Path) -> Result<u64> {
     let mut header = [0; 20];
     let valid_elf = File::open(input.join("goodwin"))?
         .read_exact(&mut header)
@@ -269,11 +269,14 @@ fn build_payload(input: &Path, output: &Path) -> Result<()> {
         writeln!(manifest, "{}  {name}", checksum(&input.join(name))?)?;
     }
     let mut archive = tar::Builder::new(GzEncoder::new(File::create(output)?, Compression::fast()));
+    let mut unpacked_bytes = 0;
     for name in FILES.into_iter().chain([SUMS]) {
-        archive.append_path_with_name(input.join(name), name)?;
+        let file = input.join(name);
+        unpacked_bytes += file.metadata()?.len();
+        archive.append_path_with_name(file, name)?;
     }
     archive.into_inner()?.finish()?;
-    Ok(())
+    Ok((output.metadata()?.len() + unpacked_bytes).div_ceil(1024))
 }
 
 #[cfg(test)]
@@ -357,7 +360,7 @@ mod tests {
     #[ignore = "downloads the public Station package from GitHub"]
     fn latest_public_release_has_a_valid_station_package() {
         let work = tempfile::tempdir().unwrap();
-        let tag = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
+        let (tag, _) = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
         assert!(release_tag(&tag));
         assert!(work.path().join("payload.tar.gz").is_file());
     }

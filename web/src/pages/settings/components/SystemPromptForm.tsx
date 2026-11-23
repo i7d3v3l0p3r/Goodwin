@@ -1,5 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import { Button } from "../../../components/Button";
+import { Icon } from "../../../components/icons";
 import type { Words } from "../../../helpers/words";
 import styles from "./SystemPromptForm.module.css";
 
@@ -29,17 +30,18 @@ export function SystemPromptForm(props: {
     }
   }
 
-  return <section aria-labelledby="system-prompt-title">
-    <h2 id="system-prompt-title"><label for="system-prompt">{props.t.systemPrompt}</label></h2>
+  return <details class={styles.prompt}>
+    <summary class={styles.summary}>{props.t.systemPrompt}<Icon name="chevronDown" size={17} /></summary>
     <form class={styles.form} onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <p id="system-prompt-hint" class={styles.hint}>{props.t.systemPromptHint}</p>
-      <textarea id="system-prompt" aria-describedby="system-prompt-hint" rows={5} maxlength={4000}
+      <label for="system-prompt" class={styles.hint}>{props.t.systemPromptHint}</label>
+      <textarea id="system-prompt" rows={5} maxlength={4000}
         placeholder={props.t.systemPromptExample} value={prompt()} readonly={saving()}
         onInput={(event) => { setDraft(event.currentTarget.value); setSaved(false); }} />
       <div class={styles.actions}>
-        <Button variant="primary" type="submit" disabled={!canSave()}>{props.t.save}</Button>
+        <Button variant="primary" type="submit" disabled={!canSave()}>{props.t.savePrompt}</Button>
         <Show when={saved()}><span role="status" class={styles.saved}>{props.t.saved}</span></Show>
+        <Show when={!saved() && prompt() !== props.systemPrompt}><span class={styles.hint}>{props.t.unsaved}</span></Show>
       </div>
     </form>
-  </section>;
+  </details>;
 }

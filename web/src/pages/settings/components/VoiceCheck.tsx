@@ -12,12 +12,17 @@ function RequestDetails(props: { t: Words; report: Report | null }) {
         <p class={report().error ? styles.error : styles.note}>
           {report().error ? errorLabel(props.t, report().error!) : props.t.completed}
         </p>
-        <dl>
-          <For each={report().timings}>{(timing) => <>
-            <dt>{props.t.stages[timing.stage]}</dt>
-            <dd>{timing.ms} {props.t.ms}</dd>
-          </>}</For>
-        </dl>
+        <Show when={report().timings.length}>
+          <details class={styles.timings}>
+            <summary>{props.t.timings}</summary>
+            <dl>
+              <For each={report().timings}>{(timing) => <>
+                <dt>{props.t.stages[timing.stage]}</dt>
+                <dd>{timing.ms} {props.t.ms}</dd>
+              </>}</For>
+            </dl>
+          </details>
+        </Show>
       </>}
     </Show>
   </div>;
@@ -30,7 +35,7 @@ export function VoiceCheck(props: {
   test: (mode: "manual" | "wake") => Promise<boolean>;
 }) {
   return <section aria-labelledby="test-title">
-    <h2 id="test-title">{props.t.voiceCheck}</h2>
+    <h3 id="test-title">{props.t.voiceRequest}</h3>
     <p class={styles.note}>{props.t.testHint}</p>
     <div class={styles.actions}>
       <Button type="button" disabled={props.disabled || !props.snapshot.microphone}

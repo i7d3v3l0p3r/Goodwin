@@ -11,7 +11,11 @@
   margin-top: 11px;
 }
 
-.details { margin-top: 15px; }
+.details {
+  margin-top: 19px;
+  padding-top: 13px;
+  border-top: 1px solid var(--edge);
+}
 
 .details h3 {
   margin: 0 0 4px;
@@ -29,4 +33,6 @@
 }
 
 .details dd { font-variant-numeric: tabular-nums; }
+.timings { color: var(--muted); font-size: .86rem; }
+.timings summary { cursor: pointer; padding-block: 9px; touch-action: manipulation; }
 .error { color: var(--danger); }

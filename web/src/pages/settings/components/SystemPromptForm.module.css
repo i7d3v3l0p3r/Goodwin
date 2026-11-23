@@ -1,3 +1,19 @@
+.summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 47px;
+  padding-block: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 650;
+  touch-action: manipulation;
+}
+
+.summary::-webkit-details-marker { display: none; }
+.prompt[open] > .summary svg { transform: rotate(180deg); }
+
 .form {
   display: grid;
   gap: 12px;
@@ -19,6 +35,7 @@
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 8px 12px;
 }

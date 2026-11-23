@@ -9,15 +9,16 @@ fail() {
 
 upload=${1:-}
 choice=${2:-}
-case "$upload" in
-    /data/opt/.goodwin-upload.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) ;;
+case "${upload%/*}" in /data/opt|/tmp) ;; *) fail 'Invalid upload directory.' ;; esac
+case "${upload##*/}" in
+    .goodwin-upload.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) ;;
     *) fail 'Invalid upload directory.' ;;
 esac
 [ ! -L "$upload" ] || fail 'The upload directory cannot be a symbolic link.'
-opt_root=$(cd /data/opt && pwd -P) || fail 'Could not resolve the Station installation directory.'
+upload_parent=$(cd "${upload%/*}" && pwd -P) || fail 'Could not resolve the upload parent directory.'
 upload_root=$(cd "$upload" && pwd -P) || fail 'Could not open the upload directory.'
 # Some firmware mounts the persistent data partition at /bkupgrade/data.
-[ "$upload_root" = "$opt_root/${upload##*/}" ] || fail 'The upload directory is outside the installation directory.'
+[ "$upload_root" = "$upload_parent/${upload##*/}" ] || fail 'The upload directory is outside its expected parent.'
 case "$choice" in keep|standard|micro) ;; *) fail 'Invalid model selection.' ;; esac
 [ "$(id -u)" = 0 ] || fail 'Goodwin installation requires root.'
 
@@ -25,6 +26,7 @@ bin=/data/opt/bin/goodwin
 data=/data/opt/etc/goodwin
 hook=/data/init.d/S96goodwin
 lock=/data/opt/.goodwin-install-lock
+payload=$upload/payload
 stage=
 mode=fresh
 changed=0
@@ -71,6 +73,7 @@ cleanup() {
         fi
     fi
     if [ -n "$stage" ]; then rm -rf "$stage" || :; fi
+    rm -rf "$payload" || :
     rmdir "$lock" || :
     exit "$status"
 }
@@ -82,10 +85,11 @@ fi
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 stage=$(mktemp -d /data/opt/.goodwin-stage.XXXXXX)
-mkdir "$stage/payload"
-gzip -dc "$upload/payload.tar.gz" | tar -xf - -C "$stage/payload"
-(cd "$stage/payload" && sha256sum -c SHA256SUMS)
-chmod 755 "$stage/payload/goodwin"
+mkdir "$payload"
+gzip -dc "$upload/payload.tar.gz" | tar -xf - -C "$payload"
+(cd "$payload" && sha256sum -c SHA256SUMS)
+rm -f "$upload/payload.tar.gz"
+chmod 755 "$payload/goodwin"
 
 if exists "$bin" || exists "$data" || exists "$hook"; then
     if [ ! -f "$bin" ] || [ ! -f "$data/config.json" ] || [ ! -x "$hook" ] ||
@@ -106,14 +110,14 @@ fi
 case "$model" in standard|micro) ;; *) echo 'Invalid model selection.' >&2; exit 1 ;; esac
 
 echo "Checking the $model wake model…"
-"$stage/payload/goodwin" wake-check "$stage/payload/models/$model.onnx"
-mv "$stage/payload/goodwin" "$stage/new-bin"
+mv "$payload/goodwin" "$stage/new-bin"
+"$stage/new-bin" wake-check "$payload/models/$model.onnx"
 printf '%s\n' "$model" > "$stage/new-model"
 
 if [ "$mode" = fresh ]; then
     mkdir -p /data/opt/bin /data/opt/etc /data/init.d
     "$stage/new-bin" setup "$stage/new-data"
-    mv "$stage/payload/models" "$stage/new-data/models"
+    mv "$payload/models" "$stage/new-data/models"
     mv "$stage/new-model" "$stage/new-data/model"
     cp "$upload/init.sh" "$stage/new-hook"
     sh -n "$stage/new-hook"
@@ -123,19 +127,30 @@ if [ "$mode" = fresh ]; then
     mv "$stage/new-data" "$data"
     mv "$stage/new-hook" "$hook"
 else
-    mkdir "$stage/new-models"
-    cp -pR "$data/models/." "$stage/new-models/"
+    replace_models=0
     for name in standard.onnx micro.onnx LICENSE NOTICE; do
-        rm -f "$stage/new-models/$name"
-        mv "$stage/payload/models/$name" "$stage/new-models/$name"
+        if ! cmp -s "$payload/models/$name" "$data/models/$name"; then
+            replace_models=1
+            break
+        fi
     done
+    if [ "$replace_models" = 1 ]; then
+        mkdir "$stage/new-models"
+        cp -pR "$data/models/." "$stage/new-models/"
+        for name in standard.onnx micro.onnx LICENSE NOTICE; do
+            rm -f "$stage/new-models/$name"
+            mv "$payload/models/$name" "$stage/new-models/$name"
+        done
+    fi
     if "$hook" status; then was_running=1; fi
     "$hook" stop
     changed=1
     mv "$bin" "$stage/old-bin"
     mv "$stage/new-bin" "$bin"
-    mv "$data/models" "$stage/old-models"
-    mv "$stage/new-models" "$data/models"
+    if [ "$replace_models" = 1 ]; then
+        mv "$data/models" "$stage/old-models"
+        mv "$stage/new-models" "$data/models"
+    fi
     if [ "$choice" != keep ]; then
         if exists "$data/model"; then mv "$data/model" "$stage/old-model"; fi
         mv "$stage/new-model" "$data/model"

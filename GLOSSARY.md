@@ -6,7 +6,7 @@ Goodwin is a voice assistant for Yandex Station Mini 3 (`bergamot`).
 
 **Control panel** — The browser interface for chatting with Goodwin, configuring the assistant and microphone, managing plugins, and testing the Station.
 
-**Assistant engine** — The mode Goodwin uses to handle an assistant request. The cascade is currently available. The control panel lists Live as coming soon.
+**Assistant engine** — The mode Goodwin uses to handle an assistant request. Goodwin currently uses the cascade.
 
 **Cascade (STT → LLM → TTS)** — The engine that transcribes the user's speech (STT), generates an answer with a language model (LLM), and turns the answer into audio (TTS). Text chat uses the LLM stage. Each stage has its own provider, model, and optional parameters, such as the synthesis voice and speaking rate.
 

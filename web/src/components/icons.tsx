@@ -7,7 +7,13 @@ const strokes = {
   send: ["M12 19V5m-6 6 6-6 6 6"],
   plus: ["M12 5v14M5 12h14"],
   speaker: ["M8 9v6a4 4 0 0 0 8 0V9a4 4 0 0 0-8 0Zm-3 5v1a7 7 0 0 0 14 0v-1m-7 8v-2"],
-
+  sparkles: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Zm7 12v6m-3-3h6M5 3v4M3 5h4"],
+  activity: ["M2 12h5l3-7 4 14 3-7h5"],
+  monitor: ["M3 4h18v13H3zM12 17v4m-4 0h8"],
+  arrowLeft: ["M19 12H5m6-6-6 6 6 6"],
+  arrowRight: ["M5 12h14m-6-6 6 6-6 6"],
+  chevronRight: ["m9 6 6 6-6 6"],
+  chevronDown: ["m6 9 6 6 6-6"],
 };
 
 export function Icon(props: { name: keyof typeof strokes; size?: number }) {

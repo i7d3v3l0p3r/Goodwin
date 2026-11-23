@@ -4,6 +4,8 @@
 
 ### English
 
+- The Station installer can unpack the update in temporary storage and reuse identical wake-word models, reducing the free space an update needs on the Station.
+- Settings now open to an overview with separate pages for activation and microphone, the assistant, Station testing, and the panel language. The assistant page shows the current provider and model for each stage before you expand its controls.
 - Install or update Goodwin from the terminal with `goodwin-installer install <address>`. You can select a local package, an ADB executable, and a wake-word model. The command prints the panel URL when the installation succeeds.
 - Configure the assistant's STT → LLM → TTS engine in the panel. Each stage can use a separate provider and model, with additional parameters such as the synthesis voice. Enter a model ID manually when the server has no catalog.
 - Adjust speech speed from 0.5× to 2× in the assistant's synthesis settings when the selected model supports it.
@@ -15,6 +17,8 @@
 
 ### Русский
 
+- Установщик может распаковывать обновление во временном разделе и повторно использовать совпадающие файлы моделей активации. Обновлению требуется меньше места на Станции.
+- Настройки открываются с оглавления. Активация и микрофон, ассистент, проверка колонки и язык панели вынесены в отдельные разделы. В разделе ассистента провайдер и модель каждого этапа видны до раскрытия его настроек.
 - Устанавливайте и обновляйте Goodwin из терминала командой `goodwin-installer install <адрес>`. Можно указать локальный пакет, путь к ADB и модель активации. После успешной установки команда выводит адрес панели.
 - Настраивайте движок ассистента STT → LLM → TTS в панели. Для каждого этапа можно выбрать провайдер, модель и дополнительные параметры, например голос озвучивания. Если сервер не отдаёт каталог, ID модели можно ввести вручную.
 - В настройках озвучивания можно менять скорость речи от 0,5× до 2×, если выбранная модель это поддерживает.

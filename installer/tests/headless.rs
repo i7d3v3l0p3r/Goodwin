@@ -32,13 +32,19 @@ case "$3" in
     shell)
         case "$4" in
             *GOODWIN_STATION_READY*) echo GOODWIN_STATION_READY ;;
-            *mktemp*) echo /data/opt/.goodwin-upload.test01 ;;
+            'df -Pk /tmp')
+                printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\ntmpfs 65536 0 %s 0%% /tmp\n' "$MOCK_TMP_KIB"
+                ;;
+            *mktemp*)
+                case "$4" in *" $MOCK_UPLOAD_PARENT/.goodwin-upload.XXXXXX") ;; *) exit 95 ;; esac
+                echo "$MOCK_UPLOAD_PARENT/.goodwin-upload.test01"
+                ;;
             'sh '*)
                 case "$4" in *' micro; status='*) ;; *) exit 92 ;; esac
                 if [ "$MOCK_INSTALL_STATUS" = 0 ]; then echo 'GOODWIN_INSTALL_OK update'; fi
                 echo "GOODWIN_INSTALL_EXIT $MOCK_INSTALL_STATUS"
                 ;;
-            'rm -f '*) ;;
+            'rm -rf '*) ;;
             *) exit 93 ;;
         esac
         ;;
@@ -49,19 +55,21 @@ esac
     .unwrap();
     fs::set_permissions(&adb, fs::Permissions::from_mode(0o700)).unwrap();
 
-    let run = |status: &str| {
+    let run = |status: &str, tmp_kib: &str, upload_parent: &str| {
         Command::new(env!("CARGO_BIN_EXE_goodwin-installer"))
             .args(["install", "station.local:5556", "--model", "micro", "--adb"])
             .arg(&adb)
             .arg("--package")
             .arg(&package)
             .env("MOCK_INSTALL_STATUS", status)
+            .env("MOCK_TMP_KIB", tmp_kib)
+            .env("MOCK_UPLOAD_PARENT", upload_parent)
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .output()
             .unwrap()
     };
-    let success = run("0");
+    let success = run("0", "65536", "/tmp");
     assert!(
         success.status.success(),
         "{}",
@@ -70,7 +78,7 @@ esac
     assert_eq!(success.stdout, b"http://station.local:8787/\n");
     assert!(String::from_utf8_lossy(&success.stderr).contains("mock ADB connected"));
 
-    let failure = run("2");
+    let failure = run("2", "0", "/data/opt");
     assert_eq!(failure.status.code(), Some(1));
     assert!(failure.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failure.stderr).contains("завершился с кодом 2"));

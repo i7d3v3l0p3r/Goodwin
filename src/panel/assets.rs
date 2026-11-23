@@ -13,10 +13,19 @@ const PLUGIN_RUNTIME: &str = include_str!("../../web/dist/plugin-runtime-v1.js")
 const STYLE: &str = include_str!("../../web/dist/panel.css");
 
 pub(super) fn routes() -> Router<Panel> {
-    Router::new()
-        .route("/", get(index))
-        .route("/settings", get(index))
-        .route("/settings/", get(index))
+    let mut router = Router::new().route("/", get(index));
+    for path in [
+        "/settings",
+        "/settings/activation",
+        "/settings/assistant",
+        "/settings/diagnostics",
+        "/settings/panel",
+    ] {
+        router = router
+            .route(path, get(index))
+            .route(&format!("{path}/"), get(index));
+    }
+    router
         .route("/plugins", get(index))
         .route("/plugins/", get(index))
         // Both plugin pages and /plugins/{id}/settings use the panel entry point.
