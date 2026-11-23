@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    app::{App, Failure, Stage},
+    app::{ActiveTurn, App, Failure, Stage},
     wake::WakeModel,
 };
 
@@ -23,12 +23,7 @@ use super::{
     protocol::{FRAME_TIMEOUT, Framing, capture_channel, receive},
 };
 
-pub struct MicrophoneOptions {
-    pub address: SocketAddr,
-    pub gain: f32,
-}
-
-pub async fn run_microphone(app: Arc<App>, options: MicrophoneOptions) {
+pub async fn run_microphone(app: Arc<App>, address: SocketAddr) {
     let model_path = std::env::var_os("GOODWIN_WAKE_MODEL")
         .map(PathBuf::from)
         .unwrap_or_else(|| app.dir.join("goodwin.onnx"));
@@ -41,9 +36,14 @@ pub async fn run_microphone(app: Arc<App>, options: MicrophoneOptions) {
     let mut detector = Detector::new(model);
     let mut framing = Framing::Typed;
     loop {
-        let result = stream(&app, &options, framing, &mut detector).await;
+        let result = stream(&app, address, framing, &mut detector).await;
         app.set_microphone(false);
-        if let Some((id, _, Stage::AwaitingWake | Stage::Recording, _, _)) = app.active() {
+        if let Some(ActiveTurn {
+            id,
+            stage: Stage::AwaitingWake | Stage::Recording,
+            ..
+        }) = app.active()
+        {
             app.finish(id, Some(Failure::Microphone));
         }
         detector.clear();
@@ -79,11 +79,11 @@ fn load_model(path: &Path) -> Option<WakeModel> {
 
 async fn stream(
     app: &Arc<App>,
-    options: &MicrophoneOptions,
+    address: SocketAddr,
     framing: Framing,
     detector: &mut Detector,
 ) -> Result<()> {
-    let mut socket = timeout(FRAME_TIMEOUT, TcpStream::connect(options.address)).await??;
+    let mut socket = timeout(FRAME_TIMEOUT, TcpStream::connect(address)).await??;
     let request = framing.subscription().encode_to_vec();
     socket.write_u32_le(request.len() as u32).await?;
     socket.write_all(&request).await?;
@@ -100,8 +100,6 @@ async fn stream(
         app.set_microphone(true);
         for &bytes in audio.as_chunks::<2>().0 {
             let sample = i16::from_le_bytes(bytes);
-            let sample = (f32::from(sample) * options.gain)
-                .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
             detector.push_sample(sample, app);
         }
     }

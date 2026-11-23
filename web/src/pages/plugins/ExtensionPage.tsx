@@ -2,7 +2,8 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { PageHeader } from "../../components/PageHeader";
 import { usePanel } from "../../helpers/panel";
-import { loadPlugin, pluginPagePath, pluginRequest } from "../../helpers/plugins";
+import { loadPlugin, pluginPagePath, pluginRequest, pluginSettingsPath } from "../../helpers/plugins";
+import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./ExtensionPage.module.css";
 
 export function ExtensionPage() {
@@ -12,13 +13,19 @@ export function ExtensionPage() {
   const [error, setError] = createSignal(false);
   const [container, setContainer] = createSignal<HTMLElement>();
   const path = () => location.pathname.replace(/\/$/, "");
-  const plugins = createMemo(() => panel.snapshot()?.plugins);
+  const currentPlugin = createMemo(() => panel.snapshot()?.plugins.find(entry => entry.id === path().split("/")[2]));
   const selection = createMemo(() => {
-    const id = path().split("/")[2];
-    const plugin = plugins()?.find(entry => entry.id === id);
-    const page = plugin?.pages.find(page => pluginPagePath(id, page.path) === path());
+    const plugin = currentPlugin();
+    const page = plugin?.pages.find(page => pluginPagePath(plugin.id, page.path) === path());
     return plugin?.web && plugin.revision && page ? { plugin, page } : undefined;
   }, { equals: (previous, next) => previous?.plugin.revision === next?.plugin.revision && previous?.page.id === next?.page.id });
+
+  createEffect(() => {
+    const plugin = currentPlugin();
+    return plugin?.has_settings && !plugin.web && path() === pluginPagePath(plugin.id, "") ? plugin.id : undefined;
+  }, id => {
+    if (id) void navigate(pluginSettingsPath(id), { replace: true });
+  });
 
   createEffect(() => {
     const selected = selection();
@@ -39,7 +46,11 @@ export function ExtensionPage() {
   });
 
   return <>
-    <PageHeader title={selection()?.page.title[panel.language()] ?? panel.t().plugins.title} />
+    <PageHeader title={selection()?.page.title[panel.language()] ?? panel.t().plugins.title}>
+      <Show when={selection()?.plugin.has_settings && selection()?.plugin}>
+        {plugin => <PluginSettingsLink plugin={plugin()} />}
+      </Show>
+    </PageHeader>
     <section class={styles.body}>
       <div ref={setContainer} hidden={!selection()} />
       <Show when={!selection()}><p>{panel.snapshot() ? panel.t().plugins.missing : panel.t().plugins.loading}</p></Show>

@@ -1,0 +1,26 @@
+.form, .gains {
+  display: grid;
+  gap: 12px;
+}
+
+.gains {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  padding: 0;
+  margin: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  font-size: .9rem;
+  font-weight: 610;
+}
+
+.hint, .saved, .error { font-size: .86rem; font-weight: 450; }
+.hint { color: var(--muted); }
+.saved { color: var(--accent); }
+.error { color: var(--danger); }

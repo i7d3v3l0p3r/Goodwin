@@ -19,6 +19,10 @@ export function pluginPagePath(id: string, path: string) {
   return `/plugins/${id}${path ? `/${path}` : ""}`;
 }
 
+export function pluginSettingsPath(id: string) {
+  return `/plugins/${id}/settings`;
+}
+
 export function loadPlugin(plugin: Plugin, container: HTMLElement, context: PluginContext, failed: () => void) {
   const base = `/plugin-assets/${plugin.id}/${plugin.revision}/`;
   const web = plugin.web!;

@@ -22,13 +22,17 @@ use tokio::sync::Mutex;
 use crate::{
     app::{App, Failure, Source},
     config::{Settings, normalize_system_prompt},
+    plugins::SETTINGS_BODY_LIMIT,
 };
 
 use auth::{
     Auth, access, login, logout, require_owner, require_password_owner, require_same_origin,
     response_headers, setup_password,
 };
-use plugin_routes::{plugin_asset, plugin_catalog, plugin_http, remove_plugin, upload_plugin};
+use plugin_routes::{
+    plugin_asset, plugin_catalog, plugin_http, plugin_models, plugin_settings, remove_plugin,
+    update_plugin_settings, upload_plugin,
+};
 
 #[derive(Clone)]
 struct Panel {
@@ -54,6 +58,13 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))
         .route("/api/plugins", get(plugin_catalog))
+        .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
+        .route(
+            "/api/plugin-settings/{id}",
+            get(plugin_settings)
+                .patch(update_plugin_settings)
+                .layer(DefaultBodyLimit::max(SETTINGS_BODY_LIMIT)),
+        )
         .route("/api/plugins/{id}/{*path}", any(plugin_http))
         .route("/plugin-assets/{id}/{revision}/{*path}", get(plugin_asset))
         .route_layer(middleware::from_fn_with_state(panel.clone(), require_owner));
@@ -86,24 +97,16 @@ async fn snapshot(State(panel): State<Panel>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct UpdateSettings {
     settings: Settings,
-    key: Option<String>,
 }
 
 async fn settings(State(panel): State<Panel>, Json(update): Json<UpdateSettings>) -> Response {
-    let UpdateSettings { mut settings, key } = update;
+    let UpdateSettings { settings } = update;
     if settings.validate().is_err() {
-        return problem(StatusCode::BAD_REQUEST, "invalid_settings");
-    }
-    let key = key.map(|value| value.trim().to_owned());
-    if key.as_ref().is_some_and(|value| {
-        value.len() > 512 || !value.bytes().all(|byte| byte.is_ascii_graphic())
-    }) {
         return problem(StatusCode::BAD_REQUEST, "invalid_settings");
     }
     let app = Arc::clone(&panel.app);
     let saved =
-        tokio::task::spawn_blocking(move || app.configuration().update_settings(settings, key))
-            .await;
+        tokio::task::spawn_blocking(move || app.configuration().update_settings(settings)).await;
     match saved {
         Ok(Ok(())) => snapshot(State(panel)).await.into_response(),
         _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),

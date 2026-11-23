@@ -1,55 +1,48 @@
-use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 
 use super::{
     CONTEXT_INSTRUCTIONS, TOOL_INSTRUCTIONS, VOICE_INSTRUCTIONS, reply_with_tools, strip_wake_word,
 };
 use crate::{
-    openrouter::{Models, OpenRouter},
-    plugins::VoiceTools,
-    test_support::serve,
+    plugins::{Process, VoiceTools},
+    providers::Provider,
 };
 
 #[tokio::test]
 async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
-    let (cloud, task) = serve(Router::new().route(
-        "/chat/completions",
-        post(|Json(body): Json<Value>| async move {
-            assert_eq!(body["tools"][0]["function"]["name"], "probe__example");
-            assert_eq!(body["provider"]["require_parameters"], true);
-            assert!(body.get("parallel_tool_calls").is_none());
-            let messages = body["messages"].as_array().unwrap();
-            assert_eq!(messages[0], json!({
+    let provider = Provider::mock(Process::mock_rpc(|method, body| {
+        assert_eq!(method, "provider.complete");
+        assert_eq!(body["tools"][0]["function"]["name"], "probe__example");
+        assert!(body.get("provider").is_none());
+        assert!(body.get("parallel_tool_calls").is_none());
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0],
+            json!({
                 "role": "system",
                 "content": format!("{VOICE_INSTRUCTIONS}\n{TOOL_INSTRUCTIONS}")
-            }));
-            let last = messages.last().unwrap();
-            let message = if last["role"] == "tool" {
-                assert_eq!(last["tool_call_id"], "test-call");
-                assert_eq!(messages[2]["reasoning_details"], json!([{"id": "fixture"}]));
-                let content: Value =
-                    serde_json::from_str(last["content"].as_str().unwrap()).unwrap();
-                assert_eq!(content["error"], "clarification_required");
-                assert_eq!(body["tool_choice"], "none");
-                json!({"role": "assistant", "content": "Какой таймер отменить?"})
-            } else if last["content"] == "Отмени таймер" {
-                json!({"role": "assistant", "content": null, "reasoning_details": [{"id": "fixture"}], "tool_calls": [{
-                    "id": "test-call", "type": "function",
-                    "function": { "name": "probe__example", "arguments": "{\"seconds\":300}" }
-                }]})
-            } else {
-                json!({"role": "assistant", "content": "Пять минут"})
-            };
-            Json(json!({"choices": [{"message": message}]}))
-        }),
-    ))
-    .await;
-    let openrouter = OpenRouter::new().unwrap().pointed_at(cloud);
-    let models = Models::default();
+            })
+        );
+        let last = messages.last().unwrap();
+        let message = if last["role"] == "tool" {
+            assert_eq!(last["tool_call_id"], "test-call");
+            assert_eq!(messages[2]["reasoning_details"], json!([{"id": "fixture"}]));
+            let content: Value = serde_json::from_str(last["content"].as_str().unwrap()).unwrap();
+            assert_eq!(content["error"], "clarification_required");
+            assert_eq!(body["tool_choice"], "none");
+            json!({"role": "assistant", "content": "Какой таймер отменить?"})
+        } else if last["content"] == "Отмени таймер" {
+            json!({"role": "assistant", "content": null, "reasoning_details": [{"id": "fixture"}], "tool_calls": [{
+                "id": "test-call", "type": "function",
+                "function": { "name": "probe__example", "arguments": "{\"seconds\":300}" }
+            }]})
+        } else {
+            json!({"role": "assistant", "content": "Пять минут"})
+        };
+        Ok(json!({"message": message}))
+    }));
     let result = reply_with_tools(
-        &openrouter,
-        "fixture",
-        &models,
+        &provider,
         "Сколько минут ждать?",
         "",
         VoiceTools::mock(|_| panic!("A question must not call a tool")),
@@ -58,9 +51,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
     .unwrap();
     assert_eq!(result, "Пять минут");
     let result = reply_with_tools(
-        &openrouter,
-        "fixture",
-        &models,
+        &provider,
         "Отмени таймер",
         "",
         VoiceTools::mock(|call| {
@@ -74,7 +65,6 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
     .await
     .unwrap();
     assert_eq!(result, "Какой таймер отменить?");
-    task.abort();
 }
 
 #[test]
@@ -90,32 +80,39 @@ fn strips_only_a_leading_wake_word() {
 #[tokio::test]
 async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
     const PROMPT: &str = "Обращайся ко мне на ты.\nОтвечай спокойно.";
-    let (cloud, task) = serve(Router::new().route(
-        "/chat/completions",
-        post(|Json(body): Json<Value>| async move {
-            let messages = body["messages"].as_array().unwrap();
-            assert_eq!(messages[0], json!({
+    let provider = Provider::mock(Process::mock_rpc(|method, body| {
+        assert_eq!(method, "provider.complete");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0],
+            json!({
                 "role": "system",
                 "content": format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.\n{TOOL_INSTRUCTIONS}\n{CONTEXT_INSTRUCTIONS}")
-            }));
-            let snapshot: Value = serde_json::from_str(messages[1]["content"].as_str().unwrap()).unwrap();
-            assert_eq!(snapshot, json!({"pluginContext": {"probe": {"active": [
+            })
+        );
+        let snapshot: Value =
+            serde_json::from_str(messages[1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            snapshot,
+            json!({"pluginContext": {"probe": {"active": [
                 {"name": "для яиц", "seconds": 120}, {"name": "для картошки", "seconds": 300}
-            ]}}}));
-            assert_eq!(messages[2]["content"], "Отмени таймер картошка");
-            let message = if messages.len() == 3 {
-                json!({"role": "assistant", "tool_calls": [{
-                    "type": "function", "id": "cancel",
-                    "function": {"name": "probe__example", "arguments": json!({"name": "для картошки"}).to_string()}
-                }]})
-            } else {
-                let result: Value = serde_json::from_str(messages.last().unwrap()["content"].as_str().unwrap()).unwrap();
-                assert_eq!(result["cancelled"]["name"], "для картошки");
-                json!({"role": "assistant", "content": "Таймер для картошки отменён."})
-            };
-            Json(json!({"choices": [{"message": message}]}))
-        }),
-    )).await;
+            ]}}})
+        );
+        assert_eq!(messages[2]["content"], "Отмени таймер картошка");
+        let message = if messages.len() == 3 {
+            json!({"role": "assistant", "tool_calls": [{
+                "type": "function", "id": "cancel",
+                "function": {"name": "probe__example", "arguments": json!({"name": "для картошки"}).to_string()}
+            }]})
+        } else {
+            let result: Value =
+                serde_json::from_str(messages.last().unwrap()["content"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(result["cancelled"]["name"], "для картошки");
+            json!({"role": "assistant", "content": "Таймер для картошки отменён."})
+        };
+        Ok(json!({"message": message}))
+    }));
     let tools = VoiceTools::mock(|call| {
         assert_eq!(call["arguments"], json!({"name": "для картошки"}));
         json!({"cancelled": {"name": "для картошки"}})
@@ -129,16 +126,8 @@ async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
             {"name": "для яиц", "seconds": 120}, {"name": "для картошки", "seconds": 300}
         ]})
     });
-    let result = reply_with_tools(
-        &OpenRouter::new().unwrap().pointed_at(cloud),
-        "fixture",
-        &Models::default(),
-        "Отмени таймер картошка",
-        PROMPT,
-        tools,
-    )
-    .await
-    .unwrap();
+    let result = reply_with_tools(&provider, "Отмени таймер картошка", PROMPT, tools)
+        .await
+        .unwrap();
     assert_eq!(result, "Таймер для картошки отменён.");
-    task.abort();
 }

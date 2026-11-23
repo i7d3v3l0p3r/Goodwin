@@ -9,6 +9,8 @@ use anyhow::{Context, Result, ensure};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 
+use super::settings::{self, Field};
+
 pub const ARCHIVE_LIMIT: usize = 16 * 1024 * 1024;
 const EXPANDED_LIMIT: u64 = 48 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 32 * 1024;
@@ -39,6 +41,8 @@ pub struct Manifest {
     target: String,
     pub executable: String,
     pub web: Option<Web>,
+    #[serde(default)]
+    pub(super) settings: Vec<Field>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -124,6 +128,7 @@ impl Manifest {
             manifest.api_version == API_VERSION,
             "Unsupported plugin API version"
         );
+        settings::validate(&manifest.settings)?;
         let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         ensure!(
             manifest.target == target,

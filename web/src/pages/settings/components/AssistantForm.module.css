@@ -1,0 +1,29 @@
+.form, .stage { display: grid; gap: 12px; }
+.stage {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  margin: 0;
+}
+.stage legend { padding: 0 4px; font-weight: 650; }
+.field { display: grid; min-width: 0; gap: 5px; font-size: .9rem; font-weight: 610; }
+.rangeLabel { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rangeLabel output { color: var(--muted); font-variant-numeric: tabular-nums; }
+.range { width: 100%; min-height: 24px; margin: 0; }
+.field .note { font-weight: 400; }
+.note, .retry { color: var(--muted); font-size: .84rem; }
+.retry { padding: 4px 0; border: 0; background: transparent; text-decoration: underline; }
+.parameters summary { cursor: pointer; font-size: .88rem; }
+.parameters textarea {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin-top: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  resize: vertical;
+}
+.saved { color: var(--accent); font-size: .86rem; }
+.error { color: var(--danger); font-size: .86rem; }

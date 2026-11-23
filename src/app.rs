@@ -5,13 +5,14 @@ use std::{
     time::Instant,
 };
 
+use goodwin_plugin::provider::Capability;
 use serde::Serialize;
 
 use crate::{
     config::{Config, ConfigStore, RequestSettings, Settings},
-    openrouter::OpenRouter,
     plugins::{Plugins, View as PluginView},
-    station::Player,
+    providers::Provider,
+    station::{Indicators, Player},
 };
 
 mod voice;
@@ -47,8 +48,8 @@ pub enum Failure {
     Busy,
     Microphone,
     Model,
-    MissingKey,
-    Cloud,
+    ProviderUnavailable,
+    ProviderFailed,
     Playback,
     NoSpeech,
     NoWake,
@@ -75,6 +76,16 @@ struct Turn {
     request: RequestSettings,
 }
 
+pub(crate) struct ActiveTurn {
+    pub id: u64,
+    pub source: Source,
+    pub stage: Stage,
+    pub started: Instant,
+    pub sensitivity: f32,
+    pub wake_gain: Option<f32>,
+    pub transcription_gain: Option<f32>,
+}
+
 #[derive(Clone, Serialize)]
 pub struct Message {
     id: u64,
@@ -98,17 +109,18 @@ pub struct App {
     pub dir: PathBuf,
     config: ConfigStore,
     runtime: Mutex<Runtime>,
-    pub openrouter: OpenRouter,
     pub player: Player,
+    pub(crate) indicators: Indicators,
     pub plugins: Plugins,
+    pub(crate) default_microphone_gain: f32,
 }
 
 #[derive(Serialize)]
 pub struct Snapshot {
     settings: Settings,
     system_prompt: String,
-    key_configured: bool,
     microphone: bool,
+    default_microphone_gain: f32,
     model: bool,
     active: Option<Report>,
     last: Option<Report>,
@@ -117,16 +129,22 @@ pub struct Snapshot {
 }
 
 impl App {
-    pub fn new(dir: PathBuf, config: Config, openrouter: OpenRouter, player: Player) -> Arc<Self> {
+    pub(crate) fn new(
+        dir: PathBuf,
+        config: Config,
+        player: Player,
+        default_microphone_gain: f32,
+    ) -> Arc<Self> {
         let plugins = Plugins::new(&dir, player.clone());
         let config = ConfigStore::new(&dir, config);
         Arc::new(Self {
             dir,
             config,
             runtime: Mutex::new(Runtime::default()),
-            openrouter,
             player,
+            indicators: Indicators::new(),
             plugins,
+            default_microphone_gain,
         })
     }
 
@@ -141,15 +159,14 @@ impl App {
     pub fn snapshot(&self) -> Snapshot {
         let RequestSettings {
             settings,
-            key,
             system_prompt,
         } = self.config.request_settings();
         let runtime = self.runtime();
         Snapshot {
             settings,
             system_prompt,
-            key_configured: !key.is_empty(),
             microphone: runtime.microphone,
+            default_microphone_gain: self.default_microphone_gain,
             model: runtime.model,
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
@@ -166,15 +183,15 @@ impl App {
         self.runtime().model = loaded;
     }
 
-    pub fn active(&self) -> Option<(u64, Source, Stage, Instant, f32)> {
-        self.runtime().active.as_ref().map(|turn| {
-            (
-                turn.id,
-                turn.report.source,
-                turn.report.stage,
-                turn.started,
-                turn.request.settings.sensitivity,
-            )
+    pub(crate) fn active(&self) -> Option<ActiveTurn> {
+        self.runtime().active.as_ref().map(|turn| ActiveTurn {
+            id: turn.id,
+            source: turn.report.source,
+            stage: turn.report.stage,
+            started: turn.started,
+            sensitivity: turn.request.settings.sensitivity,
+            wake_gain: turn.request.settings.wake_gain,
+            transcription_gain: turn.request.settings.transcription_gain,
         })
     }
 
@@ -193,10 +210,6 @@ impl App {
         if source == Source::Wake && !request.settings.listening {
             return Err(Failure::Busy);
         }
-        if request.key.is_empty() && source != Source::Wake {
-            return Err(Failure::MissingKey);
-        }
-
         runtime.next_id += 1;
         let id = runtime.next_id;
         let stage = match source {
@@ -215,6 +228,7 @@ impl App {
             },
             request,
         });
+        self.indicators.stage(source, stage);
         Ok(id)
     }
 
@@ -223,6 +237,7 @@ impl App {
         if let Some(turn) = runtime.active.as_mut().filter(|turn| turn.id == id) {
             turn.record_timing();
             turn.report.stage = stage;
+            self.indicators.stage(turn.report.source, stage);
         }
     }
 
@@ -232,6 +247,7 @@ impl App {
             let mut turn = runtime.active.take().expect("matching active turn");
             turn.record_timing();
             turn.report.error = error;
+            self.indicators.finish(turn.report.source);
             runtime.last = Some(turn.report);
         }
     }
@@ -281,11 +297,19 @@ impl App {
             .cloned()
             .collect();
         self.push("user", text.clone());
-        let error = match self
-            .openrouter
+        let provider = match request
+            .settings
+            .assistant
+            .resolve(&self.plugins, Capability::Chat)
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.finish(id, Some(error));
+                return;
+            }
+        };
+        let error = match provider
             .reply(
-                &request.key,
-                &request.settings.models,
                 &text,
                 instructions,
                 context
@@ -299,7 +323,7 @@ impl App {
                 self.push("assistant", answer);
                 None
             }
-            Err(_) => Some(Failure::Cloud),
+            Err(error) => Some(Provider::failure(error)),
         };
         self.finish(id, error);
     }

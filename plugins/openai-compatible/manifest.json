@@ -1,0 +1,19 @@
+{
+  "id": "openai-compatible",
+  "version": "0.3.0",
+  "title": { "en": "OpenAI-compatible provider", "ru": "OpenAI-совместимый провайдер" },
+  "apiVersion": 1,
+  "settings": [
+    {
+      "id": "base_url",
+      "type": "url",
+      "required": true,
+      "label": { "en": "API base URL", "ru": "Базовый URL API" },
+      "description": {
+        "en": "Use a server address reachable from Goodwin, such as http://192.168.1.10:8000/v1.",
+        "ru": "Укажите адрес сервера от Goodwin, например http://192.168.1.10:8000/v1."
+      }
+    },
+    { "id": "key", "type": "secret", "label": { "en": "API key", "ru": "Ключ API" } }
+  ]
+}

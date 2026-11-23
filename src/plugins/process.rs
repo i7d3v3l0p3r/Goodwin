@@ -1,6 +1,15 @@
-use std::{collections::HashSet, path::Path, process::Stdio, time::Duration};
+use std::{
+    collections::{BTreeSet, HashSet},
+    path::Path,
+    process::Stdio,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use goodwin_plugin::provider::{
+    Capability, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MODELS_METHOD, ModelCatalog, ModelsRequest,
+    SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -113,6 +122,12 @@ pub struct Registration {
     pub tools: Vec<Tool>,
     #[serde(default)]
     pub voice_context_tool: Option<String>,
+    #[serde(default)]
+    pub providers: BTreeSet<Capability>,
+    #[serde(default)]
+    pub model_catalog: bool,
+    #[serde(default)]
+    pub(super) speech_streaming: bool,
 }
 
 impl Registration {
@@ -132,6 +147,10 @@ impl Registration {
         let mut paths = HashSet::new();
         let mut ids = HashSet::new();
         for page in &self.pages {
+            ensure!(
+                manifest.settings.is_empty() || page.path != "settings",
+                "The settings page path is reserved for plugins with declarative settings"
+            );
             ensure!(
                 package::name(&page.id)
                     && page.title.valid()
@@ -193,17 +212,77 @@ impl Registration {
 pub struct Process {
     requests: mpsc::Sender<Call>,
     stop: watch::Sender<bool>,
+    speech_streaming: bool,
 }
 
 struct Call {
     method: &'static str,
     params: Value,
     response: oneshot::Sender<Result<Value>>,
+    speech_chunks: Option<mpsc::Sender<SpeechAudio>>,
+    limits: CallLimits,
+}
+
+pub(crate) struct SpeechReplies {
+    chunks: mpsc::Receiver<SpeechAudio>,
+    result: Option<oneshot::Receiver<Result<Value>>>,
+}
+
+impl SpeechReplies {
+    pub(crate) async fn next(&mut self) -> Result<Option<SpeechAudio>> {
+        if let Some(audio) = self.chunks.recv().await {
+            return Ok(Some(audio));
+        }
+        if let Some(result) = self.result.take() {
+            let result = result.await.context("Plugin process stopped")??;
+            ensure!(result.is_null(), "Unexpected speech stream result");
+        }
+        Ok(None)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CallLimits {
+    request: usize,
+    response: usize,
+    timeout: Duration,
+}
+
+impl CallLimits {
+    const STANDARD: Self = Self {
+        request: FRAME_LIMIT,
+        response: FRAME_LIMIT,
+        timeout: CALL_TIMEOUT,
+    };
+
+    fn provider(capability: Capability) -> Self {
+        let (request, response) = match capability {
+            Capability::Transcription => (
+                MAX_RECORDING_BYTES.div_ceil(3) * 4 + FRAME_LIMIT,
+                FRAME_LIMIT,
+            ),
+            Capability::Chat => (512 * 1024, 512 * 1024),
+            Capability::Speech => (FRAME_LIMIT, MAX_SPEECH_BYTES.div_ceil(3) * 4 + FRAME_LIMIT),
+        };
+        Self {
+            request,
+            response,
+            timeout: Duration::from_secs(60),
+        }
+    }
 }
 
 impl Process {
     #[cfg(test)]
     pub fn mock(handler: impl Fn(Value) -> Value + Send + 'static) -> Self {
+        Self::mock_rpc(move |method, params| {
+            assert_eq!(method, "tool");
+            Ok(handler(params))
+        })
+    }
+
+    #[cfg(test)]
+    pub fn mock_rpc(handler: impl Fn(&str, Value) -> Result<Value> + Send + 'static) -> Self {
         let (requests, mut incoming) = mpsc::channel::<Call>(1);
         let (stop, mut stopping) = watch::channel(false);
         tokio::spawn(async move {
@@ -212,13 +291,16 @@ impl Process {
                     _ = stopping.changed() => break,
                     call = incoming.recv() => {
                         let Some(call) = call else { break; };
-                        assert_eq!(call.method, "tool");
-                        let _ = call.response.send(Ok(handler(call.params)));
+                        let _ = call.response.send(handler(call.method, call.params));
                     }
                 }
             }
         });
-        Self { requests, stop }
+        Self {
+            requests,
+            stop,
+            speech_streaming: false,
+        }
     }
 
     pub async fn start(
@@ -251,8 +333,9 @@ impl Process {
             partial: Vec::new(),
         };
         let ready = async {
-            write(&mut input, &json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "apiVersion": API_VERSION } })).await?;
-            let ready: Registration = serde_json::from_value(response(output.read().await?, 0)??)?;
+            write(&mut input, &json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "apiVersion": API_VERSION, "speechStreaming": true } }), FRAME_LIMIT).await?;
+            let ready: Registration =
+                serde_json::from_value(response(output.read(FRAME_LIMIT).await?, 0)??)?;
             ready.validate(manifest)?;
             Ok::<_, anyhow::Error>(ready)
         };
@@ -285,7 +368,15 @@ impl Process {
                 let _ = child.kill().await;
             }
         });
-        Ok((Self { requests, stop }, registration))
+        let speech_streaming = registration.speech_streaming;
+        Ok((
+            Self {
+                requests,
+                stop,
+                speech_streaming,
+            },
+            registration,
+        ))
     }
 
     pub fn running(&self) -> bool {
@@ -298,19 +389,81 @@ impl Process {
     }
 
     pub async fn call(&self, method: &'static str, params: Value) -> Result<Value> {
+        self.call_with_limits(method, params, CallLimits::STANDARD)
+            .await
+    }
+
+    pub async fn provider(&self, capability: Capability, params: Value) -> Result<Value> {
+        self.call_with_limits(
+            capability.method(),
+            params,
+            CallLimits::provider(capability),
+        )
+        .await
+    }
+
+    pub(crate) fn stream_speech(&self, request: SpeechRequest) -> Result<Option<SpeechReplies>> {
+        if !self.speech_streaming {
+            return Ok(None);
+        }
+        let (sender, chunks) = mpsc::channel(4);
         let (response, result) = oneshot::channel();
-        ensure!(self.running(), "Plugin process is unavailable");
-        self.requests
-            .try_send(Call {
-                method,
-                params,
-                response,
-            })
-            .map_err(|_| anyhow!("Plugin process is busy or unavailable"))?;
-        timeout(CALL_TIMEOUT + CALL_TIMEOUT, result)
+        self.enqueue(Call {
+            method: SPEECH_STREAM_METHOD,
+            params: serde_json::to_value(request)?,
+            response,
+            speech_chunks: Some(sender),
+            limits: CallLimits {
+                timeout: Duration::from_secs(60),
+                ..CallLimits::STANDARD
+            },
+        })?;
+        Ok(Some(SpeechReplies {
+            chunks,
+            result: Some(result),
+        }))
+    }
+
+    pub async fn models(&self, capability: Capability) -> Result<ModelCatalog> {
+        let reply = self
+            .call_with_limits(
+                MODELS_METHOD,
+                serde_json::to_value(ModelsRequest { capability })?,
+                CallLimits {
+                    request: FRAME_LIMIT,
+                    response: 512 * 1024,
+                    timeout: Duration::from_secs(5),
+                },
+            )
+            .await?;
+        Ok(serde_json::from_value(reply)?)
+    }
+
+    async fn call_with_limits(
+        &self,
+        method: &'static str,
+        params: Value,
+        limits: CallLimits,
+    ) -> Result<Value> {
+        let (response, result) = oneshot::channel();
+        self.enqueue(Call {
+            method,
+            params,
+            response,
+            speech_chunks: None,
+            limits,
+        })?;
+        timeout(limits.timeout * 2, result)
             .await
             .context("Plugin request timed out")?
             .context("Plugin process stopped")?
+    }
+
+    fn enqueue(&self, call: Call) -> Result<()> {
+        ensure!(self.running(), "Plugin process is unavailable");
+        self.requests
+            .try_send(call)
+            .map_err(|_| anyhow!("Plugin process is busy or unavailable"))
     }
 }
 
@@ -323,23 +476,71 @@ async fn run(
     let mut id = 0u64;
     loop {
         tokio::select! {
-            frame = output.read() => notify(frame?, &sound)?,
+            frame = output.read(FRAME_LIMIT) => notify(frame?, &sound)?,
             call = incoming.recv() => {
                 let Some(call) = call else { return Ok(()); };
                 if call.response.is_closed() { continue; }
                 id += 1;
-                let result = timeout(CALL_TIMEOUT, async {
-                    write(input, &json!({ "jsonrpc": "2.0", "id": id, "method": call.method, "params": call.params })).await?;
-                    loop {
-                        let message = output.read().await?;
-                        if message.get("id").is_some() { break response(message, id); }
-                        notify(message, &sound)?;
+                let message = json!({ "jsonrpc": "2.0", "id": id, "method": call.method, "params": call.params });
+                let request = match encode(&message, call.limits.request) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        let _ = call.response.send(Err(error));
+                        continue;
                     }
-                }).await.context("Plugin RPC timed out")??;
+                };
+                let exchange = exchange(input, output, &sound, id, &call, &request);
+                let result = if call.speech_chunks.is_some() {
+                    exchange.await?
+                } else {
+                    timeout(call.limits.timeout, exchange).await.context("Plugin RPC timed out")??
+                };
                 let _ = call.response.send(result);
             }
         }
     }
+}
+
+async fn exchange(
+    input: &mut ChildStdin,
+    output: &mut Frames,
+    sound: &mpsc::Sender<()>,
+    id: u64,
+    call: &Call,
+    request: &[u8],
+) -> Result<Result<Value>> {
+    timeout(call.limits.timeout, input.write_all(request))
+        .await
+        .context("Write plugin request timed out")??;
+    loop {
+        let message = timeout(call.limits.timeout, output.read(call.limits.response))
+            .await
+            .context("Read plugin response timed out")??;
+        if message.get("id").is_some() {
+            return response(message, id);
+        }
+        if let Some(chunks) = &call.speech_chunks
+            && message["method"] == SPEECH_CHUNK_NOTIFICATION
+        {
+            let SpeechChunk { request_id, audio } =
+                serde_json::from_value(message["params"].clone())?;
+            ensure!(
+                message["jsonrpc"] == "2.0" && request_id == id,
+                "Unexpected speech chunk"
+            );
+            // Keep draining RPC frames if the player has already stopped.
+            let _ = chunks.send(audio).await;
+        } else {
+            notify(message, sound)?;
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeechChunk {
+    request_id: u64,
+    audio: SpeechAudio,
 }
 
 fn response(mut message: Value, id: u64) -> Result<Result<Value>> {
@@ -373,12 +574,15 @@ fn notify(message: Value, sound: &mpsc::Sender<()>) -> Result<()> {
     Ok(())
 }
 
-async fn write(input: &mut ChildStdin, message: &Value) -> Result<()> {
+fn encode(message: &Value, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(message)?;
-    ensure!(bytes.len() < FRAME_LIMIT, "Plugin request is too large");
+    ensure!(bytes.len() < limit, "Plugin request is too large");
     bytes.push(b'\n');
-    input.write_all(&bytes).await?;
-    Ok(())
+    Ok(bytes)
+}
+
+async fn write(input: &mut ChildStdin, message: &Value, limit: usize) -> Result<()> {
+    Ok(input.write_all(&encode(message, limit)?).await?)
 }
 
 struct Frames {
@@ -387,7 +591,7 @@ struct Frames {
 }
 
 impl Frames {
-    async fn read(&mut self) -> Result<Value> {
+    async fn read(&mut self, limit: usize) -> Result<Value> {
         loop {
             let buffer = self.reader.fill_buf().await?;
             if buffer.is_empty() {
@@ -396,7 +600,7 @@ impl Frames {
             let newline = buffer.iter().position(|byte| *byte == b'\n');
             let count = newline.map_or(buffer.len(), |index| index + 1);
             ensure!(
-                self.partial.len() + count <= FRAME_LIMIT,
+                self.partial.len() + count <= limit,
                 "Plugin response is too large"
             );
             self.partial.extend_from_slice(&buffer[..count]);

@@ -9,6 +9,15 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
+pub mod provider;
+pub mod settings;
+
+use provider::{
+    Capability, ChatRequest, Completion, MODELS_METHOD, ModelCatalog, ModelsRequest,
+    SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest, Transcription,
+    TranscriptionRequest,
+};
+
 pub trait Plugin {
     fn registration(&self) -> Value;
 
@@ -20,6 +29,34 @@ pub trait Plugin {
 
     fn tool(&mut self, _call: ToolCall) -> Result<Value> {
         Ok(json!({"error": "unknown_tool"}))
+    }
+
+    fn transcribe(&mut self, _request: TranscriptionRequest) -> Result<Transcription> {
+        anyhow::bail!("Transcription is unavailable")
+    }
+
+    fn complete(&mut self, _request: ChatRequest) -> Result<Completion> {
+        anyhow::bail!("Chat completion is unavailable")
+    }
+
+    fn synthesize(&mut self, _request: SpeechRequest) -> Result<SpeechAudio> {
+        anyhow::bail!("Speech synthesis is unavailable")
+    }
+
+    fn supports_speech_streaming(&self) -> bool {
+        false
+    }
+
+    fn synthesize_stream(
+        &mut self,
+        _request: SpeechRequest,
+        _emit: &mut dyn FnMut(SpeechAudio) -> Result<()>,
+    ) -> Result<()> {
+        anyhow::bail!("Speech streaming is unavailable")
+    }
+
+    fn models(&mut self, _request: ModelsRequest) -> Result<ModelCatalog> {
+        anyhow::bail!("The model catalog is unavailable")
     }
 }
 
@@ -125,7 +162,12 @@ fn run_protocol(
         pending_signals: Some(0),
     })));
     plugin.ready(host.clone());
-    let registration = plugin.registration();
+    let speech_streaming =
+        init.params["speechStreaming"] == true && plugin.supports_speech_streaming();
+    let mut registration = plugin.registration();
+    if speech_streaming {
+        registration["speechStreaming"] = json!(true);
+    }
     host.confirm_ready(&json!({"jsonrpc": "2.0", "id": init.id, "result": registration}))?;
 
     for line in input {
@@ -139,6 +181,24 @@ fn run_protocol(
             "tool" => serde_json::from_value(request.params)
                 .map_err(Into::into)
                 .and_then(|call| plugin.tool(call)),
+            method if method == Capability::Transcription.method() => {
+                dispatch(request.params, |request| plugin.transcribe(request))
+            }
+            method if method == Capability::Chat.method() => {
+                dispatch(request.params, |request| plugin.complete(request))
+            }
+            method if method == Capability::Speech.method() => {
+                dispatch(request.params, |request| plugin.synthesize(request))
+            }
+            SPEECH_STREAM_METHOD if speech_streaming => dispatch(request.params, |speech| {
+                plugin.synthesize_stream(speech, &mut |audio| {
+                    (host.0.lock().expect("plugin output").send)(&json!({
+                        "jsonrpc": "2.0", "method": SPEECH_CHUNK_NOTIFICATION,
+                        "params": {"requestId": request.id, "audio": audio}
+                    }))
+                })
+            }),
+            MODELS_METHOD => dispatch(request.params, |request| plugin.models(request)),
             _ => Err(anyhow::anyhow!("Unknown RPC method")),
         };
         let response = match result {
@@ -151,6 +211,15 @@ fn run_protocol(
         (host.0.lock().expect("plugin output").send)(&response)?;
     }
     Ok(())
+}
+
+fn dispatch<T: DeserializeOwned, U: Serialize>(
+    params: Value,
+    handler: impl FnOnce(T) -> Result<U>,
+) -> Result<Value> {
+    Ok(serde_json::to_value(handler(serde_json::from_value(
+        params,
+    )?)?)?)
 }
 
 fn send(message: &Value) -> Result<()> {
@@ -253,5 +322,66 @@ mod tests {
 
         assert!(failure.is_err());
         assert!(frames.lock().unwrap().is_empty());
+    }
+
+    struct SpeechPlugin;
+
+    impl Plugin for SpeechPlugin {
+        fn registration(&self) -> Value {
+            json!({"apiVersion": 1, "providers": ["speech"]})
+        }
+
+        fn supports_speech_streaming(&self) -> bool {
+            true
+        }
+
+        fn synthesize_stream(
+            &mut self,
+            request: SpeechRequest,
+            emit: &mut dyn FnMut(SpeechAudio) -> Result<()>,
+        ) -> Result<()> {
+            assert_eq!(request.text, "Готово");
+            emit(SpeechAudio {
+                pcm_base64: "AAE=".into(),
+                sample_rate: 24_000,
+                channels: 1,
+            })
+        }
+    }
+
+    #[test]
+    fn speech_chunks_precede_the_result_and_are_advertised_only_to_streaming_hosts() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let legacy = Arc::clone(&frames);
+        run_protocol(SpeechPlugin, INITIALIZE, move |frame| {
+            legacy.lock().unwrap().push(frame.clone());
+            Ok(())
+        })
+        .unwrap();
+
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"apiVersion":1,"speechStreaming":true}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":5,"method":"provider.synthesize_stream","params":{"text":"Готово"}}"#,
+            "\n",
+        );
+        let modern = Arc::clone(&frames);
+        run_protocol(SpeechPlugin, input.as_bytes(), move |frame| {
+            modern.lock().unwrap().push(frame.clone());
+            Ok(())
+        })
+        .unwrap();
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 4);
+        assert!(frames[0]["result"].get("speechStreaming").is_none());
+        assert_eq!(frames[1]["result"]["speechStreaming"], true);
+        assert_eq!(
+            frames[2],
+            json!({
+                "jsonrpc": "2.0", "method": "provider.speech_chunk",
+                "params": {"requestId":5,"audio":{"pcmBase64":"AAE=","sampleRate":24000,"channels":1}}
+            })
+        );
+        assert_eq!(frames[3], json!({"jsonrpc":"2.0","id":5,"result":null}));
     }
 }

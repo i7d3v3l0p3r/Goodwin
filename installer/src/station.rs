@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::{BufRead, BufReader},
-    net::{IpAddr, Ipv6Addr},
+    net::Ipv6Addr,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     thread,
@@ -52,7 +52,10 @@ pub(crate) struct Address {
 }
 
 impl Address {
-    pub(crate) fn from_ip(ip: IpAddr) -> Self {
+    #[cfg(feature = "gui")]
+    pub(crate) fn from_ip(ip: std::net::IpAddr) -> Self {
+        use std::net::IpAddr;
+
         let host = match ip {
             IpAddr::V4(ip) => ip.to_string(),
             IpAddr::V6(ip) => format!("[{ip}]"),
@@ -281,7 +284,7 @@ impl Adb<'_> {
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         let mut child = command.spawn().context(
-            "ADB не найден или не запускается. Установите Android SDK Platform-Tools или выберите файл ADB в окне установщика",
+            "ADB не найден или не запускается. Установите Android SDK Platform-Tools или укажите путь к ADB",
         )?;
         let stdout = child.stdout.take().context("Нет вывода ADB")?;
         let stderr = child.stderr.take().context("Нет вывода ошибок ADB")?;

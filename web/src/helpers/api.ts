@@ -1,11 +1,33 @@
 import type { Stage } from "./words";
 
-export type Models = Record<"transcription" | "chat" | "speech" | "voice", string>;
+export type Capability = "transcription" | "chat" | "speech";
+export interface ModelSelection {
+  model?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface PipelineStage {
+  provider: string;
+  selection: ModelSelection;
+}
+
+export interface AssistantSettings {
+  engine: "pipeline";
+  pipeline: Record<Capability, PipelineStage> & { speech_streaming?: boolean };
+}
+
+export interface ModelCatalog {
+  models: { id: string; name: string | null; voices?: string[] }[];
+  default: string | null;
+  available: boolean;
+}
 
 export interface Settings {
-  models: Models;
+  assistant: AssistantSettings;
   listening: boolean;
   sensitivity: number;
+  wake_gain: number | null;
+  transcription_gain: number | null;
 }
 
 export interface Report {
@@ -24,8 +46,8 @@ export interface Message {
 export interface Snapshot {
   settings: Settings;
   system_prompt: string;
-  key_configured: boolean;
   microphone: boolean;
+  default_microphone_gain: number;
   model: boolean;
   active: Report | null;
   last: Report | null;
@@ -51,6 +73,25 @@ export interface Plugin {
   revision: string | null;
   web: { entry: string; styles: string[] } | null;
   pages: PluginPage[];
+  providers: Capability[];
+  model_catalog: boolean;
+  speech_streaming?: boolean;
+  has_settings: boolean;
+}
+
+export interface PluginSettingField {
+  id: string;
+  label: Label;
+  description?: Label;
+  type: "text" | "url" | "secret" | "boolean" | "integer";
+  required: boolean;
+  maxLength?: number;
+}
+
+export interface PluginSettings {
+  fields: PluginSettingField[];
+  values: Record<string, string | boolean | number>;
+  configuredSecrets: string[];
 }
 
 export interface Access {

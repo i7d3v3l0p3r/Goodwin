@@ -115,7 +115,7 @@ export function createPanel() {
     }, true),
     send: (message: string) => action(() => api("chat", "POST", { message })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),
-    saveSettings: (settings: Settings, key?: string) => action(() => api("settings", "PUT", { settings, key })),
+    saveSettings: (settings: Settings) => action(() => api("settings", "PUT", { settings })),
     saveSystemPrompt: (systemPrompt: string) =>
       action(() => api("settings/system-prompt", "PUT", { system_prompt: systemPrompt })),
     testStation: (mode: "manual" | "wake") => action(() => api("test", "POST", { mode })),

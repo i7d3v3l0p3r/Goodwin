@@ -6,8 +6,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     app::App,
-    config::{Access, Config, Settings, hash_password},
-    openrouter::OpenRouter,
+    config::{Access, Config, DEFAULT_MICROPHONE_GAIN, Settings, hash_password},
     panel::router,
     station::Player,
     test_support::serve,
@@ -23,7 +22,6 @@ fn setup(dir: &Path) {
             hash: hash_password(PASSWORD).unwrap(),
         },
         settings: Settings::default(),
-        key: "initial-key".into(),
         system_prompt: String::new(),
     };
     config.save(dir, true).unwrap();
@@ -33,8 +31,8 @@ async fn start_panel(dir: &Path) -> (String, JoinHandle<()>) {
     serve(router(App::new(
         dir.into(),
         Config::load(dir).unwrap(),
-        OpenRouter::new().unwrap(),
         Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
     )))
     .await
 }
@@ -72,7 +70,6 @@ async fn first_visit_sets_one_password_and_signs_in() {
             listening: false,
             ..Settings::default()
         },
-        key: "initial-key".into(),
         system_prompt: String::new(),
     }
     .save(dir.path(), true)
@@ -165,7 +162,6 @@ async fn first_visit_sets_one_password_and_signs_in() {
         panic!("expected a password hash")
     };
     assert!(crate::config::verify_password(&hash, password));
-    assert_eq!(saved.key, "initial-key");
     assert!(!saved.settings.listening);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
@@ -223,14 +219,12 @@ async fn password_mode_protects_settings_and_session_survives_restart_until_logo
         .put(&settings_url)
         .header(header::COOKIE, &cookie)
         .header(header::ORIGIN, &panel)
-        .json(&json!({"settings": settings, "key": "new-key"}))
+        .json(&json!({"settings": settings}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(!response.text().await.unwrap().contains("new-key"));
     let saved = Config::load(dir.path()).unwrap();
-    assert_eq!(saved.key, "new-key");
     assert!(!saved.settings.listening);
     assert_eq!(
         client

@@ -1,9 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    app::{App, Failure, Source, Stage},
+    app::{ActiveTurn, App, Failure, Source, Stage},
     wake::{FRAME_SAMPLES as WAKE_SAMPLES, SAMPLE_RATE as RATE, WakeModel},
 };
+
+use super::gain::{RecordingGain, scale_sample};
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +22,7 @@ pub(super) struct Detector {
     model: Option<WakeModel>,
     frame: Vec<i16>,
     wake_frame: Vec<i16>,
+    wake_gain: Option<f32>,
     history: std::collections::VecDeque<i16>,
     detection_enabled: bool,
     wake_test: Option<u64>,
@@ -33,6 +36,7 @@ struct Recording {
     elapsed: usize,
     voiced: usize,
     silence: usize,
+    gain: RecordingGain,
 }
 
 impl Detector {
@@ -41,6 +45,7 @@ impl Detector {
             model,
             frame: Vec::with_capacity(VAD_SAMPLES),
             wake_frame: Vec::with_capacity(WAKE_SAMPLES),
+            wake_gain: None,
             history: std::collections::VecDeque::with_capacity(PRE_ROLL),
             detection_enabled: false,
             wake_test: None,
@@ -49,8 +54,12 @@ impl Detector {
     }
 
     fn reset_wake(&mut self) {
-        self.wake_frame.clear();
         self.history.clear();
+        self.reset_wake_model();
+    }
+
+    fn reset_wake_model(&mut self) {
+        self.wake_frame.clear();
         if let Some(model) = self.model.as_mut() {
             let _ = model.reset();
         }
@@ -74,13 +83,26 @@ impl Detector {
 
     fn tick(&mut self, app: &Arc<App>) {
         let active = app.active();
-        if let Some((id, source, Stage::Recording, _, _)) = active {
+        if let Some(ActiveTurn {
+            id,
+            source,
+            stage: Stage::Recording,
+            transcription_gain,
+            ..
+        }) = active.as_ref()
+        {
+            let id = *id;
             if self
                 .recording
                 .as_ref()
                 .is_none_or(|recording| recording.id != id)
             {
-                self.recording = Some(Recording::new(id, source != Source::ManualTest, Vec::new()));
+                self.recording = Some(Recording::new(
+                    id,
+                    *source != Source::ManualTest,
+                    Vec::new(),
+                    RecordingGain::new(*transcription_gain, app.default_microphone_gain),
+                ));
             }
             let recording = self.recording.as_mut().expect("current recording");
             if let Some(has_speech) = recording.push(&self.frame) {
@@ -91,7 +113,8 @@ impl Detector {
 
                     let app = Arc::clone(app);
                     tokio::spawn(async move {
-                        app.voice(id, recording.samples, recording.woke).await;
+                        app.voice(id, recording.samples, recording.woke, recording.gain)
+                            .await;
                     });
                 } else {
                     app.finish(id, Some(Failure::NoSpeech));
@@ -103,30 +126,37 @@ impl Detector {
         if self.model.is_none() {
             return;
         }
-        let wake_test = active.and_then(|(id, _, stage, started, sensitivity)| {
-            if stage != Stage::AwaitingWake {
+        let wake_test = active.as_ref().and_then(|turn| {
+            if turn.stage != Stage::AwaitingWake {
                 return None;
             }
-            if started.elapsed() >= WAKE_TIMEOUT {
-                app.finish(id, Some(Failure::NoWake));
+            if turn.started.elapsed() >= WAKE_TIMEOUT {
+                app.finish(turn.id, Some(Failure::NoWake));
                 return None;
             }
-            Some((id, sensitivity))
+            Some(turn)
         });
-        let (listening, sensitivity) = app.configuration().wake_settings();
+        let (listening, sensitivity, gain) = app.configuration().wake_settings();
+        let (sensitivity, gain) = wake_test.map_or((sensitivity, gain), |turn| {
+            (turn.sensitivity, turn.wake_gain)
+        });
+        let gain = gain.unwrap_or(app.default_microphone_gain);
         let enabled = wake_test.is_some() || (active.is_none() && listening);
-        if enabled != self.detection_enabled || wake_test.map(|test| test.0) != self.wake_test {
-            self.reset_wake();
+        let wake_test_id = wake_test.map(|turn| turn.id);
+        let mode_changed = enabled != self.detection_enabled || wake_test_id != self.wake_test;
+        if mode_changed {
+            self.history.clear();
             self.detection_enabled = enabled;
-            self.wake_test = wake_test.map(|test| test.0);
+            self.wake_test = wake_test_id;
+        }
+        if mode_changed || self.wake_gain != Some(gain) {
+            self.reset_wake_model();
+            self.wake_gain = Some(gain);
         }
         if !enabled {
             return;
         }
-        let overflow = (self.history.len() + self.frame.len()).saturating_sub(PRE_ROLL);
-        self.history.drain(..overflow);
-        self.history.extend(&self.frame);
-        self.wake_frame.extend_from_slice(&self.frame);
+        self.buffer_wake_audio(gain);
         if self.wake_frame.len() < WAKE_SAMPLES {
             return;
         }
@@ -143,32 +173,47 @@ impl Detector {
                 eprintln!("Wake inference failed: {error}");
                 self.model = None;
                 app.set_model(false);
-                if let Some((id, _)) = wake_test {
+                if let Some(id) = wake_test_id {
                     app.finish(id, Some(Failure::Model));
                 }
                 return;
             }
         };
-        let threshold = 0.85 - 0.55 * wake_test.map_or(sensitivity, |test| test.1);
+        let threshold = 0.85 - 0.55 * sensitivity;
         if score < threshold {
             return;
         }
 
-        let turn = if let Some((id, _)) = wake_test {
+        let turn = if let Some(id) = wake_test_id {
             app.stage(id, Stage::Recording);
             Ok(id)
         } else {
             app.start(Source::Wake)
         };
-        if let Ok(id) = turn {
-            self.recording = Some(Recording::new(id, true, self.history.drain(..).collect()));
+        if let Ok(id) = turn
+            && let Some(turn) = app.active().filter(|turn| turn.id == id)
+        {
+            self.recording = Some(Recording::new(
+                id,
+                true,
+                self.history.drain(..).collect(),
+                RecordingGain::new(turn.transcription_gain, app.default_microphone_gain),
+            ));
         }
         self.reset_wake();
+    }
+
+    fn buffer_wake_audio(&mut self, gain: f32) {
+        let overflow = (self.history.len() + self.frame.len()).saturating_sub(PRE_ROLL);
+        self.history.drain(..overflow);
+        self.history.extend(&self.frame);
+        self.wake_frame
+            .extend(self.frame.iter().map(|&sample| scale_sample(sample, gain)));
     }
 }
 
 impl Recording {
-    fn new(id: u64, woke: bool, samples: Vec<i16>) -> Self {
+    fn new(id: u64, woke: bool, samples: Vec<i16>, gain: RecordingGain) -> Self {
         Self {
             id,
             woke,
@@ -176,13 +221,18 @@ impl Recording {
             elapsed: 0,
             voiced: 0,
             silence: 0,
+            gain,
         }
     }
 
     fn push(&mut self, frame: &[i16]) -> Option<bool> {
         self.samples.extend_from_slice(frame);
         self.elapsed += frame.len();
-        let energy: i64 = frame.iter().map(|&sample| i64::from(sample).pow(2)).sum();
+        let gain = self.gain.input_gain();
+        let energy: i64 = frame
+            .iter()
+            .map(|&sample| i64::from(scale_sample(sample, gain)).pow(2))
+            .sum();
         if energy >= SPEECH_RMS * SPEECH_RMS * frame.len() as i64 {
             self.voiced += frame.len();
             self.silence = 0;

@@ -5,7 +5,8 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use serde_json::Value;
+use goodwin_plugin::provider::Capability;
+use serde_json::{Map, Value};
 
 use crate::plugins::{ARCHIVE_LIMIT, Failure as PluginFailure};
 
@@ -13,6 +14,39 @@ use super::{Panel, problem};
 
 pub(super) async fn plugin_catalog(State(panel): State<Panel>) -> impl IntoResponse {
     Json(panel.app.plugins.catalog())
+}
+
+pub(super) async fn plugin_models(
+    State(panel): State<Panel>,
+    Path((id, capability)): Path<(String, Capability)>,
+) -> Response {
+    match panel.app.plugins.models(&id, capability).await {
+        Ok(catalog) => Json(catalog).into_response(),
+        Err(error) => plugin_problem(error),
+    }
+}
+
+pub(super) async fn plugin_settings(
+    State(panel): State<Panel>,
+    Path(id): Path<String>,
+) -> Response {
+    match panel.app.plugins.settings(&id).await {
+        Ok(settings) => Json(settings).into_response(),
+        Err(error) => plugin_problem(error),
+    }
+}
+
+pub(super) async fn update_plugin_settings(
+    State(panel): State<Panel>,
+    Path(id): Path<String>,
+    Json(fields): Json<Map<String, Value>>,
+) -> Response {
+    let plugins = panel.app.plugins.clone();
+    match tokio::spawn(async move { plugins.update_settings(&id, fields).await }).await {
+        Ok(Ok(settings)) => Json(settings).into_response(),
+        Ok(Err(error)) => plugin_problem(error),
+        Err(_) => plugin_problem(PluginFailure::Storage),
+    }
 }
 
 pub(super) async fn upload_plugin(State(panel): State<Panel>, request: Request) -> Response {
@@ -106,7 +140,7 @@ pub(super) async fn plugin_asset(
 
 fn plugin_problem(error: PluginFailure) -> Response {
     let status = match error {
-        PluginFailure::InvalidPackage => StatusCode::BAD_REQUEST,
+        PluginFailure::InvalidPackage | PluginFailure::InvalidSettings => StatusCode::BAD_REQUEST,
         PluginFailure::NotFound => StatusCode::NOT_FOUND,
         PluginFailure::StartFailed | PluginFailure::RolledBack => StatusCode::CONFLICT,
         PluginFailure::Storage => StatusCode::INTERNAL_SERVER_ERROR,

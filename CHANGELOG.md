@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### English
+
+- Install or update Goodwin from the terminal with `goodwin-installer install <address>`. You can select a local package, an ADB executable, and a wake-word model. The command prints the panel URL when the installation succeeds.
+- Configure the assistant's STT → LLM → TTS engine in the panel. Each stage can use a separate provider and model, with additional parameters such as the synthesis voice. Enter a model ID manually when the server has no catalog.
+- Adjust speech speed from 0.5× to 2× in the assistant's synthesis settings when the selected model supports it.
+- With a streaming OpenAI-compatible server, Goodwin starts playing spoken replies as PCM arrives. Turn off streaming in **Settings → Assistant → Speech synthesis (TTS)** to wait for a complete reply before playback.
+- OpenRouter is now a separate plugin. The OpenAI-compatible provider connects Goodwin to local or remote servers such as KittenTTS. Set the OpenRouter API key in the plugin after upgrading from the built-in provider.
+- Goodwin renders plugin settings from their manifests. Open them from the Plugins list or the plugin's own page.
+- Set separate microphone gains for wake-word detection and speech recognition. Speech recognition still supports automatic gain.
+- On Station Mini 3, eyes blink while Goodwin records and the light ring spins while it processes a request. The four lower display segments brighten and fade with the spoken reply. Goodwin redraws the eyes after a clock refresh and restores the complete clock display at the end of the interaction.
+
+### Русский
+
+- Устанавливайте и обновляйте Goodwin из терминала командой `goodwin-installer install <адрес>`. Можно указать локальный пакет, путь к ADB и модель активации. После успешной установки команда выводит адрес панели.
+- Настраивайте движок ассистента STT → LLM → TTS в панели. Для каждого этапа можно выбрать провайдер, модель и дополнительные параметры, например голос озвучивания. Если сервер не отдаёт каталог, ID модели можно ввести вручную.
+- В настройках озвучивания можно менять скорость речи от 0,5× до 2×, если выбранная модель это поддерживает.
+- С потоковым OpenAI-совместимым сервером Goodwin начинает озвучивать ответ по мере поступления PCM. Чтобы воспроизводить готовый ответ целиком, отключите потоковое воспроизведение в разделе **Настройки → Ассистент → Озвучивание (TTS)**.
+- OpenRouter вынесен в отдельный плагин. OpenAI-совместимый провайдер подключает локальные и удалённые серверы, в том числе KittenTTS. При обновлении со встроенного OpenRouter укажите ключ API в настройках плагина.
+- Goodwin строит формы настроек плагинов по их манифестам. Настройки открываются из списка плагинов или со страницы самого плагина.
+- Усиление микрофона для ключевого слова и распознавания речи настраивается отдельно. Для распознавания доступно автоусиление.
+- На Станции Мини 3 глаза моргают во время записи, а кольцо вращается при обработке запроса. При озвучивании четыре нижних сегмента дисплея плавно меняют яркость в такт голосу. Гудвин возвращает глаза после перерисовки часов и восстанавливает полный кадр часов по окончании запроса.
+
 ## [0.1.0] - 2026-11-23
 
 ### English

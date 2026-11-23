@@ -1,0 +1,13 @@
+{
+  "id": "openrouter",
+  "version": "0.2.0",
+  "title": { "en": "OpenRouter", "ru": "OpenRouter" },
+  "apiVersion": 1,
+  "settings": [
+    {
+      "id": "key", "type": "secret",
+      "label": { "en": "API key", "ru": "Ключ API" },
+      "description": { "en": "Required to send requests to OpenRouter.", "ru": "Нужен для отправки запросов в OpenRouter." }
+    }
+  ]
+}

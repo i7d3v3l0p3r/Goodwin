@@ -1,8 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{RwLock, RwLockReadGuard},
 };
 
+use goodwin_plugin::provider::Capability;
 use serde::Serialize;
 
 use super::{
@@ -96,6 +97,10 @@ pub struct View {
     revision: Option<String>,
     web: Option<Web>,
     pages: Vec<Page>,
+    providers: BTreeSet<Capability>,
+    model_catalog: bool,
+    speech_streaming: bool,
+    has_settings: bool,
 }
 
 impl Entry {
@@ -121,6 +126,12 @@ impl Entry {
             revision: active.map(|active| active.revision.clone()),
             web: active.and(self.manifest.web.clone()),
             pages: active.map_or_else(Vec::new, |active| active.registration.pages.clone()),
+            providers: active.map_or_else(BTreeSet::new, |active| {
+                active.registration.providers.clone()
+            }),
+            model_catalog: active.is_some_and(|active| active.registration.model_catalog),
+            speech_streaming: active.is_some_and(|active| active.registration.speech_streaming),
+            has_settings: !self.manifest.settings.is_empty(),
         }
     }
 }

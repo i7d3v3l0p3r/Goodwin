@@ -19,6 +19,7 @@ pub(super) fn routes() -> Router<Panel> {
         .route("/settings/", get(index))
         .route("/plugins", get(index))
         .route("/plugins/", get(index))
+        // Both plugin pages and /plugins/{id}/settings use the panel entry point.
         .route("/plugins/{*path}", get(index))
         .route(
             "/panel.js",

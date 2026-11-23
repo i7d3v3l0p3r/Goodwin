@@ -54,12 +54,14 @@ python "%~dp0zig-tool.py" ar %*
     $hostTriple = (& rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
     $linker = Join-Path $sysroot "lib/rustlib/$hostTriple/bin/rust-lld.exe"
     # Rust's LLD preserves the Cortex-A53 erratum workaround used by this target.
-    foreach ($package in @('goodwin', 'goodwin-timers')) {
-        Invoke-Checked cargo @('rustc', '--locked', '--package', $package, '--release', '--target', $target, '--jobs', "$Jobs", '--',
+    foreach ($package in @('goodwin', 'goodwin-timers', 'goodwin-openai-compatible', 'goodwin-openrouter')) {
+        Invoke-Checked cargo @('rustc', '--locked', '--package', $package, '--bin', $package, '--release', '--target', $target, '--jobs', "$Jobs", '--',
             '-C', "linker=$linker", '-C', 'linker-flavor=ld.lld')
     }
-    Invoke-Checked python @('scripts/package-plugin.py', 'plugins/timers', "target/$target/release/goodwin-timers",
-        'linux-aarch64', 'target/plugins/timers-linux-aarch64.tar.gz')
+    foreach ($plugin in @('timers', 'openai-compatible', 'openrouter')) {
+        Invoke-Checked python @('scripts/package-plugin.py', "plugins/$plugin", "target/$target/release/goodwin-$plugin",
+            'linux-aarch64', "target/plugins/$plugin-linux-aarch64.tar.gz")
+    }
 }
 finally {
     foreach ($setting in $previous.GetEnumerator()) {

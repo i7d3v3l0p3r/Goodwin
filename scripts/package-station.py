@@ -25,6 +25,7 @@ GOODWIN_PANEL_ADDRESS=0.0.0.0:8787 ./start.sh standard
 
 Open the Station's address on port 8787 to create the panel password and sign in.
 The first visitor who completes setup sets the password.
+Install a provider package in the Plugins panel to enable inference.
 
 For an existing Goodwin installation, reuse its configured data directory with
 `GOODWIN_DATA_DIR` and skip setup. Stop the current Goodwin process before
@@ -32,8 +33,7 @@ starting the new one. Pass `micro` instead of `standard` to start with Micro.
 Use a trusted network for the HTTP panel.
 
 Both bundled models were calibrated to an ONNX score threshold of 0.50.
-Set panel sensitivity to about 64% to use that threshold. OpenRouter setup
-and the Station audio connection use the normal Goodwin configuration.
+Set panel sensitivity to about 64% to use that threshold.
 """
 
 

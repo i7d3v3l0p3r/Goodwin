@@ -1,8 +1,9 @@
 mod app;
+mod assistant;
 mod config;
-mod openrouter;
 mod panel;
 mod plugins;
+mod providers;
 mod station;
 #[cfg(test)]
 mod test_support;
@@ -12,15 +13,18 @@ mod wav;
 use std::{env, fs, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use goodwin_plugin::provider::{Capability, MAX_RECORDING_BYTES};
 
 use crate::{
     app::{App, VOICE_INSTRUCTIONS},
-    config::{Access, Config, Settings, hash_password},
-    openrouter::{Models, OpenRouter},
-    station::{MicrophoneOptions, Player},
+    config::{
+        Access, Config, DEFAULT_MICROPHONE_GAIN, Settings, hash_password, valid_microphone_gain,
+    },
+    plugins::Plugins,
+    station::Player,
 };
 
-const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin wake-check <model.onnx>\n  goodwin wav <input.wav> <output.wav>";
+const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin wake-check <model.onnx>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
@@ -51,8 +55,12 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Some("wav") if args.len() == 3 => {
-            answer_wav(PathBuf::from(&args[1]), PathBuf::from(&args[2])).await
+        Some("wav") if (3..=4).contains(&args.len()) => {
+            let dir = args
+                .get(3)
+                .map(PathBuf::from)
+                .unwrap_or_else(default_data_dir);
+            answer_wav(dir, PathBuf::from(&args[1]), PathBuf::from(&args[2])).await
         }
         Some("wake-check") if args.len() == 2 => {
             let mut model = wake::WakeModel::load(std::path::Path::new(&args[1]))?;
@@ -68,7 +76,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(_) if args.len() == 2 => {
-            answer_wav(PathBuf::from(&args[0]), PathBuf::from(&args[1])).await
+            answer_wav(
+                default_data_dir(),
+                PathBuf::from(&args[0]),
+                PathBuf::from(&args[1]),
+            )
+            .await
         }
         _ => bail!("{USAGE}"),
     }
@@ -87,7 +100,6 @@ fn setup(dir: PathBuf, mode: &str) -> Result<()> {
     Config {
         access,
         settings: Settings::default(),
-        key: String::new(),
         system_prompt: String::new(),
     }
     .save(&dir, true)?;
@@ -118,31 +130,29 @@ async fn serve(dir: PathBuf, address: SocketAddr) -> Result<()> {
         microphone.ip().is_loopback(),
         "The microphone address must be loopback"
     );
-    let gain: f32 = env::var("GOODWIN_MIC_GAIN")
-        .unwrap_or_else(|_| "4".into())
-        .parse()
-        .context("Invalid microphone gain")?;
+    let gain = env::var("GOODWIN_MIC_GAIN")
+        .ok()
+        .map(|value| value.parse::<f32>())
+        .transpose()
+        .context("Invalid microphone gain")?
+        .unwrap_or(DEFAULT_MICROPHONE_GAIN);
     ensure!(
-        (0.1..=64.0).contains(&gain),
+        valid_microphone_gain(gain),
         "Microphone gain must be between 0.1 and 64"
     );
-    let app = App::new(dir, config, OpenRouter::new()?, Player::new());
+    let app = App::new(dir, config, Player::new(), gain);
     let listener = tokio::net::TcpListener::bind(address).await?;
     app.plugins.restore().await;
     println!(
         "Goodwin panel listening on http://{}",
         listener.local_addr()?
     );
-    let capture = tokio::spawn(station::run_microphone(
-        app.clone(),
-        MicrophoneOptions {
-            address: microphone,
-            gain,
-        },
-    ));
+    let capture = tokio::spawn(station::run_microphone(app.clone(), microphone));
+    let shutdown_app = app.clone();
     let result = axum::serve(listener, panel::router(app.clone()))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            shutdown_app.indicators.stop();
         })
         .await;
     capture.abort();
@@ -150,29 +160,71 @@ async fn serve(dir: PathBuf, address: SocketAddr) -> Result<()> {
     result.context("Serve Goodwin panel")
 }
 
-async fn answer_wav(input: PathBuf, output: PathBuf) -> Result<()> {
-    let key = env::var("OPENROUTER_API_KEY").context("Set OPENROUTER_API_KEY")?;
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    if let Ok(mut terminate) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+        return;
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+fn default_data_dir() -> PathBuf {
+    env::var_os("GOODWIN_DATA_DIR").map_or_else(|| PathBuf::from("goodwin-data"), PathBuf::from)
+}
+
+async fn answer_wav(dir: PathBuf, input: PathBuf, output: PathBuf) -> Result<()> {
     ensure!(
-        fs::metadata(&input)?.len() <= 4_000_000,
+        fs::metadata(&input)?.len() <= MAX_RECORDING_BYTES as u64,
         "Input WAV is too large"
     );
     let recording = fs::read(input)?;
     wav::check_recording(&recording)?;
-    let provider = OpenRouter::new()?;
-    let models = Models::for_file_request();
-    let text = provider
-        .transcribe(&key, &models, &recording)
-        .await
-        .context("Transcribe recording")?;
-    ensure!(!text.is_empty(), "No speech was transcribed");
-    let reply = provider
-        .reply(&key, &models, &text, VOICE_INSTRUCTIONS, [])
-        .await
-        .context("Generate an answer")?;
-    let audio = provider
-        .synthesize(&key, &models, &reply)
-        .await
-        .context("Synthesize the answer")?;
-    audio.write_wav(fs::File::create(output)?)?;
-    Ok(())
+    let config = Config::load(&dir)?;
+    let engine = &config.settings.assistant;
+    let pipeline = &engine.pipeline;
+    let plugins = Plugins::new(&dir, Player::new());
+    plugins
+        .restore_selected(&[
+            &pipeline.transcription.provider,
+            &pipeline.chat.provider,
+            &pipeline.speech.provider,
+        ])
+        .await;
+    let result = async {
+        let resolve = |capability| {
+            engine.resolve(&plugins, capability).map_err(|_| {
+                anyhow::anyhow!(
+                    "Provider {} is unavailable",
+                    pipeline.get(capability).provider
+                )
+            })
+        };
+        let transcription = resolve(Capability::Transcription)?;
+        let chat = resolve(Capability::Chat)?;
+        let speech = resolve(Capability::Speech)?;
+        let text = transcription
+            .transcribe(&recording)
+            .await
+            .context("Transcribe recording")?;
+        ensure!(!text.is_empty(), "No speech was transcribed");
+        let reply = chat
+            .reply(&text, VOICE_INSTRUCTIONS, [])
+            .await
+            .context("Generate an answer")?;
+        let audio = speech
+            .synthesize(&reply)
+            .await
+            .context("Synthesize the answer")?;
+        audio.write_wav(fs::File::create(output)?)?;
+        Ok(())
+    }
+    .await;
+    plugins.shutdown().await;
+    result
 }

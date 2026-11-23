@@ -1,8 +1,12 @@
 use std::{fs, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
+use goodwin_plugin::{
+    provider::{Capability, ModelCatalog},
+    settings::SettingsData,
+};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
@@ -15,6 +19,7 @@ use super::{
     package::{self, Manifest},
     process::Process,
     registry::{Active, Registry, Status, View},
+    settings::{self, Field},
     store::{Store, copy_data, storage},
 };
 
@@ -52,6 +57,15 @@ impl Plugins {
             eprintln!("Recover plugin packages: {error:#}");
             return;
         }
+        self.load_installed(&[]).await;
+    }
+
+    pub async fn restore_selected(&self, ids: &[&str]) {
+        let _operation = self.0.lifecycle.lock().await;
+        self.load_installed(ids).await;
+    }
+
+    async fn load_installed(&self, ids: &[&str]) {
         let Ok(installed) = fs::read_dir(self.0.store.installed()) else {
             return;
         };
@@ -64,6 +78,9 @@ impl Plugins {
             else {
                 continue;
             };
+            if !ids.is_empty() && !ids.contains(&id.as_str()) {
+                continue;
+            }
             let manifest = Manifest::read(&item.path().join("package"));
             match manifest {
                 Ok(manifest) if manifest.id == id => {
@@ -87,6 +104,94 @@ impl Plugins {
 
     pub fn catalog(&self) -> Vec<View> {
         self.0.registry.catalog()
+    }
+
+    fn settings_fields(&self, id: &str) -> Result<Vec<Field>, Failure> {
+        let registry = self.0.registry.read();
+        let fields = &registry.get(id).ok_or(Failure::NotFound)?.manifest.settings;
+        if fields.is_empty() {
+            return Err(Failure::NotFound);
+        }
+        Ok(fields.clone())
+    }
+
+    pub(crate) async fn settings(&self, id: &str) -> Result<settings::View, Failure> {
+        let _operation = self.0.lifecycle.lock().await;
+        let fields = self.settings_fields(id)?;
+        let directory = self.0.store.slot(id).join("data");
+        tokio::task::spawn_blocking(move || {
+            let data = SettingsData::read(&directory).map_err(storage)?;
+            Ok(settings::View::new(fields, data))
+        })
+        .await
+        .map_err(storage)?
+    }
+
+    pub(crate) async fn update_settings(
+        &self,
+        id: &str,
+        patch: Map<String, Value>,
+    ) -> Result<settings::View, Failure> {
+        let _operation = self.0.lifecycle.lock().await;
+        let fields = self.settings_fields(id)?;
+        let directory = self.0.store.slot(id).join("data");
+        tokio::task::spawn_blocking(move || {
+            let data = SettingsData::read(&directory).map_err(storage)?;
+            let data = settings::apply(&fields, data, patch)?;
+            data.save(&directory).map_err(storage)?;
+            Ok(settings::View::new(fields, data))
+        })
+        .await
+        .map_err(storage)?
+    }
+
+    pub(crate) fn provider(&self, id: &str, capability: Capability) -> Option<(Process, bool)> {
+        let registry = self.0.registry.read();
+        let active = registry.get(id)?.live()?;
+        active
+            .registration
+            .providers
+            .contains(&capability)
+            .then(|| (active.process.clone(), active.registration.model_catalog))
+    }
+
+    pub(crate) async fn models(
+        &self,
+        id: &str,
+        capability: Capability,
+    ) -> Result<ModelCatalog, Failure> {
+        let (process, supported) = self.provider(id, capability).ok_or(Failure::Unavailable)?;
+        if !supported {
+            return Err(Failure::NotFound);
+        }
+        process
+            .models(capability)
+            .await
+            .map_err(|_| Failure::Unavailable)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mock_provider(&self, id: &str, process: Process) {
+        let manifest = serde_json::from_value(json!({
+            "id": id, "version": "1.0.0", "apiVersion": 1,
+            "title": {"en": "Fixture provider", "ru": "Тестовый провайдер"},
+            "target": "fixture", "executable": "bin/fixture-provider",
+        }))
+        .unwrap();
+        let registration = serde_json::from_value(json!({
+            "apiVersion": 1, "providers": ["transcription", "chat", "speech"], "modelCatalog": true,
+        }))
+        .unwrap();
+        self.0.registry.insert(
+            manifest,
+            Some(Active {
+                process,
+                registration,
+                revision: "fixture".into(),
+            }),
+            Status::Ready,
+            None,
+        );
     }
 
     pub fn voice_tools(&self, turn: u64) -> VoiceTools {

@@ -2,7 +2,7 @@
 
 Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`). It runs separately from Alice on a prepared Station. Say “Гудвин” followed by a question in one breath, or send a message from the web panel.
 
-The Station detects the wake word locally, sends the recording to OpenRouter for transcription, generation and speech synthesis, and plays the answer. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
+The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Settings → Assistant**, select a provider and model independently for each stage. The OpenRouter plugin is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
 Download the desktop installer, Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
 
@@ -25,6 +25,21 @@ cargo run --locked --manifest-path installer/Cargo.toml --release
 ```
 
 The installer is a separate Rust project and builds without the Goodwin web panel or ARM cross-compiler. On Linux it uses OpenGL with Wayland or X11, and the native folder picker uses the desktop portal.
+
+### Headless installation
+
+Pass the address of a prepared Station to install or update Goodwin without opening a window.
+
+```sh
+goodwin-installer install station.local
+goodwin-installer install 192.168.1.42:5555 --package ./goodwin-mini3-aarch64.tar.gz --model micro
+```
+
+The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model keep|standard|micro` to select the wake-word model. The default `keep` retains the model on updates and uses Standard for a fresh installation. Use brackets for IPv6 addresses, for example `[fd00::42]:5555`.
+
+The command writes progress and errors to stderr. On success it exits with status 0 and prints the panel URL to stdout. An installation failure returns status 1 and invalid arguments return status 2. Fresh installations still ask for a password on the first panel visit.
+
+The regular installer supports both modes. To build it without desktop dependencies, run `cargo build --locked --release --no-default-features --manifest-path installer/Cargo.toml`.
 
 ## Build
 
@@ -76,7 +91,7 @@ chmod +x ./goodwin
 ./goodwin serve ./goodwin-data 0.0.0.0:8787
 ```
 
-Open the Station's address on port 8787 and create a panel password. Goodwin signs you in so you can add an OpenRouter API key in **Settings**. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
+Open the Station's address on port 8787 and create a panel password. In **Plugins**, upload `openrouter-linux-aarch64.tar.gz` and open **OpenRouter → Settings** to add an API key, or install and select another provider. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
 
 To enable voice activation, place a LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` and restart the service. Goodwin selects the input format from the ONNX graph. Run `goodwin wake-check model.onnx` to check loading, warm-up, and one inference step without the microphone.
 
@@ -84,12 +99,14 @@ On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz 
 
 The text chat and push-button Station test work without a wake model. In Settings you can pause background detection, change sensitivity, test the speaker and microphone, and see timings for the last request. Pausing detection leaves the button test available. Goodwin keeps transcripts in the current conversation and does not save recordings or diagnostic transcripts to disk.
 
+**Settings → Microphone** lets you set separate input gains for wake word detection and speech recognition. The recognition field defaults to automatic gain. A fixed multiplier applies to the recording and its speech detection, including audio buffered before the wake word triggers. Gain changes take effect without restarting Goodwin. An active voice turn keeps its original settings.
+
 Use **Settings → System prompt** to define Goodwin’s role, personality, and tone for both text and voice replies. Save the prompt to apply it to subsequent requests. Clear the field and save to restore the built-in instructions. Goodwin keeps the instructions for spoken output and voice plugin calls when a custom prompt is set.
 
 On a development computer, use the default loopback address.
 
 ```sh
-goodwin setup goodwin-data open
+goodwin setup goodwin-data
 goodwin serve goodwin-data
 ```
 
@@ -97,9 +114,8 @@ The panel opens at `http://127.0.0.1:8787`. When running Vite in development mod
 
 | Environment variable | Purpose | Default |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | API key when the panel has no saved key | unset |
 | `GOODWIN_MICROPHONE` | Local `yio_audio` socket address | `127.0.0.1:9850` |
-| `GOODWIN_MIC_GAIN` | PCM input gain before detection and capture | `4` |
+| `GOODWIN_MIC_GAIN` | Default wake word gain when the panel field is empty and input gain in automatic recognition mode | `4` |
 | `GOODWIN_WAKE_MODEL` | Path to a Standard or Micro ONNX wake model | `<data-dir>/goodwin.onnx` |
 | `GOODWIN_APLAY` | ALSA playback program path | `aplay` |
 | `GOODWIN_PLAYBACK_DEVICE` | ALSA playback device | `speakers` |
@@ -110,7 +126,11 @@ Sign in to the panel and use **Plugins → Upload package** to install a trusted
 
 If you previously set up open access, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Your saved settings and API key are retained.
 
-The Windows Station build produces `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. For voice commands, select an OpenRouter answer model that supports tool calling. Panel timers and their sounds run locally.
+The Windows Station build produces `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. For voice commands, select an answer model that supports tool calling. Panel timers and their sounds run locally.
+
+The [OpenRouter provider](plugins/openrouter/) package provides speech recognition, answers and speech synthesis. When upgrading from the built-in provider, configure the OpenRouter key in the plugin's settings and choose any model overrides in the assistant.
+
+The [OpenAI-compatible provider](plugins/openai-compatible/) package connects Goodwin to local or remote inference servers, including KittenTTS. Its plugin settings hold the server address and API key. The assistant chooses the models and voice.
 
 See the [plugin development guide](plugins/README.md) for the package format, process protocol, and UI kit.
 
@@ -169,15 +189,15 @@ python -m pip install tensorflow==2.21.0 tf-keras==2.21.0 onnx2tf==1.28.8 onnxsi
 python scripts/wakeword_quantize_livekit.py --encoders target/wakeword-v2/encoders --out $micro
 ```
 
-## Check the cloud pipeline with a recording
+## Check the voice pipeline with a recording
 
-Set `OPENROUTER_API_KEY` and supply a Russian WAV recording.
+Use a data directory with configured provider plugins and supply a Russian WAV recording. Stop the Goodwin service before running the CLI against its data directory.
 
 ```sh
-goodwin wav question.wav answer.wav
+goodwin wav question.wav answer.wav goodwin-data
 ```
 
-This runs transcription, generation and speech synthesis with the default models and saves the answer as WAV. For this command the environment variables `GOODWIN_STT_MODEL`, `GOODWIN_CHAT_MODEL`, `GOODWIN_TTS_MODEL` and `GOODWIN_TTS_VOICE` override the defaults. In the panel, use Settings to select models and the voice. Choose a speech model that supports raw 16-bit PCM.
+This uses the same provider assignments and plugin settings as the panel and saves the spoken answer as WAV. If you omit the data directory, Goodwin uses `GOODWIN_DATA_DIR` or `goodwin-data`.
 
 ## Local verification
 
@@ -186,6 +206,6 @@ npm run build --prefix web
 cargo test --locked --workspace
 ```
 
-The tests emulate a Station microphone and the OpenRouter transport on loopback and capture the generated audio without playing it.
+The tests emulate a Station microphone and provider transport on loopback and capture the generated audio without playing it.
 
 The panel embeds [Inter](https://rsms.me/inter/) under the [SIL Open Font License](web/Inter-OFL.txt).

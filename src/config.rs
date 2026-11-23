@@ -9,7 +9,9 @@ use anyhow::{Context, Result, anyhow, ensure};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use serde::{Deserialize, Serialize};
 
-use crate::openrouter::Models;
+use crate::assistant::AssistantSettings;
+
+pub(crate) const DEFAULT_MICROPHONE_GAIN: f32 = 4.0;
 
 #[cfg(test)]
 mod tests;
@@ -23,42 +25,92 @@ pub enum Access {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "StoredSettings")]
 pub struct Settings {
-    pub models: Models,
+    pub assistant: AssistantSettings,
     pub sensitivity: f32,
     pub listening: bool,
+    pub wake_gain: Option<f32>,
+    pub transcription_gain: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct StoredSettings {
+    assistant: Option<AssistantSettings>,
+    #[serde(default)]
+    providers: PreviousBindings,
+    sensitivity: f32,
+    listening: bool,
+    wake_gain: Option<f32>,
+    transcription_gain: Option<f32>,
+}
+
+#[derive(Default, Deserialize)]
+struct PreviousBindings {
+    transcription: Option<String>,
+    chat: Option<String>,
+    speech: Option<String>,
+}
+
+impl From<StoredSettings> for Settings {
+    fn from(stored: StoredSettings) -> Self {
+        let assistant = stored.assistant.unwrap_or_else(|| {
+            let mut settings = AssistantSettings::default();
+            for (stage, provider) in [
+                (
+                    &mut settings.pipeline.transcription,
+                    stored.providers.transcription,
+                ),
+                (&mut settings.pipeline.chat, stored.providers.chat),
+                (&mut settings.pipeline.speech, stored.providers.speech),
+            ] {
+                if let Some(provider) = provider {
+                    stage.provider = provider;
+                }
+            }
+            settings
+        });
+        Self {
+            assistant,
+            sensitivity: stored.sensitivity,
+            listening: stored.listening,
+            wake_gain: stored.wake_gain,
+            transcription_gain: stored.transcription_gain,
+        }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            models: Models::default(),
+            assistant: AssistantSettings::default(),
             sensitivity: 0.5,
             listening: true,
+            wake_gain: None,
+            transcription_gain: None,
         }
     }
 }
 
 impl Settings {
-    pub fn validate(&mut self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         ensure!(
             (0.0..=1.0).contains(&self.sensitivity),
             "Invalid sensitivity"
         );
-        for field in [
-            &mut self.models.transcription,
-            &mut self.models.chat,
-            &mut self.models.speech,
-            &mut self.models.voice,
-        ] {
-            *field = field.trim().to_owned();
-            ensure!(
-                !field.is_empty() && field.len() <= 160 && !field.chars().any(char::is_control),
-                "Invalid model or voice"
-            );
-        }
-        Ok(())
+        ensure!(
+            [self.wake_gain, self.transcription_gain]
+                .into_iter()
+                .flatten()
+                .all(valid_microphone_gain),
+            "Microphone gain must be between 0.1 and 64"
+        );
+        self.assistant.validate()
     }
+}
+
+pub(crate) fn valid_microphone_gain(gain: f32) -> bool {
+    (0.1..=64.0).contains(&gain)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -66,8 +118,6 @@ pub struct Config {
     pub access: Access,
     #[serde(default)]
     pub settings: Settings,
-    #[serde(default)]
-    pub key: String,
     #[serde(default)]
     pub system_prompt: String,
 }
@@ -99,17 +149,6 @@ impl Config {
         }
         Ok(())
     }
-
-    pub fn key(&self) -> String {
-        if self.key.is_empty() {
-            std::env::var("OPENROUTER_API_KEY")
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
-        } else {
-            self.key.clone()
-        }
-    }
 }
 
 pub(crate) fn normalize_system_prompt(prompt: &str) -> Result<String> {
@@ -124,7 +163,6 @@ pub(crate) fn normalize_system_prompt(prompt: &str) -> Result<String> {
 #[derive(Clone)]
 pub(crate) struct RequestSettings {
     pub settings: Settings,
-    pub key: String,
     pub system_prompt: String,
 }
 
@@ -151,7 +189,6 @@ impl ConfigStore {
         let config = self.current();
         RequestSettings {
             settings: config.settings.clone(),
-            key: config.key(),
             system_prompt: config.system_prompt.clone(),
         }
     }
@@ -177,18 +214,17 @@ impl ConfigStore {
         Ok(Some(hash))
     }
 
-    pub(crate) fn wake_settings(&self) -> (bool, f32) {
+    pub(crate) fn wake_settings(&self) -> (bool, f32, Option<f32>) {
         let config = self.current();
-        (config.settings.listening, config.settings.sensitivity)
+        (
+            config.settings.listening,
+            config.settings.sensitivity,
+            config.settings.wake_gain,
+        )
     }
 
-    pub(crate) fn update_settings(&self, settings: Settings, key: Option<String>) -> Result<()> {
-        self.update(|draft| {
-            draft.settings = settings;
-            if let Some(key) = key {
-                draft.key = key;
-            }
-        })
+    pub(crate) fn update_settings(&self, settings: Settings) -> Result<()> {
+        self.update(|draft| draft.settings = settings)
     }
 
     pub(crate) fn update_system_prompt(&self, prompt: String) -> Result<()> {

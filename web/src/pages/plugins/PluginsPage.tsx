@@ -3,6 +3,7 @@ import { Button } from "../../components/Button";
 import { PageHeader } from "../../components/PageHeader";
 import { usePanel } from "../../helpers/panel";
 import { errorLabel } from "../../helpers/words";
+import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./PluginsPage.module.css";
 
 export function PluginsPage() {
@@ -40,20 +41,23 @@ export function PluginsPage() {
                 <p class={styles.note}>{plugin.version} · {words().status[plugin.status]}</p>
                 <Show when={plugin.error}><p class={styles.error}>{errorLabel(panel.t(), plugin.error!)}</p></Show>
               </div>
-              <Show when={allowed()}>
-                <Show when={removing() === plugin.id} fallback={
-                  <Button type="button" disabled={pending()} onClick={() => setRemoving(plugin.id)}>{words().remove}</Button>
-                }>
-                  <div class={styles.confirm} role="group" aria-label={words().confirm}>
-                    <p>{words().confirm}</p>
-                    <div class="gw-row">
-                      <Button type="button" disabled={pending()} onClick={() => setRemoving(undefined)}>{words().cancel}</Button>
-                      <Button class={styles.danger} type="button" disabled={pending()} onClick={async () => {
-                        if (await panel.removePlugin(plugin.id)) setRemoving(undefined);
-                      }}>{words().remove}</Button>
-                    </div>
+              <Show when={allowed() && removing() === plugin.id} fallback={
+                <div class="gw-row">
+                  <Show when={plugin.has_settings}><PluginSettingsLink plugin={plugin} /></Show>
+                  <Show when={allowed()}>
+                    <Button type="button" disabled={pending()} onClick={() => setRemoving(plugin.id)}>{words().remove}</Button>
+                  </Show>
+                </div>
+              }>
+                <div class={styles.confirm} role="group" aria-label={words().confirm}>
+                  <p>{words().confirm}</p>
+                  <div class="gw-row">
+                    <Button type="button" disabled={pending()} onClick={() => setRemoving(undefined)}>{words().cancel}</Button>
+                    <Button class={styles.danger} type="button" disabled={pending()} onClick={async () => {
+                      if (await panel.removePlugin(plugin.id)) setRemoving(undefined);
+                    }}>{words().remove}</Button>
                   </div>
-                </Show>
+                </div>
               </Show>
             </li>}
           </For>

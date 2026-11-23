@@ -3,6 +3,14 @@ use std::{ffi::OsString, process::Stdio, sync::Arc, time::Duration};
 use anyhow::{Context, Result, ensure};
 use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
+use crate::{
+    app::Failure,
+    providers::{Provider, SpeechStream},
+    wav::PcmAudio,
+};
+
+use super::indicators::Indicators;
+
 #[derive(Clone)]
 pub struct Player {
     program: OsString,
@@ -36,24 +44,28 @@ impl Player {
     }
 
     pub async fn play(&self, wave: &[u8]) -> Result<()> {
+        self.play_wave(wave, None).await
+    }
+
+    pub(crate) async fn play_speech(&self, wave: &[u8], indicators: &Indicators) -> Result<()> {
+        self.play_wave(wave, Some(indicators)).await
+    }
+
+    async fn play_wave(&self, wave: &[u8], speech: Option<&Indicators>) -> Result<()> {
         let _turn = self.queue.lock().await;
         #[cfg(test)]
         if let Some(sink) = &self.sink {
             sink.lock().unwrap().push(wave.to_vec());
             return Ok(());
         }
-        let mut child = Command::new(&self.program)
-            .arg("-q")
-            .arg("-D")
-            .arg(&self.device)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .context("Start aplay")?;
+        let speech = speech
+            .and_then(|indicators| indicators.envelope(wave).map(|levels| (indicators, levels)));
+        let mut child = self.command().spawn().context("Start aplay")?;
         timeout(Duration::from_secs(180), async {
             let mut input = child.stdin.take().context("Open playback input")?;
+            if let Some((indicators, levels)) = speech {
+                indicators.speak(levels);
+            }
             input.write_all(wave).await?;
             drop(input);
             ensure!(child.wait().await?.success(), "aplay failed");
@@ -62,6 +74,84 @@ impl Player {
         .await
         .context("Playback timed out")?
     }
+
+    pub(crate) async fn play_stream(
+        &self,
+        first: PcmAudio,
+        stream: &mut SpeechStream,
+        indicators: &Indicators,
+    ) -> Result<(), Failure> {
+        let _turn = self.queue.lock().await;
+        let mut child = self
+            .command()
+            .args(["-t", "raw", "-f", "S16_LE", "-r"])
+            .arg(first.sample_rate.to_string())
+            .arg("-c")
+            .arg(first.channels.to_string())
+            .args(["--buffer-time=100000", "--period-time=20000"])
+            .spawn()
+            .context("Start aplay")
+            .map_err(playback_failure)?;
+        timeout(Duration::from_secs(180), async {
+            let mut input = child
+                .stdin
+                .take()
+                .context("Open playback input")
+                .map_err(playback_failure)?;
+            let mut envelope = indicators.begin_stream(&first);
+            let streamed = async {
+                input
+                    .write_all(&first.data)
+                    .await
+                    .context("Write speech PCM")
+                    .map_err(playback_failure)?;
+                while let Some(audio) = stream.next().await.map_err(Provider::failure)? {
+                    if let Some(envelope) = &mut envelope {
+                        indicators.append_levels(envelope.push(&audio.data));
+                    }
+                    input
+                        .write_all(&audio.data)
+                        .await
+                        .context("Write speech PCM")
+                        .map_err(playback_failure)?;
+                }
+                Ok(())
+            }
+            .await;
+            if let Some(level) = envelope.and_then(|mut envelope| envelope.finish()) {
+                indicators.append_levels(vec![level]);
+            }
+            drop(input);
+            let status = child.wait().await;
+            streamed?;
+            let status = status.context("Wait for aplay").map_err(playback_failure)?;
+            if !status.success() {
+                return Err(playback_failure(anyhow::anyhow!("aplay failed: {status}")));
+            }
+            Ok(())
+        })
+        .await
+        .context("Playback timed out")
+        .map_err(playback_failure)?
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .arg("-q")
+            .arg("-D")
+            .arg(&self.device)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        command
+    }
+}
+
+fn playback_failure(error: anyhow::Error) -> Failure {
+    eprintln!("Speech playback: {error:#}");
+    Failure::Playback
 }
 
 pub(crate) fn timer_signal() -> Vec<u8> {
