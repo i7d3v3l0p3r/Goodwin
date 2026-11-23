@@ -4,8 +4,10 @@
 
 ### English
 
+- Mute or unmute Goodwin’s microphone from any page in the web panel. Muting stops active recording and blocks wake-word listening and voice tests. Goodwin remembers the setting after a restart.
 - The web panel uses Lucide icons for navigation, chat, and settings.
-- The Station installer can unpack the update in temporary storage and reuse identical wake-word models, reducing the free space an update needs on the Station.
+- Choose a wake-word model from Goodwin-wakeword during installation or switch models without restarting in **Settings → Activation and microphone**. The panel confirms the change once the detector is using the new model. The Station package contains the service and launcher. Updates keep the selected model by default.
+- The Station installer can unpack updates in temporary storage, reducing the free space they need on the Station.
 - Settings now open to an overview with separate pages for activation and microphone, the assistant, Station testing, and the panel language. The assistant page shows the current provider and model for each stage before you expand its controls.
 - Install or update Goodwin from the terminal with `goodwin-installer install <address>`. You can select a local package, an ADB executable, and a wake-word model. The command prints the panel URL when the installation succeeds.
 - Configure the assistant's STT → LLM → TTS engine in the panel. Each stage can use a separate provider and model, with additional parameters such as the synthesis voice. Enter a model ID manually when the server has no catalog.
@@ -18,8 +20,10 @@
 
 ### Русский
 
+- Включайте и отключайте микрофон Гудвина с любой страницы веб-панели. Отключение прерывает запись, поиск слова активации и голосовые тесты. Настройка сохраняется после перезапуска.
 - В навигации, чате и настройках веб-панели используются иконки Lucide.
-- Установщик может распаковывать обновление во временном разделе и повторно использовать совпадающие файлы моделей активации. Обновлению требуется меньше места на Станции.
+- Выбирайте модель активации из каталога Goodwin-wakeword при установке или меняйте её без перезапуска в разделе **Настройки → Активация и микрофон**. Панель подтверждает смену, когда детектор уже использует новую модель. Пакет для Станции содержит сервис и скрипт запуска. При обновлении выбранная модель сохраняется по умолчанию.
+- Установщик может распаковывать обновления во временном разделе. Обновлениям требуется меньше места на Станции.
 - Настройки открываются с оглавления. Активация и микрофон, ассистент, проверка колонки и язык панели вынесены в отдельные разделы. В разделе ассистента провайдер и модель каждого этапа видны до раскрытия его настроек.
 - Устанавливайте и обновляйте Goodwin из терминала командой `goodwin-installer install <адрес>`. Можно указать локальный пакет, путь к ADB и модель активации. После успешной установки команда выводит адрес панели.
 - Настраивайте движок ассистента STT → LLM → TTS в панели. Для каждого этапа можно выбрать провайдер, модель и дополнительные параметры, например голос озвучивания. Если сервер не отдаёт каталог, ID модели можно ввести вручную.

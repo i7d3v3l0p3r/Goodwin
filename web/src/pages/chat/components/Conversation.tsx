@@ -41,7 +41,8 @@ export function Conversation(props: {
         <Show when={messages().length} fallback={<div class={styles.emptyChat}>
           <SymbolMark class={styles.emptyMark} />
           <h2>{props.t.empty}</h2>
-          <p>{props.snapshot?.model && props.snapshot.microphone && props.snapshot.settings.listening ? props.t.sayOrWrite : props.t.write}</p>
+          <p>{props.snapshot?.model && props.snapshot.microphone && props.snapshot.settings.listening
+            ? props.t.sayOrWrite(props.snapshot.wake_model?.wake_word ?? props.t.defaultWakeWord) : props.t.write}</p>
         </div>}>
           <For each={messages()} keyed={(entry) => entry.id}>{(entry) => <ThreadMessage entry={entry()} t={props.t} />}</For>
         </Show>

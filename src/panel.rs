@@ -1,6 +1,7 @@
 mod assets;
 mod auth;
 mod plugin_routes;
+mod wake_models;
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +54,12 @@ pub fn router(app: Arc<App>) -> Router {
     let protected = Router::new()
         .route("/api/state", get(snapshot))
         .route("/api/settings", put(settings))
+        .route("/api/settings/microphone", put(microphone))
         .route("/api/settings/system-prompt", put(system_prompt))
+        .route(
+            "/api/wake-models",
+            get(wake_models::catalog).put(wake_models::install),
+        )
         .route("/api/chat", post(chat))
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))
@@ -109,6 +115,20 @@ async fn settings(State(panel): State<Panel>, Json(update): Json<UpdateSettings>
         tokio::task::spawn_blocking(move || app.configuration().update_settings(settings)).await;
     match saved {
         Ok(Ok(())) => snapshot(State(panel)).await.into_response(),
+        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateMicrophone {
+    muted: bool,
+}
+
+async fn microphone(State(panel): State<Panel>, Json(update): Json<UpdateMicrophone>) -> Response {
+    let saved =
+        tokio::task::spawn_blocking(move || panel.app.set_microphone_muted(update.muted)).await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
     }
 }

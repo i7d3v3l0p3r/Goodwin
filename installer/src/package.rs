@@ -17,20 +17,26 @@ const PREFIX: &str = "goodwin-mini3";
 const SUMS: &str = "SHA256SUMS";
 const PACKAGE_LIMIT: u64 = 128 * 1024 * 1024;
 const METADATA_LIMIT: u64 = 64 * 1024;
-const FILES: [&str; 5] = [
+const LEGACY_FILES: [&str; 5] = [
     "goodwin",
     "models/standard.onnx",
     "models/micro.onnx",
     "models/LICENSE",
     "models/NOTICE",
 ];
+const CORE_FILES: [&str; 1] = ["goodwin"];
+const MODEL_FILES: [&str; 2] = ["wake-model.onnx", "wake-model.json"];
 
 pub(crate) enum Source {
     Latest,
     Local(PathBuf),
 }
 
-pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Result<(String, u64)> {
+pub(crate) fn prepare(
+    source: Source,
+    work: &Path,
+    log: &impl Fn(String),
+) -> Result<(String, bool)> {
     let unpack = work.join("payload");
     fs::create_dir_all(unpack.join("models"))?;
     let label = match source {
@@ -71,8 +77,18 @@ pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Res
             path.display().to_string()
         }
     };
-    let scratch_kib = build_payload(&unpack, &work.join("payload.tar.gz"))?;
-    Ok((label, scratch_kib))
+    Ok((label, package_files(&unpack) == LEGACY_FILES))
+}
+
+fn package_files(path: &Path) -> &'static [&'static str] {
+    if LEGACY_FILES[1..]
+        .iter()
+        .any(|name| path.join(name).exists())
+    {
+        &LEGACY_FILES
+    } else {
+        &CORE_FILES
+    }
 }
 
 fn download_release(work: &Path, log: &impl Fn(String)) -> Result<String> {
@@ -155,7 +171,7 @@ fn unpack_archive(source: &Path, output: &Path) -> Result<()> {
             continue;
         }
         ensure!(
-            FILES.contains(&name) || name == SUMS,
+            LEGACY_FILES.contains(&name) || name == SUMS,
             "Неожиданный файл: {name}"
         );
         let dest = output.join(name);
@@ -167,7 +183,7 @@ fn unpack_archive(source: &Path, output: &Path) -> Result<()> {
         copy_limited(entry, &dest, limit)?;
     }
     let sums = read_checksums(&output.join(SUMS)).context("Некорректный манифест пакета")?;
-    for name in FILES {
+    for &name in package_files(output) {
         verify(&output.join(name), name, &sums)?;
     }
     Ok(())
@@ -180,7 +196,7 @@ fn copy_folder(source: &Path, output: &Path) -> Result<()> {
         .then(|| read_checksums(&manifest))
         .transpose()?;
     let mut left = PACKAGE_LIMIT;
-    for name in FILES {
+    for &name in package_files(source) {
         let file = File::open(source.join(name)).with_context(|| {
             format!("В папке нет файла {name}. Выберите папку с архивом {ARCHIVE} или распакованной сборкой")
         })?;
@@ -252,7 +268,9 @@ fn verify(path: &Path, name: &str, sums: &HashMap<String, String>) -> Result<()>
     Ok(())
 }
 
-fn build_payload(input: &Path, output: &Path) -> Result<u64> {
+pub(crate) fn build_payload(work: &Path, include_model: bool) -> Result<u64> {
+    let input = work.join("payload");
+    let output = work.join("payload.tar.gz");
     let mut header = [0; 20];
     let valid_elf = File::open(input.join("goodwin"))?
         .read_exact(&mut header)
@@ -265,12 +283,17 @@ fn build_payload(input: &Path, output: &Path) -> Result<u64> {
     );
 
     let mut manifest = File::create(input.join(SUMS))?;
-    for name in FILES {
+    let files = package_files(&input)
+        .iter()
+        .copied()
+        .chain(MODEL_FILES.into_iter().filter(|_| include_model));
+    for name in files.clone() {
         writeln!(manifest, "{}  {name}", checksum(&input.join(name))?)?;
     }
-    let mut archive = tar::Builder::new(GzEncoder::new(File::create(output)?, Compression::fast()));
+    let mut archive =
+        tar::Builder::new(GzEncoder::new(File::create(&output)?, Compression::fast()));
     let mut unpacked_bytes = 0;
-    for name in FILES.into_iter().chain([SUMS]) {
+    for name in files.chain([SUMS]) {
         let file = input.join(name);
         unpacked_bytes += file.metadata()?.len();
         archive.append_path_with_name(file, name)?;
@@ -289,7 +312,7 @@ mod tests {
         elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
         elf[18] = 0xb7;
         fs::write(folder.join("goodwin"), elf).unwrap();
-        for name in &FILES[1..] {
+        for name in &LEGACY_FILES[1..] {
             fs::write(folder.join(name), name).unwrap();
         }
     }
@@ -301,12 +324,13 @@ mod tests {
         let unpacked = tempfile::tempdir().unwrap();
         let source = Source::Local(input.path().into());
         prepare(source, unpacked.path(), &|_| {}).unwrap();
+        build_payload(unpacked.path(), false).unwrap();
 
         let mut archive = tar::Builder::new(GzEncoder::new(
             File::create(input.path().join(ARCHIVE)).unwrap(),
             Compression::fast(),
         ));
-        for name in FILES.into_iter().chain([SUMS]) {
+        for name in LEGACY_FILES.into_iter().chain([SUMS]) {
             archive
                 .append_path_with_name(
                     unpacked.path().join("payload").join(name),
@@ -317,6 +341,7 @@ mod tests {
         archive.into_inner().unwrap().finish().unwrap();
         let packed = tempfile::tempdir().unwrap();
         prepare(Source::Local(input.path().into()), packed.path(), &|_| {}).unwrap();
+        build_payload(packed.path(), false).unwrap();
         let selected_archive = tempfile::tempdir().unwrap();
         prepare(
             Source::Local(input.path().join(ARCHIVE)),
@@ -324,6 +349,7 @@ mod tests {
             &|_| {},
         )
         .unwrap();
+        build_payload(selected_archive.path(), false).unwrap();
         assert_eq!(
             fs::read(unpacked.path().join("payload/SHA256SUMS")).unwrap(),
             fs::read(packed.path().join("payload/SHA256SUMS")).unwrap(),
@@ -361,6 +387,7 @@ mod tests {
     fn latest_public_release_has_a_valid_station_package() {
         let work = tempfile::tempdir().unwrap();
         let (tag, _) = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
+        build_payload(work.path(), false).unwrap();
         assert!(release_tag(&tag));
         assert!(work.path().join("payload.tar.gz").is_file());
     }

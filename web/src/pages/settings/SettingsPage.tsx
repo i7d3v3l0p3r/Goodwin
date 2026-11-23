@@ -53,6 +53,8 @@ export function SettingsPage() {
           <h2 id={`settings-title-${section.id}`} tabindex={-1}>{panel.t()[section.title]}</h2>
           {section.id === "activation" && <Show when={panel.snapshot()}>{state => <>
             <WakeWordSettings t={panel.t()} listening={state().settings.listening} sensitivity={state().settings.sensitivity}
+              visible={active()?.id === "activation"} currentModel={state().wake_model} modelLoaded={state().model}
+              refresh={panel.refresh}
               changeSensitivity={sensitivity => void panel.saveSettings({ ...state().settings, sensitivity })}
               pending={pending()} toggleListening={() => {
                 const settings = state().settings;

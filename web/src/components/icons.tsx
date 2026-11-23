@@ -6,6 +6,7 @@ import ChevronDown from "@lucide/solid/icons/chevron-down";
 import ChevronRight from "@lucide/solid/icons/chevron-right";
 import MessageSquareText from "@lucide/solid/icons/message-square-text";
 import Mic from "@lucide/solid/icons/mic";
+import MicOff from "@lucide/solid/icons/mic-off";
 import Monitor from "@lucide/solid/icons/monitor";
 import Plug from "@lucide/solid/icons/plug";
 import Plus from "@lucide/solid/icons/plus";
@@ -20,6 +21,7 @@ const icons = {
   send: ArrowUp,
   plus: Plus,
   mic: Mic,
+  micOff: MicOff,
   sparkles: Sparkles,
   activity: Activity,
   monitor: Monitor,

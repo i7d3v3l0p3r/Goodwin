@@ -4,8 +4,10 @@ use anyhow::{Context, Result, bail, ensure};
 use livekit_wakeword::WakeWordModel;
 use prost::Message;
 
+mod catalog;
 mod micro;
 
+pub(crate) use catalog::{InstallError, PendingModel, WakeModels};
 pub use livekit_wakeword::{FRAME_SAMPLES, SAMPLE_RATE};
 
 pub struct WakeModel(Backend);

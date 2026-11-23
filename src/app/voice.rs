@@ -53,7 +53,13 @@ impl App {
         woke: bool,
         gain: RecordingGain,
     ) -> Result<(), Failure> {
-        let request = self.request_settings(id).ok_or(Failure::Busy)?;
+        let (request, wake_word) = self
+            .runtime()
+            .active
+            .as_ref()
+            .filter(|turn| turn.id == id)
+            .map(|turn| (turn.request.clone(), turn.wake_word.clone()))
+            .ok_or(Failure::Busy)?;
         let engine = &request.settings.assistant;
         let transcription = engine.resolve(&self.plugins, Capability::Transcription)?;
         let chat = engine.resolve(&self.plugins, Capability::Chat)?;
@@ -73,7 +79,7 @@ impl App {
             .await
             .map_err(Provider::failure)?;
         let text = if woke {
-            strip_wake_word(&text)
+            strip_wake_word(&text, wake_word.as_deref().unwrap_or("Гудвин"))
         } else {
             text.trim()
         };
@@ -185,14 +191,19 @@ async fn reply_with_tools(
     }
 }
 
-fn strip_wake_word(text: &str) -> &str {
-    let text = text.trim();
+fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
     let delimiter = |c: char| c.is_whitespace() || ",.!?;:—–-«»".contains(c);
-    let text = text.trim_start_matches(delimiter);
-    if let Some(first) = text.split(delimiter).next()
-        && matches!(first.to_lowercase().as_str(), "гудвин" | "goodwin")
-    {
-        return text[first.len()..].trim_start_matches(delimiter);
+    let text = text.trim().trim_start_matches(delimiter);
+    let mut remaining = text;
+    for word in wake_word.split(delimiter).filter(|word| !word.is_empty()) {
+        remaining = remaining.trim_start_matches(delimiter);
+        let first = remaining.split(delimiter).next().unwrap_or_default();
+        let expected = word.to_lowercase();
+        let actual = first.to_lowercase();
+        if actual != expected && !(expected == "гудвин" && actual == "goodwin") {
+            return text;
+        }
+        remaining = &remaining[first.len()..];
     }
-    text
+    remaining.trim_start_matches(delimiter)
 }

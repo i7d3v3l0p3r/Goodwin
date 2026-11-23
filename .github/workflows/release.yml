@@ -72,8 +72,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C linker=$linker -C linker-flavor=ld.lld" \
             cargo zigbuild --locked --workspace --release --target "$target"
 
-          python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx \
-            --encoders models --output target/release-assets/goodwin-mini3-aarch64.tar.gz
+          python scripts/package-station.py --output target/release-assets/goodwin-mini3-aarch64.tar.gz
           python scripts/package-plugin.py plugins/timers "target/$target/release/goodwin-timers" \
             linux-aarch64 target/release-assets/timers-linux-aarch64.tar.gz
           python scripts/package-plugin.py plugins/openai-compatible "target/$target/release/goodwin-openai-compatible" \

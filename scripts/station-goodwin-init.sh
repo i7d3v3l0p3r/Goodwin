@@ -14,16 +14,16 @@ running() {
 start() {
     running && return 0
     model=standard
-    if [ -r "$data/model" ]; then
-        read -r model < "$data/model"
-    fi
+    if [ -r "$data/model" ]; then read -r model < "$data/model"; fi
     case "$model" in
-        standard|micro) ;;
-        *) echo "Invalid Goodwin model selection" >&2; return 1 ;;
+        standard|micro)
+            if [ -r "$data/models/$model.onnx" ]; then
+                export GOODWIN_WAKE_MODEL="$data/models/$model.onnx"
+            fi
+            ;;
     esac
-    export GOODWIN_WAKE_MODEL="$data/models/$model.onnx"
-    if [ ! -r "$data/config.json" ] || [ ! -r "$GOODWIN_WAKE_MODEL" ] || [ ! -x "$bin" ]; then
-        echo "Goodwin executable, settings, or model missing" >&2
+    if [ ! -r "$data/config.json" ] || [ ! -x "$bin" ]; then
+        echo "Goodwin executable or settings missing" >&2
         return 1
     fi
     start-stop-daemon -S -b -m -q -p "$pidfile" -x "$bin" -- \

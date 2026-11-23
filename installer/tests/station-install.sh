@@ -56,11 +56,25 @@ case "\$1" in
 esac
 EOF
     cd "$TEST_ROOT/payload"
-    for file in standard.onnx micro.onnx LICENSE NOTICE; do
-        echo "$model_version" > "models/$file"
-    done
-    sha256sum goodwin models/* > SHA256SUMS
-    tar -czf "$upload/payload.tar.gz" goodwin models/* SHA256SUMS
+    set -- "${3:-bundled}"
+    case "$1" in
+        bundled)
+            for file in standard.onnx micro.onnx LICENSE NOTICE; do
+                echo "$model_version" > "models/$file"
+            done
+            set -- goodwin models/*
+            ;;
+        catalog)
+            printf '%s\n' "$model_version" > wake-model.onnx
+            hash=$(sha256sum wake-model.onnx)
+            hash=${hash%% *}
+            printf '{"id":"%s","wake_word":"Егор","tier":"micro","sha256":"%s"}\n' "$model_version" "$hash" > wake-model.json
+            set -- goodwin wake-model.onnx wake-model.json
+            ;;
+        core) set -- goodwin ;;
+    esac
+    sha256sum "$@" > SHA256SUMS
+    tar -czf "$upload/payload.tar.gz" "$@" SHA256SUMS
     cd "$TEST_ROOT"
 }
 
@@ -102,4 +116,39 @@ test "$(cat "$data/models/custom.onnx")" = custom
 test "$(cat "$data/config.json")" = retained
 test -d "$data/plugins"
 test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
-printf '%s\n' 'Fresh installation, update and failed-update rollback passed.'
+
+package catalog-first egor-micro catalog
+sh "$TEST_ROOT/install-test.sh" "$upload" catalog
+grep 'egor-micro' "$data/wake-model.json"
+test "$(cat "$data/wake-models/$hash.onnx")" = egor-micro
+selected_hash=$hash
+
+package catalog-keep '' core
+sh "$TEST_ROOT/install-test.sh" "$upload" keep
+test "$(cat "$TEST_ROOT/running")" = catalog-keep
+test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
+
+package broken goodwin-micro catalog
+if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/failed-catalog.out" 2>&1; then
+    echo "The wake model change with a failed startup unexpectedly succeeded" >&2
+    exit 1
+fi
+grep 'Restoring the previous state' "$TEST_ROOT/failed-catalog.out"
+test "$(cat "$TEST_ROOT/running")" = catalog-keep
+grep 'egor-micro' "$data/wake-model.json"
+test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
+test ! -e "$data/wake-models/$hash.onnx"
+test "$(cat "$data/config.json")" = retained
+
+hook=$TEST_ROOT/data/init.d/S96goodwin
+"$hook" stop
+mv "$hook" "$TEST_ROOT/previous-hook"
+mv "$data" "$TEST_ROOT/previous-data"
+mv "$TEST_ROOT/data/opt/bin/goodwin" "$TEST_ROOT/previous-bin"
+package fresh-catalog goodwin-micro catalog
+sh "$TEST_ROOT/install-test.sh" "$upload" catalog
+grep 'goodwin-micro' "$data/wake-model.json"
+test "$(cat "$data/wake-models/$hash.onnx")" = goodwin-micro
+test ! -e "$data/models"
+
+printf '%s\n' 'Bundled and catalog installs, core-only updates and rollback passed.'

@@ -96,7 +96,7 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
             })
         }),
     );
-    app.set_microphone(true);
+    assert!(app.microphone_connected(&app.microphone_mute()));
     let id = app.start(Source::ManualTest).ok().unwrap();
     app.voice(id, vec![1000; 1024], false, RecordingGain::Automatic(4.0))
         .await;
@@ -136,6 +136,109 @@ async fn wait_for(mut check: impl FnMut() -> bool) {
     })
     .await
     .expect("expected runtime state");
+}
+
+#[tokio::test]
+async fn panel_mute_closes_capture_and_blocks_voice_until_reenabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        access: Access::Open,
+        settings: Settings::default(),
+        system_prompt: String::new(),
+    };
+    let mut previous_settings = config.settings.clone();
+    let app = App::new(
+        dir.path().into(),
+        config,
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (panel, panel_task) = serve(panel::router(app.clone())).await;
+    let mic = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let capture = tokio::spawn(run_microphone(app.clone(), mic.local_addr().unwrap()));
+    let client = reqwest::Client::new();
+    let mute = async |muted| {
+        let response = client
+            .put(format!("{panel}/api/settings/microphone"))
+            .json(&json!({ "muted": muted }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    };
+    let test = async |mode| {
+        client
+            .post(format!("{panel}/api/test"))
+            .json(&json!({ "mode": mode }))
+            .send()
+            .await
+            .unwrap()
+    };
+    let snapshot = || serde_json::to_value(app.snapshot()).unwrap();
+    let open_audio = || async {
+        let (mut audio, _) = timeout(Duration::from_secs(5), mic.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let length = audio.read_u32_le().await.unwrap();
+        let mut request = vec![0; length as usize];
+        audio.read_exact(&mut request).await.unwrap();
+        assert_eq!(request, Framing::Typed.subscription().encode_to_vec());
+        write_samples(&mut audio, 0, 1).await;
+        audio
+    };
+
+    let mut audio = open_audio().await;
+    wait_for(|| snapshot()["microphone"] == true).await;
+    assert_eq!(test("manual").await.status(), StatusCode::ACCEPTED);
+    write_samples(&mut audio, 500, 4).await;
+    mute(true).await;
+
+    assert_eq!(
+        timeout(Duration::from_secs(1), audio.read(&mut [0]))
+            .await
+            .expect("muting closes the capture socket")
+            .unwrap(),
+        0
+    );
+    let state = snapshot();
+    assert_eq!(state["settings"]["microphone_muted"], true);
+    assert_eq!(state["microphone"], false);
+    assert!(state["active"].is_null());
+    assert_eq!(state["last"]["stage"], "recording");
+    assert_eq!(state["last"]["error"], "microphone_muted");
+    for mode in ["manual", "wake"] {
+        let response = test(mode).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"],
+            "microphone_muted"
+        );
+    }
+    let chat = app.start(Source::Chat).ok().unwrap();
+    app.finish(chat, None);
+
+    previous_settings.sensitivity = 0.75;
+    client
+        .put(format!("{panel}/api/settings"))
+        .json(&json!({ "settings": previous_settings }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let saved = Config::load(dir.path()).unwrap().settings;
+    assert!(saved.microphone_muted);
+    assert!(saved.listening);
+    assert_eq!(saved.sensitivity, 0.75);
+
+    mute(false).await;
+    let _audio = open_audio().await;
+    wait_for(|| snapshot()["microphone"] == true).await;
+    assert_eq!(test("manual").await.status(), StatusCode::ACCEPTED);
+    assert!(!Config::load(dir.path()).unwrap().settings.microphone_muted);
+    capture.abort();
+    panel_task.abort();
 }
 
 #[tokio::test]
@@ -381,8 +484,8 @@ async fn wake_word_without_a_transcribed_question_plays_a_local_retry_prompt() {
             Ok(json!({"text": "Гудвин."}))
         }),
     );
-    app.set_microphone(true);
-    app.set_model(true);
+    assert!(app.microphone_connected(&app.microphone_mute()));
+    app.set_model(true, None);
     let id = app.start(Source::Wake).ok().expect("start wake request");
     app.stage(id, Stage::Transcribing);
     app.voice(id, vec![128; 320], true, RecordingGain::Automatic(4.0))

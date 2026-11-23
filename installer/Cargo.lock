@@ -997,6 +997,8 @@ dependencies = [
  "mdns-sd",
  "reqwest",
  "rfd",
+ "serde",
+ "serde_json",
  "sha2",
  "tar",
  "tempfile",

@@ -7,12 +7,15 @@ use std::{
 
 use goodwin_plugin::provider::Capability;
 use serde::Serialize;
+use tokio::sync::watch;
 
 use crate::{
     config::{Config, ConfigStore, RequestSettings, Settings},
     plugins::{Plugins, View as PluginView},
     providers::Provider,
     station::{Indicators, Player},
+    wake::{PendingModel, WakeModels},
+    wake_catalog::Selection,
 };
 
 mod voice;
@@ -47,6 +50,7 @@ pub enum Stage {
 pub enum Failure {
     Busy,
     Microphone,
+    MicrophoneMuted,
     Model,
     ProviderUnavailable,
     ProviderFailed,
@@ -74,6 +78,7 @@ struct Turn {
     started: Instant,
     report: Report,
     request: RequestSettings,
+    wake_word: Option<String>,
 }
 
 pub(crate) struct ActiveTurn {
@@ -102,6 +107,7 @@ struct Runtime {
     last: Option<Report>,
     microphone: bool,
     model: bool,
+    wake_model: Option<Selection>,
     messages: VecDeque<Message>,
 }
 
@@ -109,10 +115,12 @@ pub struct App {
     pub dir: PathBuf,
     config: ConfigStore,
     runtime: Mutex<Runtime>,
+    microphone_mute: watch::Sender<bool>,
     pub player: Player,
     pub(crate) indicators: Indicators,
     pub plugins: Plugins,
     pub(crate) default_microphone_gain: f32,
+    pub(crate) wake_models: WakeModels,
 }
 
 #[derive(Serialize)]
@@ -122,6 +130,7 @@ pub struct Snapshot {
     microphone: bool,
     default_microphone_gain: f32,
     model: bool,
+    wake_model: Option<Selection>,
     active: Option<Report>,
     last: Option<Report>,
     messages: VecDeque<Message>,
@@ -136,15 +145,19 @@ impl App {
         default_microphone_gain: f32,
     ) -> Arc<Self> {
         let plugins = Plugins::new(&dir, player.clone());
+        let (microphone_mute, _) = watch::channel(config.settings.microphone_muted);
         let config = ConfigStore::new(&dir, config);
+        let wake_models = WakeModels::new(&dir);
         Arc::new(Self {
             dir,
             config,
             runtime: Mutex::new(Runtime::default()),
+            microphone_mute,
             player,
             indicators: Indicators::new(),
             plugins,
             default_microphone_gain,
+            wake_models,
         })
     }
 
@@ -157,17 +170,18 @@ impl App {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        let runtime = self.runtime();
         let RequestSettings {
             settings,
             system_prompt,
         } = self.config.request_settings();
-        let runtime = self.runtime();
         Snapshot {
             settings,
             system_prompt,
             microphone: runtime.microphone,
             default_microphone_gain: self.default_microphone_gain,
             model: runtime.model,
+            wake_model: runtime.wake_model.clone(),
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
             messages: runtime.messages.clone(),
@@ -175,12 +189,65 @@ impl App {
         }
     }
 
-    pub fn set_microphone(&self, connected: bool) {
-        self.runtime().microphone = connected;
+    pub(crate) fn microphone_mute(&self) -> watch::Receiver<bool> {
+        self.microphone_mute.subscribe()
     }
 
-    pub fn set_model(&self, loaded: bool) {
-        self.runtime().model = loaded;
+    pub(crate) fn set_microphone_muted(&self, muted: bool) -> anyhow::Result<()> {
+        let mut runtime = self.runtime();
+        if *self.microphone_mute.borrow() == muted {
+            return Ok(());
+        }
+        self.config.update_microphone_muted(muted)?;
+        if muted {
+            self.end_capture(&mut runtime, Failure::MicrophoneMuted);
+        }
+        self.microphone_mute.send_replace(muted);
+        Ok(())
+    }
+
+    pub(crate) fn microphone_connected(&self, mute: &watch::Receiver<bool>) -> bool {
+        let mut runtime = self.runtime();
+        // A stream opened before a mute/unmute cycle must reconnect before delivering audio.
+        if mute.has_changed().unwrap_or(true) || *mute.borrow() {
+            return false;
+        }
+        runtime.microphone = true;
+        true
+    }
+
+    pub(crate) fn microphone_disconnected(&self) {
+        self.end_capture(&mut self.runtime(), Failure::Microphone);
+    }
+
+    fn end_capture(&self, runtime: &mut Runtime, error: Failure) {
+        runtime.microphone = false;
+        if let Some(id) = runtime.active.as_ref().and_then(|turn| {
+            matches!(turn.report.stage, Stage::AwaitingWake | Stage::Recording).then_some(turn.id)
+        }) {
+            self.finish_turn(runtime, id, Some(error));
+        }
+    }
+
+    pub fn set_model(&self, loaded: bool, selection: Option<Selection>) {
+        let mut runtime = self.runtime();
+        runtime.model = loaded;
+        runtime.wake_model = selection;
+    }
+
+    pub(crate) fn take_pending_wake_model(&self) -> Option<PendingModel> {
+        let mut runtime = self.runtime();
+        if runtime
+            .active
+            .as_ref()
+            .is_some_and(|turn| turn.report.stage == Stage::AwaitingWake)
+        {
+            return None;
+        }
+        let pending = self.wake_models.take_pending()?;
+        runtime.model = true;
+        runtime.wake_model = Some(pending.selection.clone());
+        Some(pending)
     }
 
     pub(crate) fn active(&self) -> Option<ActiveTurn> {
@@ -198,6 +265,9 @@ impl App {
     pub fn start(&self, source: Source) -> Result<u64, Failure> {
         let request = self.config.request_settings();
         let mut runtime = self.runtime();
+        if source != Source::Chat && *self.microphone_mute.borrow() {
+            return Err(Failure::MicrophoneMuted);
+        }
         if runtime.active.is_some() {
             return Err(Failure::Busy);
         }
@@ -227,6 +297,10 @@ impl App {
                 error: None,
             },
             request,
+            wake_word: runtime
+                .wake_model
+                .as_ref()
+                .map(|model| model.wake_word.clone()),
         });
         self.indicators.stage(source, stage);
         Ok(id)
@@ -236,18 +310,29 @@ impl App {
         let mut runtime = self.runtime();
         if let Some(turn) = runtime.active.as_mut().filter(|turn| turn.id == id) {
             turn.record_timing();
+            let wake_test_done =
+                turn.report.stage == Stage::AwaitingWake && stage != Stage::AwaitingWake;
             turn.report.stage = stage;
             self.indicators.stage(turn.report.source, stage);
+            if wake_test_done {
+                self.wake_models.changed.notify_one();
+            }
         }
     }
 
     pub fn finish(&self, id: u64, error: Option<Failure>) {
-        let mut runtime = self.runtime();
+        self.finish_turn(&mut self.runtime(), id, error);
+    }
+
+    fn finish_turn(&self, runtime: &mut Runtime, id: u64, error: Option<Failure>) {
         if runtime.active.as_ref().is_some_and(|turn| turn.id == id) {
             let mut turn = runtime.active.take().expect("matching active turn");
             turn.record_timing();
             turn.report.error = error;
             self.indicators.finish(turn.report.source);
+            if turn.report.stage == Stage::AwaitingWake {
+                self.wake_models.changed.notify_one();
+            }
             runtime.last = Some(turn.report);
         }
     }

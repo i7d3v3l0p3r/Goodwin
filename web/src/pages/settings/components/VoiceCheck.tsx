@@ -41,7 +41,9 @@ export function VoiceCheck(props: {
       <Button type="button" disabled={props.disabled || !props.snapshot.microphone}
         onClick={() => void props.test("manual")}>{props.t.manual}</Button>
       <Button type="button" disabled={props.disabled || !props.snapshot.microphone || !props.snapshot.model}
-        onClick={() => void props.test("wake")}>{props.t.byWake}</Button>
+        onClick={() => void props.test("wake")}>
+        {props.t.byWake(props.snapshot.wake_model?.wake_word ?? props.t.defaultWakeWord)}
+      </Button>
     </div>
     <RequestDetails t={props.t} report={props.snapshot.last} />
   </section>;

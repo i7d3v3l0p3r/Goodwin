@@ -47,7 +47,7 @@ fn installation_accepts_a_named_adb_and_a_local_package() {
     };
     assert_eq!(options.address.serial(), "[fd00::10]:4444");
     assert_eq!(options.adb.unwrap(), PathBuf::from("Platform Tools/adb"));
-    assert!(matches!(options.model, Model::Micro));
+    assert_eq!(options.model, Model::Id("goodwin-micro".into()));
     let Source::Local(path) = options.source else {
         panic!("Expected a local package")
     };
@@ -61,7 +61,7 @@ fn invalid_options_fail_before_an_installation_can_run() {
         &["install", "http://station.local"][..],
         &["install", "station.local", "--package"][..],
         &["install", "station.local", "--package", "--model", "micro"][..],
-        &["install", "station.local", "--model", "unknown"][..],
+        &["install", "station.local", "--model", "../unknown"][..],
         &[
             "install",
             "station.local",

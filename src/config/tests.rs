@@ -65,7 +65,9 @@ fn concurrent_settings_updates_keep_the_committed_preferences_and_system_prompt(
 fn configuration_without_provider_bindings_or_a_system_prompt_uses_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let mut settings = serde_json::to_value(Settings::default()).unwrap();
-    settings.as_object_mut().unwrap().remove("assistant");
+    let fields = settings.as_object_mut().unwrap();
+    fields.remove("assistant");
+    fields.remove("microphone_muted");
     let config = serde_json::json!({
         "access": {"mode": "open"},
         "settings": settings,
@@ -73,6 +75,7 @@ fn configuration_without_provider_bindings_or_a_system_prompt_uses_defaults() {
     fs::write(Config::path(dir.path()), config.to_string()).unwrap();
     let config = Config::load(dir.path()).unwrap();
     assert!(config.system_prompt.is_empty());
+    assert!(!config.settings.microphone_muted);
     assert_eq!(
         config.settings.assistant.pipeline.chat.provider,
         "openrouter"

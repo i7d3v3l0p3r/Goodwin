@@ -8,6 +8,8 @@ mod station;
 #[cfg(test)]
 mod test_support;
 mod wake;
+#[path = "../shared/wake_catalog.rs"]
+mod wake_catalog;
 mod wav;
 
 use std::{env, fs, net::SocketAddr, path::PathBuf};

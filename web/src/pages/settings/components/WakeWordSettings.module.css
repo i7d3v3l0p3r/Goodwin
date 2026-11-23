@@ -16,6 +16,18 @@
 .sensitivity output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .sensitivity input { width: 100%; min-height: 24px; margin: 0; }
 
+.modelForm {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modelForm p { margin: 0; }
+.modelForm label { font-size: .9rem; font-weight: 610; }
+.modelStatus { color: var(--muted); font-size: .9rem; }
+.modelError { color: var(--danger); }
+.modelActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: .86rem; }
+
 .listeningSwitch {
   display: inline-flex;
   align-items: center;

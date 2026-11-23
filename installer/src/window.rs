@@ -11,6 +11,7 @@ use crate::{
     discovery::{self, Station},
     package::Source,
     station::{self, Address, Installed, Model},
+    wake_catalog::Catalog,
 };
 
 const PAPER: Color32 = Color32::WHITE;
@@ -36,6 +37,9 @@ pub(crate) struct InstallerWindow {
     local_build: Option<PathBuf>,
     adb: Option<PathBuf>,
     model: Model,
+    catalog: Option<Catalog>,
+    catalog_worker: Option<Receiver<Result<Catalog, String>>>,
+    catalog_error: Option<String>,
     worker: Option<Receiver<Event>>,
     target: Option<InstallTarget>,
     status: String,
@@ -104,6 +108,7 @@ impl eframe::App for InstallerWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         self.poll_search();
+        self.poll_catalog();
         let busy = self.worker.is_some();
         if busy && ctx.input(|input| input.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -245,6 +250,7 @@ impl InstallerWindow {
     pub(crate) fn new(ctx: &egui::Context) -> Self {
         let mut window = Self::default();
         window.start_search(ctx);
+        window.load_catalog(ctx);
         window
     }
 
@@ -278,10 +284,96 @@ impl InstallerWindow {
 
     fn station_fields(&mut self, ui: &mut egui::Ui) {
         card(ui, |ui| {
-            ui.add_enabled_ui(!self.advanced_open, |ui| self.station_picker(ui));
+            ui.add_enabled_ui(!self.advanced_open, |ui| {
+                self.station_picker(ui);
+                ui.separator();
+                self.wake_model_picker(ui);
+            });
             ui.separator();
             self.controls(ui);
         });
+    }
+
+    fn wake_model_picker(&mut self, ui: &mut egui::Ui) {
+        const KEEP: &str = "Текущая / «Гудвин» Standard при установке";
+        let label = |model: &crate::wake_catalog::Selection| {
+            let tier = if model.tier == "micro" {
+                "Micro"
+            } else {
+                "Standard"
+            };
+            format!("{} · {tier}", model.wake_word)
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Модель активации");
+            let selected = self.catalog.as_ref().and_then(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .find(|model| self.model == Model::Id(model.selection.id.clone()))
+            });
+            egui::ComboBox::from_id_salt("wake_model")
+                .selected_text(
+                    selected.map_or_else(|| KEEP.into(), |model| label(&model.selection)),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.model, Model::Keep, KEEP);
+                    if let Some(catalog) = &self.catalog {
+                        for model in &catalog.models {
+                            ui.selectable_value(
+                                &mut self.model,
+                                Model::Id(model.selection.id.clone()),
+                                label(&model.selection),
+                            );
+                        }
+                    }
+                });
+            if self.catalog_worker.is_some() {
+                ui.spinner();
+                ui.label("Загружаем список…");
+            } else if let Some(error) = &self.catalog_error {
+                ui.label(RichText::new("Список моделей недоступен").color(ERROR))
+                    .on_hover_text(error);
+                if ui.button("Повторить").clicked() {
+                    self.load_catalog(ui.ctx());
+                }
+            }
+        });
+    }
+
+    fn load_catalog(&mut self, ctx: &egui::Context) {
+        let (send, receive) = mpsc::channel();
+        self.catalog_worker = Some(receive);
+        self.catalog_error = None;
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let catalog = Catalog::latest()
+                .map_err(|error| format!("{error:#}"))
+                .and_then(|catalog| {
+                    if catalog.models.is_empty() {
+                        Err("В релизе нет совместимых моделей".into())
+                    } else {
+                        Ok(catalog)
+                    }
+                });
+            let _ = send.send(catalog);
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_catalog(&mut self) {
+        let Some(worker) = &self.catalog_worker else {
+            return;
+        };
+        match worker.try_recv() {
+            Ok(Ok(catalog)) => self.catalog = Some(catalog),
+            Ok(Err(error)) => self.catalog_error = Some(error),
+            Err(TryRecvError::Disconnected) => {
+                self.catalog_error = Some("Не удалось получить список моделей".into())
+            }
+            Err(TryRecvError::Empty) => return,
+        }
+        self.catalog_worker = None;
     }
 
     fn station_picker(&mut self, ui: &mut egui::Ui) {
@@ -418,24 +510,6 @@ impl InstallerWindow {
                         .strong(),
                 );
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Модель активации");
-                    egui::ComboBox::from_id_salt("wake_model")
-                        .selected_text(match self.model {
-                            Model::Keep => "Текущая / Standard при установке",
-                            Model::Standard => "Standard",
-                            Model::Micro => "Micro",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.model,
-                                Model::Keep,
-                                "Текущая / Standard при установке",
-                            );
-                            ui.selectable_value(&mut self.model, Model::Standard, "Standard");
-                            ui.selectable_value(&mut self.model, Model::Micro, "Micro");
-                        });
-                });
                 ui.horizontal(|ui| {
                     if ui.button("Выбрать ADB…").clicked()
                         && let Some(path) = rfd::FileDialog::new()
@@ -728,14 +802,15 @@ impl InstallerWindow {
             .clone()
             .map_or(Source::Latest, Source::Local);
         let adb = self.adb.clone().unwrap_or_else(station::default_adb);
-        let model = self.model;
+        let model = self.model.clone();
+        let catalog = self.catalog.clone();
         let ctx = ctx.clone();
         let (send, receive) = mpsc::channel();
         self.status = "Подключаемся к Станции…".into();
         self.worker = Some(receive);
         ctx.request_repaint();
         thread::spawn(move || {
-            let result = station::install(&adb, address, source, model, |line| {
+            let result = station::install(&adb, address, source, model, catalog.as_ref(), |line| {
                 let _ = send.send(Event::Log(line));
                 ctx.request_repaint();
             });

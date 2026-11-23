@@ -11,12 +11,13 @@ Download the desktop installer, Station package and plugins from [GitHub Release
 The Rust installer runs on Windows, Linux and macOS. It installs Goodwin on a prepared Yandex Station Mini 3 over network ADB with root access and support for the `/data/init.d` service directory. Install [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) and put ADB on your `PATH`, or select the ADB executable under **Дополнительные настройки**.
 
 1. Select a Station from the list. The installer starts an mDNS search for Mini 3 on launch. Click **Обновить** to search again or **Указать адрес вручную** to enter an IP address or hostname. Add an ADB port if it differs from 5555.
-2. Click **Установить или обновить**. The installer downloads the latest stable Station package from GitHub, verifies its SHA-256, starts the service and enables it at boot.
-3. Open the panel from the installer and create a password on a fresh installation.
+2. Choose a wake word and model tier under **Модель активации**. The installer lists compatible models from the latest [Goodwin-wakeword release](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest). The default keeps the current model on updates and downloads «Гудвин» Standard on a fresh installation.
+3. Click **Установить или обновить**. The installer verifies the Station package and any model download with SHA-256, starts the service and enables it at boot.
+4. Open the panel from the installer and create a password on a fresh installation.
 
-For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs `goodwin`, both ONNX files and the model attribution files in `models/`. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
+For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs the AArch64 `goodwin` binary. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
 
-Updates to the managed Station service reuse its data directory at `/data/opt/etc/goodwin` and keep its wake model selection by default. When there is room, the installer uploads and extracts the package in `/tmp`. It reuses identical model files and keeps one temporary rollback copy. After the startup check passes, it removes that copy. If the check fails, it restores the previous version and restarts it if it was running.
+Updates to the managed Station service reuse its data directory at `/data/opt/etc/goodwin` and keep its wake model selection by default, including models from older bundled releases. When there is room, the installer uploads and extracts the package in `/tmp`. If the startup check fails, it restores the previous version and restarts it if it was running.
 
 To build and launch the desktop installer locally, run:
 
@@ -32,10 +33,10 @@ Pass the address of a prepared Station to install or update Goodwin without open
 
 ```sh
 goodwin-installer install station.local
-goodwin-installer install 192.168.1.42:5555 --package ./goodwin-mini3-aarch64.tar.gz --model micro
+goodwin-installer install 192.168.1.42:5555 --package ./goodwin-mini3-aarch64.tar.gz --model egor-micro
 ```
 
-The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model keep|standard|micro` to select the wake-word model. The default `keep` retains the model on updates and uses Standard for a fresh installation. Use brackets for IPv6 addresses, for example `[fd00::42]:5555`.
+The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model <id>` to select a model ID from the latest release's [metadata.json](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest/download/metadata.json). The default `keep` retains the model on updates and downloads `goodwin-standard` for a fresh installation. The aliases `standard` and `micro` select the corresponding «Гудвин» models. Put IPv6 addresses in brackets, as in `[fd00::42]:5555`.
 
 The command writes progress and errors to stderr. On success it exits with status 0 and prints the panel URL to stdout. An installation failure returns status 1 and invalid arguments return status 2. Fresh installations still ask for a password on the first panel visit.
 
@@ -67,13 +68,7 @@ cargo zigbuild --locked --release --target aarch64-unknown-linux-musl
 
 The Station binary is `target/aarch64-unknown-linux-musl/release/goodwin`. The native binary runs the panel on a development computer. The live microphone and playback tests require a Station or an audio test fixture.
 
-With the trained Standard and Micro models in `datasets/goodwin/training/`, run
-`python scripts/package-station.py` to package the ARM64 binary, both ONNX files,
-and the launcher in `target/goodwin-mini3-aarch64.tar.gz`.
-The packager takes `LICENSE` and `NOTICE` from the [extracted LiveKit encoders](#fine-tune-on-a-local-dataset) in
-`target/wakeword-v2/encoders/`. Pass `--encoders <directory>` if you extracted them elsewhere.
-
-To package the wake-word models shipped with Goodwin, use `python scripts/package-station.py --standard models/standard.onnx --micro models/micro.onnx --encoders models`.
+Run `python scripts/package-station.py` to package the ARM64 binary and launcher in `target/goodwin-mini3-aarch64.tar.gz`. Model assets and their license and notice are distributed in the [Goodwin-wakeword releases](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases).
 
 ## Publish a release
 
@@ -93,9 +88,11 @@ chmod +x ./goodwin
 
 Open the Station's address on port 8787 and create a panel password. In **Plugins**, upload `openrouter-linux-aarch64.tar.gz` and open **OpenRouter → Settings** to add an API key, or install and select another provider. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
 
-To enable voice activation, place a LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` and restart the service. Goodwin selects the input format from the ONNX graph. Run `goodwin wake-check model.onnx` to check loading, warm-up, and one inference step without the microphone.
+To enable or change voice activation, open **Settings → Activation and microphone**. Choose a model and click **Download and switch**. The Station needs access to GitHub for the download. The new model takes effect without restarting the service and is saved for subsequent starts.
 
-On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz | tar -xf -`. In the extracted directory, run `./start.sh standard` or `./start.sh micro` to select the model at startup. Both use the same data directory and panel settings. Use `GOODWIN_PANEL_ADDRESS=0.0.0.0:8787` to open the panel to your trusted network and `GOODWIN_DATA_DIR` to reuse an existing data directory.
+On a manual installation, you can also place a local LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` before starting Goodwin. Goodwin reads the managed selection first and uses the local model when no catalog model is selected. Run `goodwin wake-check model.onnx` to check loading, warm-up, and one inference step without the microphone.
+
+On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz | tar -xf -`. In the extracted directory, run `./start.sh` after initializing the data directory. Use `GOODWIN_PANEL_ADDRESS=0.0.0.0:8787` to open the panel to your trusted network and `GOODWIN_DATA_DIR` to reuse an existing data directory.
 
 The text chat and push-button Station test work without a wake model. In Settings you can pause background detection, change sensitivity, test the speaker and microphone, and see timings for the last request. Pausing detection leaves the button test available. Goodwin keeps transcripts in the current conversation and does not save recordings or diagnostic transcripts to disk.
 
@@ -116,7 +113,7 @@ The panel opens at `http://127.0.0.1:8787`. When running Vite in development mod
 | --- | --- | --- |
 | `GOODWIN_MICROPHONE` | Local `yio_audio` socket address | `127.0.0.1:9850` |
 | `GOODWIN_MIC_GAIN` | Default wake word gain when the panel field is empty and input gain in automatic recognition mode | `4` |
-| `GOODWIN_WAKE_MODEL` | Path to a Standard or Micro ONNX wake model | `<data-dir>/goodwin.onnx` |
+| `GOODWIN_WAKE_MODEL` | Path to a local Standard or Micro ONNX when no catalog model is selected | `<data-dir>/goodwin.onnx` |
 | `GOODWIN_APLAY` | ALSA playback program path | `aplay` |
 | `GOODWIN_PLAYBACK_DEVICE` | ALSA playback device | `speakers` |
 

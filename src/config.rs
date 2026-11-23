@@ -30,6 +30,7 @@ pub struct Settings {
     pub assistant: AssistantSettings,
     pub sensitivity: f32,
     pub listening: bool,
+    pub microphone_muted: bool,
     pub wake_gain: Option<f32>,
     pub transcription_gain: Option<f32>,
 }
@@ -41,6 +42,8 @@ struct StoredSettings {
     providers: PreviousBindings,
     sensitivity: f32,
     listening: bool,
+    #[serde(default)]
+    microphone_muted: bool,
     wake_gain: Option<f32>,
     transcription_gain: Option<f32>,
 }
@@ -74,6 +77,7 @@ impl From<StoredSettings> for Settings {
             assistant,
             sensitivity: stored.sensitivity,
             listening: stored.listening,
+            microphone_muted: stored.microphone_muted,
             wake_gain: stored.wake_gain,
             transcription_gain: stored.transcription_gain,
         }
@@ -86,6 +90,7 @@ impl Default for Settings {
             assistant: AssistantSettings::default(),
             sensitivity: 0.5,
             listening: true,
+            microphone_muted: false,
             wake_gain: None,
             transcription_gain: None,
         }
@@ -224,7 +229,16 @@ impl ConfigStore {
     }
 
     pub(crate) fn update_settings(&self, settings: Settings) -> Result<()> {
-        self.update(|draft| draft.settings = settings)
+        self.update(|draft| {
+            draft.settings = Settings {
+                microphone_muted: draft.settings.microphone_muted,
+                ..settings
+            };
+        })
+    }
+
+    pub(crate) fn update_microphone_muted(&self, muted: bool) -> Result<()> {
+        self.update(|draft| draft.settings.microphone_muted = muted)
     }
 
     pub(crate) fn update_system_prompt(&self, prompt: String) -> Result<()> {

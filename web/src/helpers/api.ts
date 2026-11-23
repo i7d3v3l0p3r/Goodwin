@@ -25,9 +25,22 @@ export interface ModelCatalog {
 export interface Settings {
   assistant: AssistantSettings;
   listening: boolean;
+  microphone_muted: boolean;
   sensitivity: number;
   wake_gain: number | null;
   transcription_gain: number | null;
+}
+
+export interface WakeModel {
+  id: string;
+  wake_word: string;
+  tier: "standard" | "micro";
+  sha256: string;
+}
+
+export interface WakeModelCatalog {
+  tag: string;
+  models: WakeModel[];
 }
 
 export interface Report {
@@ -49,6 +62,7 @@ export interface Snapshot {
   microphone: boolean;
   default_microphone_gain: number;
   model: boolean;
+  wake_model: WakeModel | null;
   active: Report | null;
   last: Report | null;
   messages: Message[];
@@ -104,7 +118,7 @@ export class ApiError extends Error {
   constructor(public code: string) { super(code); }
 }
 
-export async function api<T>(route: string, method = "GET", body?: unknown): Promise<T> {
+export async function api<T>(route: string, method = "GET", body?: unknown, timeout?: number): Promise<T> {
   let response: Response;
   const archive = body instanceof File;
   try {
@@ -112,7 +126,7 @@ export async function api<T>(route: string, method = "GET", body?: unknown): Pro
       method,
       headers: body === undefined ? undefined : { "Content-Type": archive ? "application/gzip" : "application/json" },
       body: archive ? body : body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(archive ? 60_000 : 10_000),
+      signal: AbortSignal.timeout(timeout ?? (archive ? 60_000 : 10_000)),
     });
   } catch {
     throw new ApiError("connection");

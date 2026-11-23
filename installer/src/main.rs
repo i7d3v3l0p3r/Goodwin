@@ -3,6 +3,8 @@ mod cli;
 mod discovery;
 mod package;
 mod station;
+#[path = "../../shared/wake_catalog.rs"]
+mod wake_catalog;
 #[cfg(feature = "gui")]
 mod window;
 

@@ -9,6 +9,8 @@ export function createPanel() {
   const [reachable, setReachable] = createSignal(true);
   const [pending, setPending] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [microphonePending, setMicrophonePending] = createSignal(false);
+  const [microphoneError, setMicrophoneError] = createSignal("");
   const t = () => words[language()];
   let stopped = false;
   let refreshVersion = 0;
@@ -17,6 +19,7 @@ export function createPanel() {
   function requireLogin() {
     setAccess({ protected: true, authorized: false, setup_required: false });
     setSnapshot(undefined);
+    setMicrophoneError("");
   }
 
   async function refresh(recheckAccess = false) {
@@ -41,7 +44,7 @@ export function createPanel() {
   }
 
   async function poll() {
-    if (!pending()) await refresh(!access()?.authorized);
+    if (!pending() && !microphonePending()) await refresh(!access()?.authorized);
     if (!stopped) timer = window.setTimeout(poll, 750);
   }
 
@@ -64,14 +67,17 @@ export function createPanel() {
     setError("");
   }
 
-  async function action(request: () => Promise<unknown>, recheckAccess = false) {
-    if (pending()) return false;
-    setPending(true);
-    clearError();
+  async function action(request: () => Promise<unknown>, options: { recheckAccess?: boolean; microphone?: boolean } = {}) {
+    const [isPending, setActionPending, setActionError] = options.microphone
+      ? [microphonePending, setMicrophonePending, setMicrophoneError] as const
+      : [pending, setPending, setError] as const;
+    if (isPending()) return false;
+    setActionPending(true);
+    setActionError("");
     refreshVersion++;
     try {
       await request();
-      await refresh(recheckAccess);
+      await refresh(options.recheckAccess);
       return true;
     } catch (reason) {
       const code = reason instanceof ApiError ? reason.code : "internal";
@@ -79,13 +85,13 @@ export function createPanel() {
         requireLogin();
       } else if (code === "setup_complete" || code === "setup_required") {
         await refresh(true);
-        if (code === "setup_complete") setError(code);
+        if (code === "setup_complete") setActionError(code);
       } else {
-        setError(code);
+        setActionError(code);
       }
       return false;
     } finally {
-      setPending(false);
+      setActionPending(false);
     }
   }
 
@@ -94,25 +100,28 @@ export function createPanel() {
     if (!reachable()) return t().disconnected;
     if (!state) return t().connecting;
     if (state.active) return t().stages[state.active.stage];
+    if (state.settings.microphone_muted) return t().microphoneMuted;
     if (!state.settings.listening) return t().paused;
     if (!state.microphone) return t().offline;
     if (!state.model) return t().noModel;
-    return t().ready;
+    return t().ready(state.wake_model?.wake_word ?? t().defaultWakeWord);
   }
 
   return {
-    access, snapshot, reachable, pending, error, language, t, status, changeLanguage, clearError,
+    access, snapshot, reachable, pending, error, language, t, status, changeLanguage, clearError, refresh,
     busy: () => pending() || !!snapshot()?.active,
+    microphonePending, microphoneError,
+    setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
-      action(() => api("setup", "POST", { password, confirmation }), true),
+      action(() => api("setup", "POST", { password, confirmation }), { recheckAccess: true }),
     login: (password: string) => action(async () => {
       await api("login", "POST", { password });
       setAccess(undefined);
-    }, true),
+    }, { recheckAccess: true }),
     logout: () => action(async () => {
       await api("logout", "POST", {});
       requireLogin();
-    }, true),
+    }, { recheckAccess: true }),
     send: (message: string) => action(() => api("chat", "POST", { message })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),
     saveSettings: (settings: Settings) => action(() => api("settings", "PUT", { settings })),

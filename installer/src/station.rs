@@ -11,7 +11,10 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
-use crate::package::{self, Source};
+use crate::{
+    package::{self, Source},
+    wake_catalog::Catalog,
+};
 
 const INSTALL: &str = include_str!("../install-station.sh");
 const INIT: &str = include_str!("../../scripts/station-goodwin-init.sh");
@@ -28,20 +31,22 @@ else
 fi
 "#;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Model {
     #[default]
     Keep,
-    Standard,
-    Micro,
+    Id(String),
 }
 
 impl Model {
-    fn arg(self) -> &'static str {
+    fn bundled_arg(&self) -> Result<&'static str> {
         match self {
-            Self::Keep => "keep",
-            Self::Standard => "standard",
-            Self::Micro => "micro",
+            Self::Keep => Ok("keep"),
+            Self::Id(id) if id == "goodwin-standard" => Ok("standard"),
+            Self::Id(id) if id == "goodwin-micro" => Ok("micro"),
+            _ => {
+                bail!("Эта модель требует сборку Goodwin с поддержкой отдельного каталога моделей")
+            }
         }
     }
 }
@@ -133,6 +138,7 @@ pub(crate) fn install(
     address: Address,
     source: Source,
     model: Model,
+    catalog: Option<&Catalog>,
     log: impl Fn(String) + Sync,
 ) -> Result<Installed> {
     let serial = address.serial();
@@ -161,7 +167,48 @@ pub(crate) fn install(
     }
 
     let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
-    let (source, scratch_kib) = package::prepare(source, work.path(), &log)?;
+    let (source, bundled_models) = package::prepare(source, work.path(), &log)?;
+    let choice = if bundled_models {
+        model.bundled_arg()?
+    } else {
+        let id = match &model {
+            Model::Id(id) => Some(id.as_str()),
+            Model::Keep => {
+                let existing = adb.on_station(15, [
+                    "shell",
+                    "if [ -f /data/opt/etc/goodwin/config.json ]; then echo update; else echo fresh; fi",
+                ])?;
+                match existing.trim() {
+                    "fresh" => Some("goodwin-standard"),
+                    "update" => None,
+                    _ => bail!("Не удалось определить, установлен ли Goodwin на Станции"),
+                }
+            }
+        };
+        if let Some(id) = id {
+            log(format!("Скачиваем модель активации {id}…"));
+            let latest;
+            let catalog = match catalog {
+                Some(catalog) => catalog,
+                None => {
+                    latest = Catalog::latest().context("Не удалось загрузить каталог моделей")?;
+                    &latest
+                }
+            };
+            let payload = work.path().join("payload");
+            let selection = catalog
+                .download(id, fs::File::create(payload.join("wake-model.onnx"))?)
+                .context("Не удалось скачать или проверить модель активации")?;
+            serde_json::to_writer(
+                fs::File::create(payload.join("wake-model.json"))?,
+                selection,
+            )?;
+            "catalog"
+        } else {
+            "keep"
+        }
+    };
+    let scratch_kib = package::build_payload(work.path(), choice == "catalog")?;
     for (name, script) in [("install-station.sh", INSTALL), ("init.sh", INIT)] {
         fs::write(work.path().join(name), script.replace("\r\n", "\n"))?;
     }
@@ -196,7 +243,7 @@ pub(crate) fn install(
         "Не удалось создать временную папку на Станции"
     );
 
-    let install = transfer_and_install(&adb, work.path(), &remote, model, &log);
+    let install = transfer_and_install(&adb, work.path(), &remote, choice, &log);
     if adb.on_station(10, [
         "shell",
         &format!("rm -rf {remote}/payload; rm -f {remote}/payload.tar.gz {remote}/install-station.sh {remote}/init.sh; rmdir {remote}"),
@@ -214,7 +261,7 @@ fn transfer_and_install(
     adb: &Adb<'_>,
     work: &Path,
     remote: &str,
-    model: Model,
+    choice: &str,
     log: &(impl Fn(String) + Sync),
 ) -> Result<bool> {
     for name in ["payload.tar.gz", "install-station.sh", "init.sh"] {
@@ -232,8 +279,7 @@ fn transfer_and_install(
     log("Устанавливаем Goodwin и проверяем запуск…".into());
     // Legacy ADB shells can exit successfully without returning the remote status.
     let script = format!(
-        "sh {remote}/install-station.sh {remote} {}; status=$?; printf '\\n{INSTALL_EXIT}%s\\n' \"$status\"",
-        model.arg(),
+        "sh {remote}/install-station.sh {remote} {choice}; status=$?; printf '\\n{INSTALL_EXIT}%s\\n' \"$status\"",
     );
     let report = |line: String| {
         if !line.starts_with(SUCCESS) && !line.starts_with(INSTALL_EXIT) {

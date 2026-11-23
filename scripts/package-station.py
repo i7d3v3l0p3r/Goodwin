@@ -1,4 +1,4 @@
-"""Package a Linux ARM64 Goodwin build and the two trained ONNX models."""
+"""Package the Linux ARM64 Goodwin build."""
 
 import argparse
 import hashlib
@@ -17,23 +17,19 @@ Mini 3 firmware with BusyBox tar uses a separate gzip command.
 gzip -dc goodwin-mini3-aarch64.tar.gz | tar -xf -
 cd goodwin-mini3
 sha256sum -c SHA256SUMS
-./goodwin wake-check models/standard.onnx
-./goodwin wake-check models/micro.onnx
 ./goodwin setup ./goodwin-data
-GOODWIN_PANEL_ADDRESS=0.0.0.0:8787 ./start.sh standard
+GOODWIN_PANEL_ADDRESS=0.0.0.0:8787 ./start.sh
 ```
 
 Open the Station's address on port 8787 to create the panel password and sign in.
 The first visitor who completes setup sets the password.
 Install a provider package in the Plugins panel to enable inference.
+Download a wake word model in Settings → Activation and microphone.
 
 For an existing Goodwin installation, reuse its configured data directory with
 `GOODWIN_DATA_DIR` and skip setup. Stop the current Goodwin process before
-starting the new one. Pass `micro` instead of `standard` to start with Micro.
+starting the new one.
 Use a trusted network for the HTTP panel.
-
-Both bundled models were calibrated to an ONNX score threshold of 0.50.
-Set panel sensitivity to about 64% to use that threshold.
 """
 
 
@@ -46,32 +42,17 @@ def add_bytes(archive: tarfile.TarFile, name: str, data: bytes, mode: int = 0o64
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    training = ROOT / "datasets/goodwin/training"
     parser.add_argument("--binary", type=Path, default=ROOT / "target/aarch64-unknown-linux-musl/release/goodwin")
-    parser.add_argument("--standard", type=Path, default=training / "livekit-standard-v2/goodwin.onnx")
-    parser.add_argument("--micro", type=Path, default=training / "livekit-micro-v2/goodwin_micro.onnx")
-    parser.add_argument("--encoders", type=Path, default=ROOT / "target/wakeword-v2/encoders",
-                        help="Extracted LiveKit encoder directory containing LICENSE and NOTICE")
     parser.add_argument("--output", type=Path, default=ROOT / "target/goodwin-mini3-aarch64.tar.gz")
     args = parser.parse_args()
     binary = args.binary.read_bytes()
     if binary[:6] != b"\x7fELF\x02\x01" or binary[18:20] != b"\xb7\x00":
         parser.error("The Goodwin binary must be little-endian AArch64 ELF")
 
-    try:
-        model_license = (args.encoders / "LICENSE").read_bytes()
-        model_notice = (args.encoders / "NOTICE").read_bytes()
-    except OSError as error:
-        parser.error(f"Could not read model attribution from {args.encoders}: {error}")
-
     files = {
         "goodwin": (binary, 0o755),
         "start.sh": ((ROOT / "scripts/start-station.sh").read_text().encode(), 0o755),
-        "models/standard.onnx": (args.standard.read_bytes(), 0o644),
-        "models/micro.onnx": (args.micro.read_bytes(), 0o644),
         "LICENSE": ((ROOT / "LICENSE").read_bytes(), 0o644),
-        "models/LICENSE": (model_license, 0o644),
-        "models/NOTICE": (model_notice, 0o644),
         "README.md": (GUIDE.encode(), 0o644),
     }
     checksums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"

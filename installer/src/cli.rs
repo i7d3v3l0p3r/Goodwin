@@ -5,18 +5,20 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::{
     package::Source,
     station::{self, Address, Model},
+    wake_catalog::valid_model_id,
 };
 
 pub(crate) const USAGE: &str = "\
 Использование
-  goodwin-installer install <адрес[:порт]> [--package <путь>] [--adb <путь>] [--model keep|standard|micro]
+  goodwin-installer install <адрес[:порт]> [--package <путь>] [--adb <путь>] [--model keep|<id>]
   goodwin-installer --help
   goodwin-installer --version
 
 Поддерживаются IP-адреса и имена Станций. Порт ADB по умолчанию 5555.
   --package  Локальный архив или папка со сборкой. По умолчанию свежий релиз с GitHub.
   --adb      Путь к adb. По умолчанию рядом с установщиком или в PATH.
-  --model    Модель активации. По умолчанию keep, при первой установке Standard.
+  --model    ID из каталога Goodwin-wakeword, например egor-micro.
+             По умолчанию keep, при первой установке goodwin-standard.
 
 Ход установки выводится в stderr, адрес панели при успехе в stdout.
 ";
@@ -73,9 +75,10 @@ pub(crate) fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Action> 
                 ensure!(model.is_none(), "Параметр --model указан повторно");
                 model = Some(match value(&mut args, "--model")?.to_str() {
                     Some("keep") => Model::Keep,
-                    Some("standard") => Model::Standard,
-                    Some("micro") => Model::Micro,
-                    _ => bail!("Для --model используйте keep, standard или micro"),
+                    Some("standard") => Model::Id("goodwin-standard".into()),
+                    Some("micro") => Model::Id("goodwin-micro".into()),
+                    Some(id) if valid_model_id(id) => Model::Id(id.into()),
+                    _ => bail!("Для --model используйте keep или ID модели из каталога"),
                 });
             }
             _ => bail!("Неизвестный параметр {option:?}"),
@@ -102,6 +105,7 @@ pub(crate) fn install(options: InstallOptions) -> Result<()> {
         options.address,
         options.source,
         options.model,
+        None,
         |line| {
             eprintln!("{line}");
         },

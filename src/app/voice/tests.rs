@@ -70,11 +70,26 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
 #[test]
 fn strips_only_a_leading_wake_word() {
     assert_eq!(
-        strip_wake_word("«Гудвин», сколько времени?"),
+        strip_wake_word("«Гудвин», сколько времени?", "Гудвин"),
         "сколько времени?"
     );
-    assert_eq!(strip_wake_word("Гудвин."), "");
-    assert_eq!(strip_wake_word("Кто такой Гудвин?"), "Кто такой Гудвин?");
+    assert_eq!(strip_wake_word("Гудвин.", "Гудвин"), "");
+    assert_eq!(
+        strip_wake_word("Кто такой Гудвин?", "Гудвин"),
+        "Кто такой Гудвин?"
+    );
+    assert_eq!(
+        strip_wake_word("ЕГОР, сколько времени?", "Егор"),
+        "сколько времени?"
+    );
+    assert_eq!(
+        strip_wake_word("Гудвин, кто такой Егор?", "Егор"),
+        "Гудвин, кто такой Егор?"
+    );
+    assert_eq!(
+        strip_wake_word("Hey, Goodwin! What time is it?", "Hey Goodwin"),
+        "What time is it?"
+    );
 }
 
 #[tokio::test]

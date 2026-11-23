@@ -73,6 +73,17 @@ impl Detector {
         self.frame.clear();
     }
 
+    pub(super) fn apply_pending_model(&mut self, app: &App) {
+        if let Some(pending) = app.take_pending_wake_model() {
+            self.model = Some(pending.model);
+            self.wake_frame.clear();
+            self.history.clear();
+            self.detection_enabled = false;
+            self.wake_test = None;
+            let _ = pending.activated.send(());
+        }
+    }
+
     pub(super) fn push_sample(&mut self, sample: i16, app: &Arc<App>) {
         self.frame.push(sample);
         if self.frame.len() == VAD_SAMPLES {
@@ -172,7 +183,7 @@ impl Detector {
             Err(error) => {
                 eprintln!("Wake inference failed: {error}");
                 self.model = None;
-                app.set_model(false);
+                app.set_model(false, None);
                 if let Some(id) = wake_test_id {
                     app.finish(id, Some(Failure::Model));
                 }
