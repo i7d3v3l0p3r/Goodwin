@@ -1,7 +1,7 @@
 export const settingsPath = "/settings";
 
 export const settingsSections = [
-  { id: "activation", title: "activation", description: "activationDescription", icon: "speaker" },
+  { id: "activation", title: "activation", description: "activationDescription", icon: "mic" },
   { id: "assistant", title: "assistant", description: "assistantDescription", icon: "sparkles" },
   { id: "diagnostics", title: "voiceCheck", description: "diagnosticsDescription", icon: "activity" },
   { id: "panel", title: "panelPreferences", description: "panelPreferencesDescription", icon: "monitor" },

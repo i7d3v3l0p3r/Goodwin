@@ -97,6 +97,19 @@ async fn panel_serves_direct_navigation_to_settings() {
     );
     assert!(response.text().await.unwrap().contains("createSignal"));
     let response = client
+        .get(format!("{panel}/panel-licenses.md"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/plain; charset=utf-8"
+    );
+    let licenses = response.text().await.unwrap();
+    assert!(licenses.contains("Lucide Icons and Contributors"));
+    assert!(licenses.contains("Cole Bemis"));
+    let response = client
         .get(format!("{panel}/api/settings-typo"))
         .send()
         .await

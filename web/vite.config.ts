@@ -17,6 +17,7 @@ export default defineConfig({
   ],
   build: {
     assetsInlineLimit: 64_000,
+    license: { fileName: "panel-licenses.md" },
     rolldownOptions: {
       input: { panel: "index.html", [runtimeName]: runtime },
       preserveEntrySignatures: "allow-extension",

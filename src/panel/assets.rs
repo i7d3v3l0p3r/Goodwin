@@ -11,6 +11,7 @@ const INDEX: &str = include_str!("../../web/dist/index.html");
 const SCRIPT: &str = include_str!("../../web/dist/panel.js");
 const PLUGIN_RUNTIME: &str = include_str!("../../web/dist/plugin-runtime-v1.js");
 const STYLE: &str = include_str!("../../web/dist/panel.css");
+const LICENSES: &str = include_str!("../../web/dist/panel-licenses.md");
 
 pub(super) fn routes() -> Router<Panel> {
     let mut router = Router::new().route("/", get(index));
@@ -41,6 +42,10 @@ pub(super) fn routes() -> Router<Panel> {
         .route(
             "/panel.css",
             get(|| async { asset("text/css; charset=utf-8", STYLE) }),
+        )
+        .route(
+            "/panel-licenses.md",
+            get(|| async { asset("text/plain; charset=utf-8", LICENSES) }),
         )
 }
 
