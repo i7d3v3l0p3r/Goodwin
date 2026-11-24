@@ -1,17 +1,18 @@
 use std::{borrow::Cow, collections::HashSet};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use goodwin_plugin::provider::Capability;
 use serde_json::json;
 
 use crate::{
+    assistant::AssistantSettings,
     plugins::VoiceTools,
     providers::{Provider, ToolConversation},
-    station::RecordingGain,
+    station::{RecordingGain, playback_failure},
     wav::PcmAudio,
 };
 
-use super::{App, Failure, Stage};
+use super::{App, Failure, PlaybackMode, Stage};
 
 #[cfg(test)]
 mod tests;
@@ -33,14 +34,13 @@ impl App {
             _ => None,
         };
         if let Some(wav) = announcement {
+            self.update_voice(id, |details, stage| {
+                details.error_stage.get_or_insert(stage);
+                details.playback = Some(PlaybackMode::Announcement);
+            });
             self.stage(id, Stage::Playing);
-            if self
-                .player
-                .play_speech(wav, &self.indicators)
-                .await
-                .is_err()
-            {
-                eprintln!("Could not play the offline announcement");
+            if let Err(error) = self.player.play_speech(wav, &self.indicators).await {
+                log::warn!("Offline announcement failed id={id}: {error:#}");
             }
         }
         self.finish(id, error);
@@ -61,9 +61,9 @@ impl App {
             .map(|turn| (turn.request.clone(), turn.wake_word.clone()))
             .ok_or(Failure::Busy)?;
         let engine = &request.settings.assistant;
-        let transcription = engine.resolve(&self.plugins, Capability::Transcription)?;
-        let chat = engine.resolve(&self.plugins, Capability::Chat)?;
-        let speech = engine.resolve(&self.plugins, Capability::Speech)?;
+        let transcription = self.voice_provider(id, engine, Capability::Transcription)?;
+        let chat = self.voice_provider(id, engine, Capability::Chat)?;
+        let speech = self.voice_provider(id, engine, Capability::Speech)?;
         gain.prepare(&mut samples);
         let recording = PcmAudio {
             data: samples.into_iter().flat_map(i16::to_le_bytes).collect(),
@@ -71,13 +71,15 @@ impl App {
             channels: 1,
         };
         let mut wav = Vec::with_capacity(recording.data.len() + 44);
-        recording
-            .write_wav(&mut wav)
-            .map_err(|_| Failure::Microphone)?;
+        recording.write_wav(&mut wav).map_err(|error| {
+            log::warn!("Could not encode recording id={id}: {error}");
+            Failure::Microphone
+        })?;
         let text = transcription
             .transcribe(&wav)
             .await
             .map_err(Provider::failure)?;
+        self.update_voice(id, |details, _| details.transcript = Some(text.clone()));
         let text = if woke {
             strip_wake_word(&text, wake_word.as_deref().unwrap_or("Гудвин"))
         } else {
@@ -102,6 +104,7 @@ impl App {
         )
         .await
         .map_err(Provider::failure)?;
+        self.update_voice(id, |details, _| details.answer = Some(answer.clone()));
         self.push("assistant", answer.clone());
         self.stage(id, Stage::Synthesizing);
         if engine.pipeline.speech_streaming
@@ -112,6 +115,9 @@ impl App {
                 .await
                 .map_err(Provider::failure)?
                 .ok_or(Failure::ProviderFailed)?;
+            self.update_voice(id, |details, _| {
+                details.playback = Some(PlaybackMode::Streaming);
+            });
             self.stage(id, Stage::Playing);
             return self
                 .player
@@ -123,12 +129,35 @@ impl App {
             .await
             .map_err(Provider::failure)?;
         let mut wav = Vec::with_capacity(audio.data.len() + 44);
-        audio.write_wav(&mut wav).map_err(|_| Failure::Playback)?;
+        audio
+            .write_wav(&mut wav)
+            .context("Encode synthesized speech")
+            .map_err(playback_failure)?;
+        self.update_voice(id, |details, _| {
+            details.playback = Some(PlaybackMode::Buffered);
+        });
         self.stage(id, Stage::Playing);
         self.player
             .play_speech(&wav, &self.indicators)
             .await
-            .map_err(|_| Failure::Playback)
+            .map_err(playback_failure)
+    }
+
+    fn voice_provider(
+        &self,
+        id: u64,
+        engine: &AssistantSettings,
+        capability: Capability,
+    ) -> Result<Provider, Failure> {
+        engine.resolve(&self.plugins, capability).inspect_err(|_| {
+            self.update_voice(id, |details, _| {
+                details.error_stage = Some(match capability {
+                    Capability::Transcription => Stage::Transcribing,
+                    Capability::Chat => Stage::Thinking,
+                    Capability::Speech => Stage::Synthesizing,
+                });
+            });
+        })
     }
 }
 
@@ -148,7 +177,7 @@ async fn reply_with_tools(
     };
     let definitions = tools.definitions();
     if definitions.len() == 0 {
-        return provider.reply(text, &voice_instructions, []).await;
+        return provider.reply(text, &voice_instructions, [], None).await;
     }
     let context = tools.context().await;
     let mut instructions = format!("{voice_instructions}\n{TOOL_INSTRUCTIONS}");

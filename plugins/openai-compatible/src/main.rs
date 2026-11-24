@@ -1,17 +1,51 @@
 use anyhow::Result;
-use goodwin_openai_compatible::{Protocol, Upstream};
+use goodwin_openai_compatible::{Config, Protocol, Upstream};
+#[cfg(target_arch = "wasm32")]
+use goodwin_plugin::services::guest::read_settings;
+#[cfg(not(target_arch = "wasm32"))]
+use goodwin_plugin::settings::read_settings;
 use goodwin_plugin::{
     Plugin,
     provider::{
         Capability, ChatRequest, Completion, ModelCatalog, ModelsRequest, SpeechAudio,
         SpeechRequest, Transcription, TranscriptionRequest,
     },
-    run,
-    settings::read_settings,
 };
+#[cfg(target_arch = "wasm32")]
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 struct OpenAiCompatible(Upstream);
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Deserialize)]
+struct Settings {
+    #[serde(default)]
+    protocol: Protocol,
+    #[serde(flatten)]
+    config: Config,
+}
+
+impl OpenAiCompatible {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_settings<T>(&self, call: impl FnOnce(&Upstream, &Config) -> Result<T>) -> Result<T> {
+        call(&self.0, &read_settings()?)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn with_settings<T>(&self, call: impl FnOnce(&Upstream, &Config) -> Result<T>) -> Result<T> {
+        let Settings { protocol, config } = read_settings()?;
+        let config = if protocol == Protocol::OpenRouter {
+            Config {
+                key: config.key,
+                ..Config::openrouter()
+            }
+        } else {
+            config
+        };
+        call(&self.0.with_protocol(protocol), &config)
+    }
+}
 
 impl Plugin for OpenAiCompatible {
     fn registration(&self) -> Value {
@@ -23,15 +57,27 @@ impl Plugin for OpenAiCompatible {
     }
 
     fn transcribe(&mut self, request: TranscriptionRequest) -> Result<Transcription> {
-        self.0.transcribe(&read_settings()?, request)
+        self.with_settings(|upstream, config| upstream.transcribe(config, request))
     }
 
     fn complete(&mut self, request: ChatRequest) -> Result<Completion> {
-        self.0.complete(&read_settings()?, request)
+        self.with_settings(|upstream, config| upstream.complete(config, request))
+    }
+
+    fn supports_chat_streaming(&self) -> bool {
+        true
+    }
+
+    fn complete_stream(
+        &mut self,
+        request: ChatRequest,
+        emit: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        self.with_settings(|upstream, config| upstream.complete_stream(config, request, emit))
     }
 
     fn synthesize(&mut self, request: SpeechRequest) -> Result<SpeechAudio> {
-        self.0.synthesize(&read_settings()?, request)
+        self.with_settings(|upstream, config| upstream.synthesize(config, request))
     }
 
     fn supports_speech_streaming(&self) -> bool {
@@ -43,14 +89,25 @@ impl Plugin for OpenAiCompatible {
         request: SpeechRequest,
         emit: &mut dyn FnMut(SpeechAudio) -> Result<()>,
     ) -> Result<()> {
-        self.0.synthesize_stream(&read_settings()?, request, emit)
+        self.with_settings(|upstream, config| upstream.synthesize_stream(config, request, emit))
     }
 
     fn models(&mut self, request: ModelsRequest) -> Result<ModelCatalog> {
-        Ok(self.0.models(&read_settings()?, request.capability))
+        self.with_settings(|upstream, config| Ok(upstream.models(config, request.capability)))
     }
 }
 
-fn main() -> Result<()> {
-    run(OpenAiCompatible(Upstream::new(Protocol::OpenAi)?))
+fn open() -> Result<OpenAiCompatible> {
+    Ok(OpenAiCompatible(Upstream::new(Protocol::OpenAi)?))
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn main() -> Result<()> {
+    goodwin_plugin::run(open()?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+#[cfg(target_arch = "wasm32")]
+goodwin_plugin::wasm_plugin!(OpenAiCompatible, open);

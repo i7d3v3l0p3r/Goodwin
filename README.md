@@ -2,7 +2,7 @@
 
 Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`). It runs separately from Alice on a prepared Station. Say “Гудвин” followed by a question in one breath, or send a message from the web panel.
 
-The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Settings → Assistant**, select a provider and model independently for each stage. The OpenRouter plugin is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
+The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Settings → Assistant**, select a provider and model independently for each stage. OpenRouter is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
 Download the desktop installer, Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
 
@@ -42,6 +42,12 @@ The command writes progress and errors to stderr. On success it exits with statu
 
 The regular installer supports both modes. To build it without desktop dependencies, run `cargo build --locked --release --no-default-features --manifest-path installer/Cargo.toml`.
 
+### Update from the web panel
+
+On a Station set up with the installer, sign in and open **Settings → Goodwin update**. Check for updates, then select **Install and restart** when a newer stable release is available. The Station needs HTTPS access to GitHub to download and verify the package. If the update page is missing, use the installer to install a build with web update support first.
+
+Goodwin checks that the panel starts after the restart and restores the previous executable if startup fails. Settings, plugins and the selected wake-word model are retained. The current chat clears when Goodwin restarts. Reload the panel when it reports that the update is complete.
+
 ## Build
 
 Use Rust, Node.js 22.12+ or 24 LTS, and npm.
@@ -52,18 +58,20 @@ npm run build --prefix web
 cargo build --locked --release
 ```
 
-The panel and Russian offline error announcement are embedded in the binary. On Windows, use the Station build script with Zig and Python on your path.
+The panel is compressed with gzip during the build and embedded in the binary alongside the Russian offline error announcement. Building the Station's INT8 wake-word runtime requires Git, Python 3, CMake 3.23 or newer, Ninja, and Zig. The WASM runtime, Wasmi, builds through Cargo. On Windows, the Station build script also builds and packages the WASM and native plugins.
 
 ```powershell
-rustup target add aarch64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl wasm32-unknown-unknown
 .\scripts\build-station.ps1
 ```
 
-On Linux, install an AArch64 musl C toolchain or use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) with Zig.
+On Linux, use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) with Zig.
 
 ```sh
-rustup target add aarch64-unknown-linux-musl
-cargo zigbuild --locked --release --target aarch64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl wasm32-unknown-unknown
+python3 scripts/build-wake-tflite.py --target aarch64-musl
+python3 scripts/build-wasm-plugins.py
+cargo zigbuild --locked --release --features wake-tflite,wasm-plugins --target aarch64-unknown-linux-musl
 ```
 
 The Station binary is `target/aarch64-unknown-linux-musl/release/goodwin`. The native binary runs the panel on a development computer. The live microphone and playback tests require a Station or an audio test fixture.
@@ -72,7 +80,7 @@ Run `python scripts/package-station.py` to package the ARM64 binary and launcher
 
 ## Publish a release
 
-Set the Goodwin version in `Cargo.toml`, update `Cargo.lock`, and add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, the Timers plugin archive and the desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
+Set the release version in the Goodwin and installer Cargo manifests and lockfiles. Add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, plugin archives and desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
 
 To start the workflow manually for an existing release tag, run `gh workflow run release.yml --ref v<version>`.
 
@@ -86,11 +94,11 @@ chmod +x ./goodwin
 ./goodwin serve ./goodwin-data 0.0.0.0:8787
 ```
 
-Open the Station's address on port 8787 and create a panel password. In **Plugins**, upload `openrouter-linux-aarch64.tar.gz` and open **OpenRouter → Settings** to add an API key, or install and select another provider. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
+Open the Station's address on port 8787 and create a panel password. In **Plugins**, upload `openai-compatible-wasm32.tar.gz` and open its settings to configure OpenRouter or another compatible API. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
 
 To enable or change voice activation, open **Settings → Activation and microphone**. Choose a model and click **Download and switch**. The Station needs access to GitHub for the download. The new model takes effect without restarting the service and is saved for subsequent starts.
 
-On a manual installation, you can also place a local LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` before starting Goodwin. Goodwin reads the managed selection first and uses the local model when no catalog model is selected. Run `goodwin wake-check model.onnx` to check loading, warm-up, and one inference step without the microphone.
+On a manual installation, you can also place a local LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` before starting Goodwin. Goodwin reads the managed selection first and uses the local model when no catalog model is selected. Set `GOODWIN_WAKE_MODEL` to use a different local file. Run `goodwin wake-runtimes` to list the runtimes compiled into the binary. Use `goodwin wake-check <model.onnx>` or `goodwin wake-check <model.tflite> <metadata.json>` to check loading, warm-up, and one inference step without the microphone. The Station build supports Micro INT8 TFLite and uses the catalog threshold at 50% sensitivity.
 
 On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz | tar -xf -`. In the extracted directory, run `./start.sh` after initializing the data directory. Use `GOODWIN_PANEL_ADDRESS=0.0.0.0:8787` to open the panel to your trusted network and `GOODWIN_DATA_DIR` to reuse an existing data directory.
 
@@ -123,11 +131,11 @@ Sign in to the panel and use **Plugins → Upload package** to install a trusted
 
 If you previously set up open access, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Your saved settings and API key are retained.
 
-The Windows Station build produces `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. For voice commands, select an answer model that supports tool calling. Panel timers and their sounds run locally.
+The Windows Station build produces `target/plugins/timers-wasm32.tar.gz` and `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. Updating an existing Timers installation with the WASM package retains its saved timers. For voice commands, select an answer model that supports tool calling. Panel timers and their sounds run locally.
 
-The [OpenRouter provider](plugins/openrouter/) package provides speech recognition, answers and speech synthesis. When upgrading from the built-in provider, configure the OpenRouter key in the plugin's settings and choose any model overrides in the assistant.
+Upload `wake-dataset-wasm32.tar.gz` to collect and label Station recordings for wake-word training. Open **Wake-word dataset** in the password-protected panel and start collection. Listen to recordings, mark whether the wake word is present, and choose **Download labelled dataset**. See the [dataset plugin guide](plugins/wake-dataset/) for the audio format and metadata.
 
-The [OpenAI-compatible provider](plugins/openai-compatible/) package connects Goodwin to local or remote inference servers, including KittenTTS. Its plugin settings hold the server address and API key. The assistant chooses the models and voice.
+The [OpenAI-compatible WASM provider](plugins/openai-compatible/) supports multiple named connections, including OpenRouter and local inference servers such as KittenTTS. Add connections in the plugin's settings and select them by name for each stage of the assistant. The assistant settings hold the models and voice. The first installation of the unified package imports the previous provider settings and keeps existing stage bindings. The standalone OpenRouter settings page opens the unified connection list after migration.
 
 See the [plugin development guide](plugins/README.md) for the package format, process protocol, and UI kit.
 
@@ -186,6 +194,8 @@ python -m pip install tensorflow==2.21.0 tf-keras==2.21.0 onnx2tf==1.28.8 onnxsi
 python scripts/wakeword_quantize_livekit.py --encoders target/wakeword-v2/encoders --out $micro
 ```
 
+ESP32 firmware can run the wake word locally with the LiveKit ESP-IDF component. Embed `goodwin-micro-int8.tflite` in flash and use its catalog `score_threshold`. Call `lkww_process()` from an audio processing task with 16 kHz mono PCM to avoid the separate task and one-second audio buffer used by `lkww_feed()`. Check the arena allocation and `lkww_last_step_us()` with Wi-Fi and audio active on the target board. Each 1,280-sample inference step adds 80 ms of audio. [LiveKit ESP-IDF component](https://github.com/livekit/livekit-wakeword/tree/v2.1.3/client/esp32) · [Goodwin-wakeword releases](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest)
+
 ## Check the voice pipeline with a recording
 
 Use a data directory with configured provider plugins and supply a Russian WAV recording. Stop the Goodwin service before running the CLI against its data directory.
@@ -197,6 +207,21 @@ goodwin wav question.wav answer.wav goodwin-data
 This uses the same provider assignments and plugin settings as the panel and saves the spoken answer as WAV. If you omit the data directory, Goodwin uses `GOODWIN_DATA_DIR` or `goodwin-data`.
 
 ## Local verification
+
+### Profile Rust allocations
+
+Build with `--features hotpath-alloc` to collect allocation counts and bytes by function and thread. On Windows, `.\scripts\build-station.ps1 -ProfileAllocations` enables the feature in the Station build. For the Linux Station build, use `--features wake-tflite,wasm-plugins,hotpath-alloc`.
+
+Run a short profile and stop Goodwin normally to write the report.
+
+```sh
+HOTPATH_METRICS_SERVER_OFF=1 HOTPATH_OUTPUT_FORMAT=json-pretty \
+  HOTPATH_OUTPUT_PATH=goodwin-profile.json ./goodwin serve ./goodwin-data
+```
+
+For live monitoring, leave the metrics server enabled and run `hotpath console`. The server listens on loopback port 6770. For a Station connected through ADB, forward that port with `adb forward tcp:6770 tcp:6770`. Compare allocation traffic with Linux RSS or PSS to account for native TFLite allocations, mapped executable pages, and allocator overhead. [Hotpath memory profiling](https://hotpath.rs/memory_profiling)
+
+### Run checks
 
 ```sh
 npm run build --prefix web

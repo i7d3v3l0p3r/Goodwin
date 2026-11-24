@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use goodwin_plugin::provider::{ChatRequest, ToolChoice};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,7 +28,9 @@ impl CompletionMessage {
 
     pub(crate) fn tool_calls(&self) -> Result<Vec<ToolCall>> {
         match self.0.get("tool_calls") {
-            Some(calls) if !calls.is_null() => Ok(serde_json::from_value(calls.clone())?),
+            Some(calls) if !calls.is_null() => {
+                serde_json::from_value(calls.clone()).context("Invalid provider tool calls")
+            }
             _ => Ok(Vec::new()),
         }
     }

@@ -1,10 +1,8 @@
-# OpenRouter provider
+# Legacy OpenRouter provider
 
-Upload `openrouter-linux-aarch64.tar.gz` in **Plugins**. Open **OpenRouter → Settings** to enter your API key. Open **Settings → Assistant** to select OpenRouter and a model for each stage that uses it. For speech synthesis, choose a voice or enter its ID.
+Current Station releases provide OpenRouter through the [OpenAI-compatible WASM package](../openai-compatible/). Install that package and configure the OpenRouter connection there. On first installation it imports the standalone package's API key and retains existing assistant stage assignments.
 
-When upgrading from the built-in provider, enter your key in the plugin's settings. Goodwin retains your provider assignments. Models previously set in an installed OpenRouter plugin still serve as defaults when no explicit model is selected.
-
-The Windows Station build produces `target/plugins/openrouter-linux-aarch64.tar.gz`. To package the plugin for a Windows development instance:
+The standalone package remains in the source tree for older installations and native development. To build and package it for a Windows development instance, run these commands from the repository root.
 
 ```powershell
 cargo build --locked --release -p goodwin-openrouter

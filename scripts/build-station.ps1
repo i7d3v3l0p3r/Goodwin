@@ -1,4 +1,7 @@
-param([ValidateRange(1, 64)][int]$Jobs = 4)
+param(
+    [ValidateRange(1, 64)][int]$Jobs = 4,
+    [switch]$ProfileAllocations
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -54,13 +57,28 @@ python "%~dp0zig-tool.py" ar %*
     $hostTriple = (& rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
     $linker = Join-Path $sysroot "lib/rustlib/$hostTriple/bin/rust-lld.exe"
     # Rust's LLD preserves the Cortex-A53 erratum workaround used by this target.
-    foreach ($package in @('goodwin', 'goodwin-timers', 'goodwin-openai-compatible', 'goodwin-openrouter')) {
-        Invoke-Checked cargo @('rustc', '--locked', '--package', $package, '--bin', $package, '--release', '--target', $target, '--jobs', "$Jobs", '--',
-            '-C', "linker=$linker", '-C', 'linker-flavor=ld.lld')
+    Invoke-Checked python @('scripts/build-wake-tflite.py', '--target', 'aarch64-musl', '--jobs', "$Jobs")
+    Invoke-Checked python @('scripts/build-wasm-plugins.py', '--jobs', "$Jobs")
+    foreach ($package in @('goodwin', 'goodwin-timers', 'goodwin-openai-compatible', 'goodwin-wake-dataset')) {
+        $features = @()
+        if ($package -eq 'goodwin') {
+            $goodwinFeatures = if ($ProfileAllocations) { 'wake-tflite,wasm-plugins,hotpath-alloc' } else { 'wake-tflite,wasm-plugins' }
+            $features = @('--features', $goodwinFeatures)
+        }
+        Invoke-Checked cargo (@('rustc', '--locked', '--package', $package, '--bin', $package, '--release', '--target', $target, '--jobs', "$Jobs") +
+            $features + @('--', '-C', "linker=$linker", '-C', 'linker-flavor=ld.lld'))
     }
-    foreach ($plugin in @('timers', 'openai-compatible', 'openrouter')) {
+    foreach ($plugin in @('timers', 'openai-compatible', 'wake-dataset')) {
         Invoke-Checked python @('scripts/package-plugin.py', "plugins/$plugin", "target/$target/release/goodwin-$plugin",
             'linux-aarch64', "target/plugins/$plugin-linux-aarch64.tar.gz")
+    }
+    Invoke-Checked python @('scripts/package-plugin.py', 'plugins/timers',
+        'target/wasm32-unknown-unknown/release/goodwin-timers.wasm', 'wasm32',
+        'target/plugins/timers-wasm32.tar.gz', '--wasm-state-file', 'timers.json')
+    foreach ($plugin in @('openai-compatible', 'wake-dataset')) {
+        Invoke-Checked python @('scripts/package-plugin.py', "plugins/$plugin",
+            "target/wasm32-unknown-unknown/release/goodwin-$plugin.wasm", 'wasm32',
+            "target/plugins/$plugin-wasm32.tar.gz")
     }
 }
 finally {

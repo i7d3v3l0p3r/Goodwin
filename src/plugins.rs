@@ -1,3 +1,4 @@
+mod connections;
 mod manager;
 mod package;
 mod process;
@@ -6,9 +7,10 @@ mod settings;
 mod store;
 mod tools;
 
+pub(crate) use connections::Update as ConnectionUpdate;
+pub(crate) use connections::valid_provider_id;
 pub use manager::Plugins;
 pub use package::ARCHIVE_LIMIT;
-pub(crate) use package::name as valid_id;
 pub(crate) use process::Process;
 pub(crate) use process::SpeechReplies;
 pub use registry::View;
@@ -20,6 +22,7 @@ pub enum Failure {
     InvalidPackage,
     InvalidSettings,
     NotFound,
+    PasswordRequired,
     StartFailed,
     RolledBack,
     Storage,
@@ -32,6 +35,7 @@ impl Failure {
             Self::InvalidPackage => "invalid_plugin_package",
             Self::InvalidSettings => "invalid_plugin_settings",
             Self::NotFound => "plugin_not_found",
+            Self::PasswordRequired => "plugin_password_required",
             Self::StartFailed => "plugin_start_failed",
             Self::RolledBack => "plugin_update_rolled_back",
             Self::Storage => "plugin_storage_failed",

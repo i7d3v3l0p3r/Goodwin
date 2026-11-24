@@ -1,3 +1,9 @@
+#[cfg(target_arch = "wasm32")]
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
+#[cfg(target_arch = "wasm32")]
+use core::cell::{Cell, RefCell};
+use core::ops::DerefMut;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     path::PathBuf,
     sync::{Condvar, Mutex},
@@ -5,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use goodwin_plugin::{Host, read_json, save_json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,12 +41,20 @@ impl Timer {
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-struct State {
+pub(super) struct State {
     next_id: u64,
     timers: Vec<Timer>,
 }
 
 impl State {
+    fn next_deadline(&self) -> Option<u64> {
+        self.timers
+            .iter()
+            .filter(|timer| !timer.completed)
+            .map(|timer| timer.expires_at)
+            .min()
+    }
+
     fn finish(&mut self, time: u64) -> usize {
         let mut changed = 0;
         for timer in &mut self.timers {
@@ -107,12 +122,31 @@ fn normalize_name(name: &str) -> String {
 }
 
 pub struct Clock {
+    #[cfg(not(target_arch = "wasm32"))]
     file: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     state: Mutex<State>,
+    #[cfg(target_arch = "wasm32")]
+    state: RefCell<State>,
+    #[cfg(not(target_arch = "wasm32"))]
     changes: Condvar,
+    #[cfg(target_arch = "wasm32")]
+    dirty: Cell<bool>,
 }
 
 impl Clock {
+    fn state_mut(&self) -> impl DerefMut<Target = State> + '_ {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.state.lock().expect("timer state")
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.state.borrow_mut()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(file: PathBuf) -> Result<Self> {
         let mut state: State = read_json(&file)?;
         if state.finish(now()) > 0 {
@@ -125,13 +159,47 @@ impl Clock {
         })
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_state(mut state: State) -> Self {
+        let dirty = state.finish(now()) != 0;
+        Self {
+            state: RefCell::new(state),
+            dirty: Cell::new(dirty),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn take_state(&self) -> Result<Option<Value>> {
+        self.dirty
+            .replace(false)
+            .then(|| serde_json::to_value(&*self.state_mut()))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.state_mut().next_deadline()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn finish_due(&self) -> Result<usize> {
+        let mut state = self.state_mut();
+        let mut next = state.clone();
+        let finished = next.finish(now());
+        if finished != 0 {
+            self.commit(&mut state, next)?;
+        }
+        Ok(finished)
+    }
+
     pub fn list(&self) -> Value {
-        json!({"now": now(), "timers": self.state.lock().expect("timer state").timers})
+        json!({"now": now(), "timers": self.state_mut().timers})
     }
 
     pub fn matches(&self, filter: &Filter) -> Vec<Timer> {
         let time = now();
-        let state = self.state.lock().expect("timer state");
+        let state = self.state_mut();
         state
             .timers
             .iter()
@@ -158,7 +226,7 @@ impl Clock {
         let Ok(name) = timer_name(&value["name"]) else {
             return Ok(Err("invalid_timer_name"));
         };
-        let mut state = self.state.lock().expect("timer state");
+        let mut state = self.state_mut();
         let time = now();
         if state
             .timers
@@ -184,7 +252,7 @@ impl Clock {
     }
 
     pub fn cancel(&self, id: u64) -> Result<Option<Timer>> {
-        let mut state = self.state.lock().expect("timer state");
+        let mut state = self.state_mut();
         let time = now();
         let Some(index) = state
             .timers
@@ -200,23 +268,22 @@ impl Clock {
     }
 
     fn commit(&self, state: &mut State, next: State) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
         save_json(&self.file, &next)?;
         *state = next;
+        #[cfg(not(target_arch = "wasm32"))]
         self.changes.notify_one();
+        #[cfg(target_arch = "wasm32")]
+        self.dirty.set(true);
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn schedule(&self, host: Host) {
         let mut state = self.state.lock().expect("timer state");
         loop {
             let time = now();
-            let next_deadline = state
-                .timers
-                .iter()
-                .filter(|timer| !timer.completed)
-                .map(|timer| timer.expires_at)
-                .min();
-            let Some(deadline) = next_deadline else {
+            let Some(deadline) = state.next_deadline() else {
                 state = self.changes.wait(state).expect("timer state");
                 continue;
             };
@@ -251,12 +318,16 @@ impl Clock {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use super::wasm::now;
 
 fn valid_seconds(value: &Value) -> Option<u64> {
     value
@@ -275,7 +346,7 @@ fn timer_name(value: &Value) -> Result<Option<String>, ()> {
     Ok((!name.is_empty()).then(|| name.to_owned()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

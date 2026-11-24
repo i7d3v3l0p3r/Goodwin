@@ -1,8 +1,15 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use base64::{Engine, engine::general_purpose::STANDARD};
+use goodwin_plugin::wake::{Event, Frame, Model};
 
 use crate::{
     app::{ActiveTurn, App, Failure, Source, Stage},
     wake::{FRAME_SAMPLES as WAKE_SAMPLES, SAMPLE_RATE as RATE, WakeModel},
+    wake_catalog::Selection,
 };
 
 use super::gain::{RecordingGain, scale_sample};
@@ -27,6 +34,9 @@ pub(super) struct Detector {
     detection_enabled: bool,
     wake_test: Option<u64>,
     recording: Option<Recording>,
+    wake_metadata: Option<Model>,
+    wake_stream: u64,
+    wake_index: u64,
 }
 
 struct Recording {
@@ -50,23 +60,35 @@ impl Detector {
             detection_enabled: false,
             wake_test: None,
             recording: None,
+            wake_metadata: None,
+            wake_stream: 1,
+            wake_index: 0,
         }
     }
 
-    fn reset_wake(&mut self) {
-        self.history.clear();
-        self.reset_wake_model();
+    pub(super) fn with_selection(mut self, selection: Option<&Selection>) -> Self {
+        self.wake_metadata = self
+            .model
+            .as_ref()
+            .map(|model| wake_metadata(model, selection));
+        self
     }
 
-    fn reset_wake_model(&mut self) {
+    fn reset_wake(&mut self, app: &App) {
+        self.history.clear();
+        self.reset_wake_model(app);
+    }
+
+    fn reset_wake_model(&mut self, app: &App) {
+        self.end_wake_stream(app);
         self.wake_frame.clear();
         if let Some(model) = self.model.as_mut() {
             let _ = model.reset();
         }
     }
 
-    pub(super) fn clear(&mut self) {
-        self.reset_wake();
+    pub(super) fn clear(&mut self, app: &App) {
+        self.reset_wake(app);
         self.detection_enabled = false;
         self.wake_test = None;
         self.recording = None;
@@ -75,6 +97,9 @@ impl Detector {
 
     pub(super) fn apply_pending_model(&mut self, app: &App) {
         if let Some(pending) = app.take_pending_wake_model() {
+            log::info!("Wake model activated id={}", pending.selection.id);
+            self.end_wake_stream(app);
+            self.wake_metadata = Some(wake_metadata(&pending.model, Some(&pending.selection)));
             self.model = Some(pending.model);
             self.wake_frame.clear();
             self.history.clear();
@@ -92,6 +117,7 @@ impl Detector {
         }
     }
 
+    #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     fn tick(&mut self, app: &Arc<App>) {
         let active = app.active();
         if let Some(ActiveTurn {
@@ -108,6 +134,7 @@ impl Detector {
                 .as_ref()
                 .is_none_or(|recording| recording.id != id)
             {
+                self.end_wake_stream(app);
                 self.recording = Some(Recording::new(
                     id,
                     *source != Source::ManualTest,
@@ -118,7 +145,7 @@ impl Detector {
             let recording = self.recording.as_mut().expect("current recording");
             if let Some(has_speech) = recording.push(&self.frame) {
                 let recording = self.recording.take().expect("completed recording");
-                self.reset_wake();
+                self.reset_wake(app);
                 if has_speech {
                     app.stage(id, Stage::Transcribing);
 
@@ -161,7 +188,7 @@ impl Detector {
             self.wake_test = wake_test_id;
         }
         if mode_changed || self.wake_gain != Some(gain) {
-            self.reset_wake_model();
+            self.reset_wake_model(app);
             self.wake_gain = Some(gain);
         }
         if !enabled {
@@ -171,7 +198,9 @@ impl Detector {
         if self.wake_frame.len() < WAKE_SAMPLES {
             return;
         }
-        let prediction = self.model.as_mut().expect("loaded wake model").predict(
+        let model = self.model.as_mut().expect("loaded wake model");
+        let threshold = model.threshold(sensitivity);
+        let prediction = model.predict(
             self.wake_frame
                 .as_slice()
                 .try_into()
@@ -181,7 +210,8 @@ impl Detector {
         let score = match prediction {
             Ok(score) => score,
             Err(error) => {
-                eprintln!("Wake inference failed: {error}");
+                self.end_wake_stream(app);
+                log::error!("Wake inference failed: {error}");
                 self.model = None;
                 app.set_model(false, None);
                 if let Some(id) = wake_test_id {
@@ -190,7 +220,7 @@ impl Detector {
                 return;
             }
         };
-        let threshold = 0.85 - 0.55 * sensitivity;
+        self.observe_wake_frame(app, gain, threshold, score);
         if score < threshold {
             return;
         }
@@ -211,7 +241,48 @@ impl Detector {
                 RecordingGain::new(turn.transcription_gain, app.default_microphone_gain),
             ));
         }
-        self.reset_wake();
+        self.reset_wake(app);
+    }
+
+    fn observe_wake_frame(&mut self, app: &App, gain: f32, threshold: f32, score: f32) {
+        let index = self.wake_index;
+        self.wake_index += 1;
+        let Some(model) = &self.wake_metadata else {
+            return;
+        };
+        app.plugins.observe_wake(|| {
+            let pcm: Vec<_> = self
+                .history
+                .iter()
+                .skip(self.history.len() - WAKE_SAMPLES)
+                .flat_map(|sample| sample.to_le_bytes())
+                .collect();
+            let ended_at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            Event::Frame(Frame {
+                stream: self.wake_stream,
+                index,
+                model: model.clone(),
+                ended_at_ms,
+                sample_rate: RATE as u32,
+                gain,
+                threshold,
+                score,
+                pcm: STANDARD.encode(pcm),
+            })
+        });
+    }
+
+    fn end_wake_stream(&mut self, app: &App) {
+        if self.wake_index != 0 {
+            app.plugins.observe_wake(|| Event::End {
+                stream: self.wake_stream,
+            });
+            self.wake_stream += 1;
+            self.wake_index = 0;
+        }
     }
 
     fn buffer_wake_audio(&mut self, gain: f32) {
@@ -220,6 +291,17 @@ impl Detector {
         self.history.extend(&self.frame);
         self.wake_frame
             .extend(self.frame.iter().map(|&sample| scale_sample(sample, gain)));
+    }
+}
+
+fn wake_metadata(model: &WakeModel, selection: Option<&Selection>) -> Model {
+    Model {
+        id: selection.map_or("local", |model| &model.id).to_owned(),
+        wake_word: selection
+            .map_or("Гудвин", |model| &model.wake_word)
+            .to_owned(),
+        kind: model.kind().to_owned(),
+        sha256: model.sha256().to_owned(),
     }
 }
 

@@ -11,7 +11,7 @@ use crate::{
     discovery::{self, Station},
     package::Source,
     station::{self, Address, Installed, Model},
-    wake_catalog::Catalog,
+    wake_catalog::{Catalog, Runtime},
 };
 
 const PAPER: Color32 = Color32::WHITE;
@@ -297,10 +297,10 @@ impl InstallerWindow {
     fn wake_model_picker(&mut self, ui: &mut egui::Ui) {
         const KEEP: &str = "Текущая / «Гудвин» Standard при установке";
         let label = |model: &crate::wake_catalog::Selection| {
-            let tier = if model.tier == "micro" {
-                "Micro"
-            } else {
-                "Standard"
+            let tier = match model.runtime() {
+                Runtime::MicroTflite => "Micro INT8",
+                Runtime::Micro => "Micro",
+                _ => "Standard",
             };
             format!("{} · {tier}", model.wake_word)
         };
@@ -347,7 +347,7 @@ impl InstallerWindow {
         self.catalog_error = None;
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let catalog = Catalog::latest()
+            let catalog = Catalog::latest(Runtime::available(true))
                 .map_err(|error| format!("{error:#}"))
                 .and_then(|catalog| {
                     if catalog.models.is_empty() {

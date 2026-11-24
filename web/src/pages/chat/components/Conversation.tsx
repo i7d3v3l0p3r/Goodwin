@@ -8,12 +8,12 @@ import { errorLabel, type Words } from "../../../helpers/words";
 import { EmptyConversation } from "./EmptyConversation";
 import styles from "./Conversation.module.css";
 
-function ThreadMessage(props: { entry: Message; t: Words; progress?: string }) {
-  return <article class={styles.message} data-from={props.entry.role}>
+function ThreadMessage(props: { entry: Message; t: Words; progress?: string; streaming: boolean }) {
+  return <article class={styles.message} data-from={props.entry.role} aria-busy={props.streaming ? "true" : "false"}>
     <Show when={props.entry.role === "assistant"}><SymbolMark class={styles.messageMark} /></Show>
     <div class={styles.messageContent}>
       <div class={styles.messageMeta}>{props.entry.role === "assistant" ? "Goodwin" : props.t.you}</div>
-      <p>{props.entry.text}</p>
+      <p data-streaming={props.streaming ? "true" : undefined}>{props.entry.text}</p>
       <Show when={props.progress || props.entry.error}>
         <div class={styles.messageFeedback}>
           <Show when={props.progress}><StatusIndicator tone="pending">{props.progress}</StatusIndicator></Show>
@@ -27,7 +27,7 @@ function ThreadMessage(props: { entry: Message; t: Words; progress?: string }) {
 }
 
 export function Conversation(props: {
-  t: Words; snapshot?: Snapshot; reachable: boolean; disabled: boolean; error: string;
+  t: Words; snapshot?: Snapshot; draftReply?: Message; reachable: boolean; disabled: boolean; error: string;
   send: (text: string) => Promise<boolean>;
 }) {
   const [draft, setDraft] = createSignal("");
@@ -35,13 +35,17 @@ export function Conversation(props: {
   const [unread, setUnread] = createSignal(false);
   let scroll!: HTMLDivElement;
   let following = true;
-  const messages = () => props.snapshot?.messages ?? [];
+  const messages = createMemo(() => {
+    const history = props.snapshot?.messages ?? [];
+    const reply = props.draftReply;
+    return reply && history.at(-1)?.id !== reply.id ? [...history, reply] : history;
+  });
   const lastId = createMemo(() => messages().at(-1)?.id);
   const lastError = createMemo(() => messages().at(-1)?.error);
   const request = () => props.snapshot?.active?.source === "chat" ? props.snapshot.active : undefined;
   const progress = createMemo(() => {
     const stage = request()?.stage;
-    return stage ? props.t.stages[stage] : undefined;
+    return stage && !props.draftReply ? props.t.stages[stage] : undefined;
   });
   const awaitingMessage = () => request()?.message_id === undefined;
 
@@ -56,12 +60,13 @@ export function Conversation(props: {
     if (following) setUnread(false);
   }
 
-  createEffect(() => [lastId(), lastError(), progress(), sending()] as const, ([id, error], previous) => {
+  createEffect(() => [lastId(), lastError(), props.draftReply?.text.length, progress(), sending()] as const, ([id, error, length], previous) => {
     if (id === undefined) {
       following = true;
       setUnread(false);
     }
-    const updated = id !== undefined && (id !== previous?.[0] || Boolean(error && error !== previous?.[1]));
+    const updated = id !== undefined && (id !== previous?.[0] || Boolean(error && error !== previous?.[1])
+      || (length !== undefined && length !== previous?.[2]));
     if (!following) {
       if (updated) setUnread(true);
       return;
@@ -91,7 +96,8 @@ export function Conversation(props: {
         <div class={styles.thread} role="log" aria-label={props.t.chatHistory} aria-relevant="additions">
           <Show when={messages().length} fallback={<EmptyConversation t={props.t} snapshot={props.snapshot} reachable={props.reachable} />}>
             <For each={messages()} keyed={entry => entry.id}>{entry =>
-              <ThreadMessage entry={entry()} t={props.t} progress={request()?.message_id === entry().id ? progress() : undefined} />
+              <ThreadMessage entry={entry()} t={props.t} streaming={props.draftReply?.id === entry().id}
+                progress={request()?.message_id === entry().id ? progress() : undefined} />
             }</For>
           </Show>
         </div>

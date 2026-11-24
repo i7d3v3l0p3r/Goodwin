@@ -2,12 +2,16 @@ use std::{fs, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use goodwin_plugin::{
+    HttpRequest,
     provider::{Capability, ModelCatalog},
     settings::SettingsData,
+    wake::Event,
 };
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, mpsc};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::{Map, Value};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::{
     config::random_bytes,
@@ -15,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    Failure, VoiceTools,
+    Failure, VoiceTools, connections,
     package::{self, Manifest},
     process::Process,
     registry::{Active, Registry, Status, View},
@@ -51,10 +55,11 @@ impl Plugins {
         }))
     }
 
+    #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub async fn restore(&self) {
         let _operation = self.0.lifecycle.lock().await;
         if let Err(error) = self.0.store.recover() {
-            eprintln!("Recover plugin packages: {error:#}");
+            log::warn!("Could not recover plugin packages: {error:#}");
             return;
         }
         self.load_installed(&[]).await;
@@ -86,8 +91,16 @@ impl Plugins {
                 Ok(manifest) if manifest.id == id => {
                     self.0.activate(manifest, None).await;
                 }
-                Ok(_) => eprintln!("Plugin {id} has a mismatched manifest identity"),
-                Err(error) => eprintln!("Read plugin {id}: {error:#}"),
+                Ok(_) => log::warn!("Plugin {id} has a mismatched manifest identity"),
+                Err(error) => log::warn!("Could not read plugin {id}: {error}"),
+            }
+        }
+    }
+
+    pub(crate) fn request_shutdown(&self) {
+        for entry in self.0.registry.read().values() {
+            if let Some(active) = &entry.active {
+                active.process.request_stop();
             }
         }
     }
@@ -106,13 +119,20 @@ impl Plugins {
         self.0.registry.catalog()
     }
 
+    pub(crate) fn catalog_changes(&self) -> watch::Receiver<()> {
+        self.0.registry.changes.subscribe()
+    }
+
     fn settings_fields(&self, id: &str) -> Result<Vec<Field>, Failure> {
         let registry = self.0.registry.read();
-        let fields = &registry.get(id).ok_or(Failure::NotFound)?.manifest.settings;
-        if fields.is_empty() {
+        let manifest = &registry.get(id).ok_or(Failure::NotFound)?.manifest;
+        if manifest.settings.is_empty()
+            || manifest.provider_connections
+            || Registry::connection_owner(&registry, id).is_some()
+        {
             return Err(Failure::NotFound);
         }
-        Ok(fields.clone())
+        Ok(manifest.settings.clone())
     }
 
     pub(crate) async fn settings(&self, id: &str) -> Result<settings::View, Failure> {
@@ -147,12 +167,128 @@ impl Plugins {
 
     pub(crate) fn provider(&self, id: &str, capability: Capability) -> Option<(Process, bool)> {
         let registry = self.0.registry.read();
-        let active = registry.get(id)?.live()?;
+        if let Some((active, connection)) = registry
+            .values()
+            .filter_map(|entry| entry.live())
+            .find_map(|active| {
+                active
+                    .connections
+                    .iter()
+                    .find(|connection| connection.provider_id == id)
+                    .map(|connection| (active, connection))
+            })
+        {
+            return active
+                .registration
+                .providers
+                .contains(&capability)
+                .then(|| {
+                    (
+                        active
+                            .process
+                            .for_connection(&connection.id, connection.speech_streaming),
+                        active.registration.model_catalog,
+                    )
+                });
+        }
+        let entry = registry.get(id)?;
+        if entry.manifest.provider_connections
+            || Registry::connection_owner(&registry, id).is_some()
+        {
+            return None;
+        }
+        let active = entry.live()?;
         active
             .registration
             .providers
             .contains(&capability)
             .then(|| (active.process.clone(), active.registration.model_catalog))
+    }
+
+    pub(crate) async fn connections(&self, id: &str) -> Result<Vec<connections::View>, Failure> {
+        self.edit_connections(id, |_| Ok(()))
+            .await
+            .map(|(_, views)| views)
+    }
+
+    pub(crate) async fn save_connection(
+        &self,
+        id: &str,
+        update: connections::Update,
+    ) -> Result<(String, Vec<connections::View>), Failure> {
+        self.edit_connections(id, move |store| {
+            store.update(update, || {
+                Ok(format!(
+                    "p-{:016x}",
+                    u64::from_be_bytes(random_bytes::<8>()?)
+                ))
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn remove_connection(
+        &self,
+        id: &str,
+        connection: String,
+    ) -> Result<Vec<connections::View>, Failure> {
+        self.edit_connections(id, move |store| store.remove(&connection))
+            .await
+            .map(|(_, views)| views)
+    }
+
+    async fn edit_connections<T: Send + 'static>(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut connections::Store) -> Result<T, Failure> + Send + 'static,
+    ) -> Result<(T, Vec<connections::View>), Failure> {
+        let _operation = self.0.lifecycle.lock().await;
+        if !self
+            .0
+            .registry
+            .read()
+            .get(id)
+            .is_some_and(|entry| entry.manifest.provider_connections)
+        {
+            return Err(Failure::NotFound);
+        }
+        let directory = self.0.store.slot(id).join("data");
+        let openrouter = self.0.store.slot("openrouter").join("data");
+        let plugin = id.to_owned();
+        let (result, views, changed) = tokio::task::spawn_blocking(move || {
+            let mut store = connections::Store::load_or_migrate(&plugin, &directory, &openrouter)
+                .map_err(storage)?;
+            let old_revision = store.revision();
+            let result = change(&mut store)?;
+            let changed = store.revision() != old_revision;
+            if changed {
+                store.save(&directory).map_err(storage)?;
+            }
+            Ok::<_, Failure>((result, store.view(&plugin), changed))
+        })
+        .await
+        .map_err(storage)??;
+        if changed {
+            self.0.registry.set_connections(id, views.clone());
+        }
+        Ok((result, views))
+    }
+
+    #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
+    pub(crate) fn observe_wake(&self, make_event: impl FnOnce() -> Event) {
+        let registry = self.0.registry.read();
+        let mut make_event = Some(make_event);
+        let mut event = None;
+        for (id, entry) in registry.iter() {
+            let Some(active) = entry.live() else { continue };
+            let Some(subscription) = active.process.wake_subscription() else {
+                continue;
+            };
+            let event = event.get_or_insert_with(|| make_event.take().expect("first observer")());
+            if let Err(error) = active.process.observe_wake(subscription, event) {
+                log::warn!("Could not enqueue wake event for plugin {id}: {error}");
+            }
+        }
     }
 
     pub(crate) async fn models(
@@ -172,22 +308,27 @@ impl Plugins {
 
     #[cfg(test)]
     pub(crate) fn mock_provider(&self, id: &str, process: Process) {
+        self.mock_plugin(id, process, json!({
+            "apiVersion": 1, "providers": ["transcription", "chat", "speech"], "modelCatalog": true,
+        }));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mock_plugin(&self, id: &str, process: Process, registration: Value) {
         let manifest = serde_json::from_value(json!({
             "id": id, "version": "1.0.0", "apiVersion": 1,
             "title": {"en": "Fixture provider", "ru": "Тестовый провайдер"},
             "target": "fixture", "executable": "bin/fixture-provider",
         }))
         .unwrap();
-        let registration = serde_json::from_value(json!({
-            "apiVersion": 1, "providers": ["transcription", "chat", "speech"], "modelCatalog": true,
-        }))
-        .unwrap();
+        let registration = serde_json::from_value(registration).unwrap();
         self.0.registry.insert(
             manifest,
             Some(Active {
                 process,
                 registration,
                 revision: "fixture".into(),
+                connections: Vec::new(),
             }),
             Status::Ready,
             None,
@@ -234,29 +375,29 @@ impl Plugins {
     pub async fn http(
         &self,
         id: &str,
-        method: &str,
-        path: &str,
-        query: Option<&str>,
-        body: Value,
+        request: HttpRequest,
+        password_session: bool,
     ) -> Result<HttpResponse, Failure> {
         let process = {
             let entries = self.0.registry.read();
             let entry = entries.get(id).ok_or(Failure::NotFound)?;
             let active = entry.live().ok_or(Failure::Unavailable)?;
-            if !active
+            let mut routes = active
                 .registration
                 .routes
                 .iter()
-                .any(|route| route.accepts(method, path))
-            {
-                return Err(Failure::NotFound);
+                .filter(|route| route.accepts(&request.method, &request.path));
+            let route = routes.next().ok_or(Failure::NotFound)?;
+            let private = route.password_required || routes.any(|route| route.password_required);
+            if private && !password_session {
+                return Err(Failure::PasswordRequired);
             }
             active.process.clone()
         };
         let result = process
             .call(
                 "http",
-                json!({ "method": method, "path": path, "query": query, "body": body }),
+                serde_json::to_value(request).map_err(|_| Failure::Unavailable)?,
             )
             .await
             .map_err(|_| Failure::Unavailable)?;
@@ -274,7 +415,7 @@ impl Plugins {
             .await
             .map_err(storage)?
             .map_err(|error| {
-                eprintln!("Read plugin upload: {error:#}");
+                log::warn!("Could not read plugin upload: {error}");
                 Failure::InvalidPackage
             })?;
         fs::create_dir(staged.join("data")).map_err(storage)?;
@@ -322,10 +463,10 @@ impl Plugins {
                 }
                 Err(error) => {
                     active.process.stop().await;
-                    eprintln!("Commit plugin {id} update: {error}");
+                    log::error!("Could not commit plugin {id} update: {error}");
                 }
             },
-            Err(error) => eprintln!("Start updated plugin {id}: {error:#}"),
+            Err(error) => log::error!("Could not start updated plugin {id}: {error}"),
         }
         if let Err(error) = self.0.store.restore_backup(id) {
             self.0
@@ -391,7 +532,7 @@ impl Manager {
                         let signal = timer_signal();
                         while receive.recv().await.is_some() {
                             if let Err(error) = player.play(&signal).await {
-                                eprintln!("Play timer signal: {error:#}");
+                                log::warn!("Could not play timer signal: {error:#}");
                             }
                         }
                     });
@@ -399,12 +540,32 @@ impl Manager {
                 })
                 .clone()
         };
-        let (process, registration) =
-            Process::start(&slot.join("package"), &slot.join("data"), manifest, sound).await?;
+        let (process, registration) = Process::start(
+            &slot.join("package"),
+            &slot.join("data"),
+            manifest,
+            sound,
+            self.registry.changes.clone(),
+        )
+        .await?;
+        let connections = if manifest.provider_connections {
+            let id = manifest.id.clone();
+            let directory = slot.join("data");
+            let openrouter = self.store.slot("openrouter").join("data");
+            tokio::task::spawn_blocking(move || {
+                Ok::<_, anyhow::Error>(
+                    connections::Store::load_or_migrate(&id, &directory, &openrouter)?.view(&id),
+                )
+            })
+            .await??
+        } else {
+            Vec::new()
+        };
         Ok(Active {
             process,
             registration,
             revision,
+            connections,
         })
     }
 
@@ -413,12 +574,17 @@ impl Manager {
             .insert(manifest.clone(), None, Status::Starting, notice);
         match self.start(&manifest).await {
             Ok(active) => {
+                log::info!(
+                    "Plugin ready id={} version={}",
+                    manifest.id,
+                    manifest.version
+                );
                 self.registry
                     .insert(manifest, Some(active), Status::Ready, notice);
                 true
             }
             Err(error) => {
-                eprintln!("Activate plugin {}: {error:#}", manifest.id);
+                log::error!("Could not activate plugin {}: {error}", manifest.id);
                 self.registry.insert(
                     manifest,
                     None,

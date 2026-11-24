@@ -1,6 +1,8 @@
 mod app;
 mod assistant;
 mod config;
+mod core_update;
+mod journal;
 mod panel;
 mod plugins;
 mod providers;
@@ -26,12 +28,27 @@ use crate::{
     station::Player,
 };
 
-const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin wake-check <model.onnx>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
+const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin wake-runtimes\n  goodwin wake-check <model>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    feature = "hotpath-alloc",
+    hotpath::main(report = "functions-alloc,threads")
+)]
 async fn main() -> Result<()> {
+    #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+    std::hint::black_box("goodwin.plugins.wasmi.v1");
     let args: Vec<_> = env::args_os().skip(1).collect();
     match args.first().and_then(|arg| arg.to_str()) {
+        Some("--version" | "-V") if args.len() == 1 => {
+            println!("{version}", version = env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        Some("core-update-worker") if args.len() == 2 => {
+            let version = args[1].to_str().context("Invalid update version")?;
+            tokio::task::block_in_place(|| core_update::run_worker(version))
+        }
         Some("setup") if (2..=3).contains(&args.len()) => {
             let dir = PathBuf::from(&args[1]);
             let mode = args.get(2).map(|value| value.to_string_lossy());
@@ -47,15 +64,20 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some("serve") if (2..=3).contains(&args.len()) => {
+            let dir = PathBuf::from(&args[1]);
+            journal::init(&dir);
             let address = args
                 .get(2)
                 .map(|arg| arg.to_string_lossy())
                 .unwrap_or("127.0.0.1:8787".into());
-            serve(
-                PathBuf::from(&args[1]),
-                address.parse().context("Invalid panel address")?,
-            )
-            .await
+            let result = match address.parse().context("Invalid panel address") {
+                Ok(address) => serve(dir, address).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                log::error!("Goodwin service failed: {error}");
+            }
+            result
         }
         Some("wav") if (3..=4).contains(&args.len()) => {
             let dir = args
@@ -64,8 +86,24 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(default_data_dir);
             answer_wav(dir, PathBuf::from(&args[1]), PathBuf::from(&args[2])).await
         }
-        Some("wake-check") if args.len() == 2 => {
-            let mut model = wake::WakeModel::load(std::path::Path::new(&args[1]))?;
+        Some("wake-runtimes") if args.len() == 1 => {
+            println!("{}", serde_json::to_string(wake::runtimes())?);
+            Ok(())
+        }
+        Some("wake-check") if (2..=3).contains(&args.len()) => {
+            let path = std::path::Path::new(&args[1]);
+            let mut model = if args[1] == "--installed" && args.len() == 3 {
+                wake::WakeModels::new(std::path::Path::new(&args[2]))
+                    .initial_model()?
+                    .0
+            } else if let Some(manifest) = args.get(2) {
+                let selection: wake_catalog::Selection =
+                    serde_json::from_reader(fs::File::open(manifest)?)?;
+                selection.validate()?;
+                wake::WakeModel::load_selected(path, &selection)?
+            } else {
+                wake::WakeModel::load(path)?
+            };
             let score = model.predict(&[0; wake::FRAME_SAMPLES])?;
             println!(
                 "{} wake model loaded. Silence score {score:.6}",
@@ -122,7 +160,9 @@ fn prompt_password() -> Result<Access> {
     })
 }
 
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 async fn serve(dir: PathBuf, address: SocketAddr) -> Result<()> {
+    log::info!("Starting Goodwin {}", env!("CARGO_PKG_VERSION"));
     let config = Config::load(&dir)?;
     let microphone: SocketAddr = env::var("GOODWIN_MICROPHONE")
         .unwrap_or_else(|_| "127.0.0.1:9850".into())
@@ -145,20 +185,24 @@ async fn serve(dir: PathBuf, address: SocketAddr) -> Result<()> {
     let app = App::new(dir, config, Player::new(), gain);
     let listener = tokio::net::TcpListener::bind(address).await?;
     app.plugins.restore().await;
-    println!(
-        "Goodwin panel listening on http://{}",
-        listener.local_addr()?
-    );
+    let address = listener.local_addr()?;
+    println!("Goodwin panel listening on http://{address}");
+    log::info!("Panel listening on http://{address}");
     let capture = tokio::spawn(station::run_microphone(app.clone(), microphone));
     let shutdown_app = app.clone();
     let result = axum::serve(listener, panel::router(app.clone()))
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
+            shutdown_app.stop_panel();
             shutdown_app.indicators.stop();
+            shutdown_app.plugins.request_shutdown();
         })
         .await;
     capture.abort();
     app.plugins.shutdown().await;
+    if result.is_ok() {
+        log::info!("Goodwin stopped");
+    }
     result.context("Serve Goodwin panel")
 }
 
@@ -216,7 +260,7 @@ async fn answer_wav(dir: PathBuf, input: PathBuf, output: PathBuf) -> Result<()>
             .context("Transcribe recording")?;
         ensure!(!text.is_empty(), "No speech was transcribed");
         let reply = chat
-            .reply(&text, VOICE_INSTRUCTIONS, [])
+            .reply(&text, VOICE_INSTRUCTIONS, [], None)
             .await
             .context("Generate an answer")?;
         let audio = speech

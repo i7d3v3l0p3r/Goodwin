@@ -12,4 +12,4 @@ pub(crate) use gain::RecordingGain;
 pub(crate) use indicators::Indicators;
 pub use microphone::run_microphone;
 pub use playback::Player;
-pub(crate) use playback::timer_signal;
+pub(crate) use playback::{playback_failure, timer_signal};

@@ -2,13 +2,21 @@ use std::{
     collections::{BTreeSet, HashSet},
     path::Path,
     process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use goodwin_plugin::provider::{
-    Capability, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MODELS_METHOD, ModelCatalog, ModelsRequest,
-    SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
+use goodwin_plugin::{
+    provider::{
+        CHAT_CHUNK_NOTIFICATION, CHAT_STREAM_METHOD, Capability, ChatRequest, MAX_CHAT_CHUNK_BYTES,
+        MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MODELS_METHOD, ModelCatalog, ModelsRequest,
+        SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
+    },
+    wake::{EVENT_METHOD, Event, Observation},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -21,6 +29,9 @@ use tokio::{
 
 use super::package::{self, API_VERSION, Label, Manifest};
 
+#[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+mod wasm;
+
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_LIMIT: usize = 128 * 1024;
@@ -30,6 +41,8 @@ const FRAME_LIMIT: usize = 128 * 1024;
 pub struct Route {
     pub method: String,
     pub path: String,
+    #[serde(default)]
+    pub password_required: bool,
 }
 
 impl Route {
@@ -54,6 +67,8 @@ pub struct Page {
     pub title: Label,
     #[serde(default)]
     pub navigation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -127,7 +142,13 @@ pub struct Registration {
     #[serde(default)]
     pub model_catalog: bool,
     #[serde(default)]
+    chat_streaming: bool,
+    #[serde(default)]
     pub(super) speech_streaming: bool,
+    #[serde(default)]
+    wake_events: bool,
+    #[serde(default)]
+    wake_subscription: u64,
 }
 
 impl Registration {
@@ -212,30 +233,40 @@ impl Registration {
 pub struct Process {
     requests: mpsc::Sender<Call>,
     stop: watch::Sender<bool>,
+    chat_streaming: bool,
     speech_streaming: bool,
+    wake_subscription: Option<Arc<AtomicU64>>,
+    provider_connection: Option<Arc<str>>,
 }
 
 struct Call {
     method: &'static str,
     params: Value,
-    response: oneshot::Sender<Result<Value>>,
-    speech_chunks: Option<mpsc::Sender<SpeechAudio>>,
+    response: Option<oneshot::Sender<Result<Value>>>,
+    chunks: Option<StreamChunks>,
     limits: CallLimits,
 }
 
-pub(crate) struct SpeechReplies {
-    chunks: mpsc::Receiver<SpeechAudio>,
+enum StreamChunks {
+    Chat(mpsc::Sender<String>),
+    Speech(mpsc::Sender<SpeechAudio>),
+}
+
+pub(crate) type SpeechReplies = StreamReplies<SpeechAudio>;
+
+pub(crate) struct StreamReplies<T> {
+    chunks: mpsc::Receiver<T>,
     result: Option<oneshot::Receiver<Result<Value>>>,
 }
 
-impl SpeechReplies {
-    pub(crate) async fn next(&mut self) -> Result<Option<SpeechAudio>> {
-        if let Some(audio) = self.chunks.recv().await {
-            return Ok(Some(audio));
+impl<T> StreamReplies<T> {
+    pub(crate) async fn next(&mut self) -> Result<Option<T>> {
+        if let Some(chunk) = self.chunks.recv().await {
+            return Ok(Some(chunk));
         }
         if let Some(result) = self.result.take() {
             let result = result.await.context("Plugin process stopped")??;
-            ensure!(result.is_null(), "Unexpected speech stream result");
+            ensure!(result.is_null(), "Unexpected provider stream result");
         }
         Ok(None)
     }
@@ -274,6 +305,39 @@ impl CallLimits {
 
 impl Process {
     #[cfg(test)]
+    pub(crate) fn mock_chat_stream(mut input: mpsc::Receiver<Result<String>>) -> Self {
+        let (requests, mut incoming) = mpsc::channel::<Call>(1);
+        let (stop, mut stopping) = watch::channel(false);
+        tokio::spawn(async move {
+            let Some(call) = incoming.recv().await else {
+                return;
+            };
+            assert_eq!(call.method, CHAT_STREAM_METHOD);
+            let Some(StreamChunks::Chat(chunks)) = call.chunks else {
+                panic!("Expected a chat stream")
+            };
+            let result = tokio::select! {
+                _ = stopping.changed() => Err(anyhow!("Stopped")),
+                result = async {
+                    while let Some(chunk) = input.recv().await {
+                        chunks.send(chunk?).await?;
+                    }
+                    Ok(Value::Null)
+                } => result,
+            };
+            complete(call.response, result);
+        });
+        Self {
+            requests,
+            stop,
+            chat_streaming: true,
+            speech_streaming: false,
+            wake_subscription: None,
+            provider_connection: None,
+        }
+    }
+
+    #[cfg(test)]
     pub fn mock(handler: impl Fn(Value) -> Value + Send + 'static) -> Self {
         Self::mock_rpc(move |method, params| {
             assert_eq!(method, "tool");
@@ -291,7 +355,10 @@ impl Process {
                     _ = stopping.changed() => break,
                     call = incoming.recv() => {
                         let Some(call) = call else { break; };
-                        let _ = call.response.send(handler(call.method, call.params));
+                        let result = handler(call.method, call.params);
+                        if let Some(response) = call.response {
+                            let _ = response.send(result);
+                        }
                     }
                 }
             }
@@ -299,7 +366,10 @@ impl Process {
         Self {
             requests,
             stop,
+            chat_streaming: false,
             speech_streaming: false,
+            wake_subscription: None,
+            provider_connection: None,
         }
     }
 
@@ -308,7 +378,14 @@ impl Process {
         data: &Path,
         manifest: &Manifest,
         sound: mpsc::Sender<()>,
+        catalog_changes: watch::Sender<()>,
     ) -> Result<(Self, Registration)> {
+        if manifest.is_wasm() {
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            return wasm::start(root, data, manifest, sound, catalog_changes).await;
+            #[cfg(not(all(feature = "wasm-plugins", target_os = "linux")))]
+            bail!("This Goodwin build does not support WASM plugins");
+        }
         let root = root.canonicalize()?;
         let data = data.canonicalize()?;
         let mut command = Command::new(root.join(&manifest.executable));
@@ -333,7 +410,11 @@ impl Process {
             partial: Vec::new(),
         };
         let ready = async {
-            write(&mut input, &json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "apiVersion": API_VERSION, "speechStreaming": true } }), FRAME_LIMIT).await?;
+            let initialize = json!({
+                "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true, "pageIcons": true },
+            });
+            write(&mut input, &initialize, FRAME_LIMIT).await?;
             let ready: Registration =
                 serde_json::from_value(response(output.read(FRAME_LIMIT).await?, 0)??)?;
             ready.validate(manifest)?;
@@ -353,11 +434,15 @@ impl Process {
         let (requests, mut incoming) = mpsc::channel(8);
         let (stop, mut stopping) = watch::channel(false);
         let id = manifest.id.clone();
+        let wake_subscription = registration
+            .wake_events
+            .then(|| Arc::new(AtomicU64::new(registration.wake_subscription)));
+        let subscription = wake_subscription.clone();
         tokio::spawn(async move {
             tokio::select! {
                 _ = stopping.changed() => {}
-                result = run(&mut input, &mut output, &mut incoming, sound) => {
-                    if let Err(error) = result { eprintln!("Plugin {id} stopped: {error:#}"); }
+                result = run(&mut input, &mut output, &mut incoming, sound, subscription.as_deref()) => {
+                    if let Err(error) = result { log::warn!("Plugin {id} stopped: {error}"); }
                 }
             }
             drop(input);
@@ -367,13 +452,18 @@ impl Process {
             {
                 let _ = child.kill().await;
             }
+            drop(incoming);
+            catalog_changes.send_replace(());
         });
         let speech_streaming = registration.speech_streaming;
         Ok((
             Self {
                 requests,
                 stop,
+                chat_streaming: registration.chat_streaming,
                 speech_streaming,
+                wake_subscription,
+                provider_connection: None,
             },
             registration,
         ))
@@ -383,8 +473,30 @@ impl Process {
         !self.requests.is_closed() && !*self.stop.borrow()
     }
 
-    pub async fn stop(&self) {
+    pub(super) fn wake_subscription(&self) -> Option<u64> {
+        let token = self.wake_subscription.as_ref()?.load(Ordering::Acquire);
+        (token != 0 && self.running()).then_some(token)
+    }
+
+    pub(super) fn observe_wake(&self, subscription: u64, event: &Event) -> Result<()> {
+        self.enqueue(Call {
+            method: EVENT_METHOD,
+            params: serde_json::to_value(Observation {
+                subscription,
+                event,
+            })?,
+            response: None,
+            chunks: None,
+            limits: CallLimits::STANDARD,
+        })
+    }
+
+    pub(super) fn request_stop(&self) {
         let _ = self.stop.send(true);
+    }
+
+    pub async fn stop(&self) {
+        self.request_stop();
         self.requests.closed().await;
     }
 
@@ -402,6 +514,32 @@ impl Process {
         .await
     }
 
+    pub(crate) fn stream_chat(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<Option<StreamReplies<String>>> {
+        if !self.chat_streaming {
+            return Ok(None);
+        }
+        let (sender, chunks) = mpsc::channel(8);
+        let (response, result) = oneshot::channel();
+        self.enqueue(Call {
+            method: CHAT_STREAM_METHOD,
+            params: serde_json::to_value(request)?,
+            response: Some(response),
+            chunks: Some(StreamChunks::Chat(sender)),
+            limits: CallLimits {
+                request: CallLimits::provider(Capability::Chat).request,
+                response: FRAME_LIMIT,
+                timeout: Duration::from_secs(60),
+            },
+        })?;
+        Ok(Some(StreamReplies {
+            chunks,
+            result: Some(result),
+        }))
+    }
+
     pub(crate) fn stream_speech(&self, request: SpeechRequest) -> Result<Option<SpeechReplies>> {
         if !self.speech_streaming {
             return Ok(None);
@@ -411,8 +549,8 @@ impl Process {
         self.enqueue(Call {
             method: SPEECH_STREAM_METHOD,
             params: serde_json::to_value(request)?,
-            response,
-            speech_chunks: Some(sender),
+            response: Some(response),
+            chunks: Some(StreamChunks::Speech(sender)),
             limits: CallLimits {
                 timeout: Duration::from_secs(60),
                 ..CallLimits::STANDARD
@@ -449,8 +587,8 @@ impl Process {
         self.enqueue(Call {
             method,
             params,
-            response,
-            speech_chunks: None,
+            response: Some(response),
+            chunks: None,
             limits,
         })?;
         timeout(limits.timeout * 2, result)
@@ -459,8 +597,21 @@ impl Process {
             .context("Plugin process stopped")?
     }
 
-    fn enqueue(&self, call: Call) -> Result<()> {
+    pub(super) fn for_connection(&self, id: &str, speech_streaming: bool) -> Self {
+        let mut process = self.clone();
+        process.provider_connection = Some(Arc::from(id));
+        process.speech_streaming &= speech_streaming;
+        process
+    }
+
+    fn enqueue(&self, mut call: Call) -> Result<()> {
         ensure!(self.running(), "Plugin process is unavailable");
+        if let Some(id) = &self.provider_connection {
+            call.params
+                .as_object_mut()
+                .context("Expected provider request object")?
+                .insert("providerConnection".into(), Value::String(id.to_string()));
+        }
         self.requests
             .try_send(call)
             .map_err(|_| anyhow!("Plugin process is busy or unavailable"))
@@ -472,6 +623,7 @@ async fn run(
     output: &mut Frames,
     incoming: &mut mpsc::Receiver<Call>,
     sound: mpsc::Sender<()>,
+    wake_subscription: Option<&AtomicU64>,
 ) -> Result<()> {
     let mut id = 0u64;
     loop {
@@ -479,25 +631,33 @@ async fn run(
             frame = output.read(FRAME_LIMIT) => notify(frame?, &sound)?,
             call = incoming.recv() => {
                 let Some(call) = call else { return Ok(()); };
-                if call.response.is_closed() { continue; }
+                if call.response.as_ref().is_some_and(oneshot::Sender::is_closed) { continue; }
                 id += 1;
                 let message = json!({ "jsonrpc": "2.0", "id": id, "method": call.method, "params": call.params });
                 let request = match encode(&message, call.limits.request) {
                     Ok(request) => request,
                     Err(error) => {
-                        let _ = call.response.send(Err(error));
+                        complete(call.response, Err(error));
                         continue;
                     }
                 };
-                let exchange = exchange(input, output, &sound, id, &call, &request);
-                let result = if call.speech_chunks.is_some() {
+                let exchange = exchange(input, output, &sound, wake_subscription, id, &call, &request);
+                let result = if matches!(call.chunks, Some(StreamChunks::Speech(_))) {
                     exchange.await?
                 } else {
                     timeout(call.limits.timeout, exchange).await.context("Plugin RPC timed out")??
                 };
-                let _ = call.response.send(result);
+                complete(call.response, result);
             }
         }
+    }
+}
+
+fn complete(response: Option<oneshot::Sender<Result<Value>>>, result: Result<Value>) {
+    if let Some(response) = response {
+        let _ = response.send(result);
+    } else if let Err(error) = result {
+        log::warn!("Plugin wake event failed: {error}");
     }
 }
 
@@ -505,6 +665,7 @@ async fn exchange(
     input: &mut ChildStdin,
     output: &mut Frames,
     sound: &mpsc::Sender<()>,
+    wake_subscription: Option<&AtomicU64>,
     id: u64,
     call: &Call,
     request: &[u8],
@@ -517,21 +678,40 @@ async fn exchange(
             .await
             .context("Read plugin response timed out")??;
         if message.get("id").is_some() {
-            return response(message, id);
+            let subscription = message["wakeSubscription"].as_u64();
+            let result = response(message, id)?;
+            if let (Some(state), Some(subscription)) = (wake_subscription, subscription) {
+                state.store(subscription, Ordering::Release);
+            }
+            return Ok(result);
         }
-        if let Some(chunks) = &call.speech_chunks
-            && message["method"] == SPEECH_CHUNK_NOTIFICATION
-        {
-            let SpeechChunk { request_id, audio } =
-                serde_json::from_value(message["params"].clone())?;
-            ensure!(
-                message["jsonrpc"] == "2.0" && request_id == id,
-                "Unexpected speech chunk"
-            );
-            // Keep draining RPC frames if the player has already stopped.
-            let _ = chunks.send(audio).await;
-        } else {
-            notify(message, sound)?;
+        match (&call.chunks, message["method"].as_str()) {
+            (Some(StreamChunks::Speech(chunks)), Some(SPEECH_CHUNK_NOTIFICATION)) => {
+                let SpeechChunk { request_id, audio } =
+                    serde_json::from_value(message["params"].clone())
+                        .context("Invalid plugin speech chunk")?;
+                ensure!(
+                    message["jsonrpc"] == "2.0" && request_id == id,
+                    "Unexpected speech chunk"
+                );
+                // Keep draining RPC frames if the player has already stopped.
+                let _ = chunks.send(audio).await;
+            }
+            (Some(StreamChunks::Chat(chunks)), Some(CHAT_CHUNK_NOTIFICATION)) => {
+                let params = &message["params"];
+                let text = params["text"]
+                    .as_str()
+                    .context("Missing plugin chat text")?;
+                ensure!(
+                    message["jsonrpc"] == "2.0"
+                        && params["requestId"].as_u64() == Some(id)
+                        && !text.is_empty()
+                        && text.len() <= MAX_CHAT_CHUNK_BYTES,
+                    "Invalid plugin chat chunk"
+                );
+                let _ = chunks.send(text.to_owned()).await;
+            }
+            _ => notify(message, sound)?,
         }
     }
 }
@@ -554,11 +734,15 @@ fn response(mut message: Value, id: u64) -> Result<Result<Value>> {
     {
         return Ok(Ok(result));
     }
-    ensure!(
-        message["error"]["code"].is_i64(),
-        "Invalid plugin RPC error"
-    );
-    Ok(Err(anyhow!("Plugin rejected the request")))
+    let error = &message["error"];
+    let code = error["code"].as_i64().context("Invalid plugin RPC error")?;
+    let status = error["data"]["http_status"]
+        .as_u64()
+        .filter(|status| (100..=599).contains(status));
+    Ok(Err(match status {
+        Some(status) => anyhow!("Provider returned HTTP {status}"),
+        None => anyhow!("Plugin rejected the request (RPC code {code})"),
+    }))
 }
 
 fn notify(message: Value, sound: &mpsc::Sender<()>) -> Result<()> {
@@ -569,7 +753,7 @@ fn notify(message: Value, sound: &mpsc::Sender<()>) -> Result<()> {
         "Unexpected plugin notification"
     );
     if sound.try_send(()).is_err() {
-        eprintln!("Timer signal queue is full or unavailable");
+        log::warn!("Timer signal queue is full or unavailable");
     }
     Ok(())
 }
@@ -610,6 +794,34 @@ impl Frames {
                 self.partial.clear();
                 return Ok(message);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_error_details_accept_a_numeric_status_and_ignore_freeform_messages() {
+        for (data, expected) in [
+            (json!({"http_status": 429}), "Provider returned HTTP 429"),
+            (
+                json!({"http_status": "private text"}),
+                "Plugin rejected the request (RPC code -32603)",
+            ),
+            (Value::Null, "Plugin rejected the request (RPC code -32603)"),
+        ] {
+            let error = response(
+                json!({
+                    "jsonrpc": "2.0", "id": 1,
+                    "error": {"code": -32603, "message": "private text", "data": data}
+                }),
+                1,
+            )
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(error.to_string(), expected);
         }
     }
 }

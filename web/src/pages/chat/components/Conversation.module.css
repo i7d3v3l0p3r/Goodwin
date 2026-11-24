@@ -61,6 +61,16 @@
   overflow-wrap: anywhere;
 }
 
+.messageContent > p[data-streaming="true"]::after {
+  content: "";
+  display: inline-block;
+  width: .38em;
+  height: .75em;
+  margin-inline-start: .2em;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 .message[data-from="user"] .messageMeta { text-align: end; }
 
 .message[data-from="user"] .messageContent > p {

@@ -20,7 +20,7 @@ export function ChatPage() {
         </Button>
       </Show>
     </PageHeader>
-    <Conversation t={panel.t()} snapshot={panel.snapshot()} reachable={panel.reachable()} disabled={disabled()}
+    <Conversation t={panel.t()} snapshot={panel.snapshot()} draftReply={panel.chatDraft()} reachable={panel.reachable()} disabled={disabled()}
       error={panel.error()} send={panel.send} />
     <ConfirmDialog open={confirming()} title={panel.t().clearChat} description={panel.t().clearChatDescription}
       cancel={panel.t().cancel} confirm={panel.t().clearChat} disabled={disabled() || !panel.snapshot()?.messages.length}

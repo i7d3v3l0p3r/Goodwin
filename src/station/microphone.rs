@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use prost::Message;
 use tokio::{
     io::AsyncWriteExt,
@@ -26,25 +26,30 @@ mod tests;
 
 pub async fn run_microphone(app: Arc<App>, address: SocketAddr) {
     let loader = Arc::clone(&app);
-    let model = match tokio::task::spawn_blocking(move || loader.wake_models.initial_model()).await
-    {
-        Ok(Ok((model, selection))) => {
-            app.set_model(true, selection);
-            Some(model)
-        }
-        Ok(Err(error)) => {
-            eprintln!("Wake model unavailable: {error:#}");
-            None
-        }
-        Err(error) => {
-            eprintln!("Wake model loader failed: {error}");
-            None
-        }
-    };
+    let (model, selection) =
+        match tokio::task::spawn_blocking(move || loader.wake_models.initial_model()).await {
+            Ok(Ok((model, selection))) => {
+                let id = selection
+                    .as_ref()
+                    .map_or("local", |model| model.id.as_str());
+                log::info!("Wake model loaded id={id}");
+                app.set_model(true, selection.clone());
+                (Some(model), selection)
+            }
+            Ok(Err(error)) => {
+                log::warn!("Wake model unavailable: {error:#}");
+                (None, None)
+            }
+            Err(error) => {
+                log::error!("Wake model loader failed: {error}");
+                (None, None)
+            }
+        };
 
-    let mut detector = Detector::new(model);
+    let mut detector = Detector::new(model).with_selection(selection.as_ref());
     let mut framing = Framing::Typed;
     let mut mute = app.microphone_mute();
+    let mut outage_reported = false;
     loop {
         if *mute.borrow_and_update() {
             with_model_updates(&app, &mut detector, mute.changed())
@@ -53,14 +58,18 @@ pub async fn run_microphone(app: Arc<App>, address: SocketAddr) {
             continue;
         }
         let connection_mute = mute.clone();
-        let connection_failed = tokio::select! {
+        let connection = tokio::select! {
             biased;
-            _ = mute.changed() => false,
-            result = stream(&app, address, framing, &mut detector, &connection_mute) => result.is_err(),
+            _ = mute.changed() => Ok(()),
+            result = stream(&app, address, framing, &mut detector, &connection_mute, &mut outage_reported) => result,
         };
         app.microphone_disconnected();
-        detector.clear();
-        if connection_failed {
+        detector.clear(&app);
+        if let Err(error) = connection {
+            if !outage_reported {
+                log::warn!("Microphone stream unavailable: {error:#}");
+                outage_reported = true;
+            }
             framing = framing.alternate();
             with_model_updates(&app, &mut detector, async {
                 tokio::select! {
@@ -79,20 +88,25 @@ async fn stream(
     framing: Framing,
     detector: &mut Detector,
     mute: &watch::Receiver<bool>,
+    outage_reported: &mut bool,
 ) -> Result<()> {
     let mut socket = with_model_updates(app, detector, async {
         timeout(FRAME_TIMEOUT, async {
-            let mut socket = TcpStream::connect(address).await?;
+            let mut socket = TcpStream::connect(address)
+                .await
+                .context("Connect to VQE")?;
             let request = framing.subscription().encode_to_vec();
             socket.write_u32_le(request.len() as u32).await?;
             socket.write_all(&request).await?;
-            Ok::<_, std::io::Error>(socket)
+            Ok::<_, anyhow::Error>(socket)
         })
-        .await?
+        .await
+        .context("Subscribe to VQE audio timed out")?
     })
     .await?;
     let mut buffer = Vec::new();
     let mut audio_at = Instant::now();
+    let mut received_audio = false;
 
     loop {
         let channels = with_model_updates(app, detector, receive(&mut socket, &mut buffer)).await?;
@@ -103,6 +117,11 @@ async fn stream(
         audio_at = Instant::now();
         if !app.microphone_connected(mute) {
             return Ok(());
+        }
+        if !received_audio {
+            log::info!("Microphone audio connected");
+            received_audio = true;
+            *outage_reported = false;
         }
         for &bytes in audio.as_chunks::<2>().0 {
             let sample = i16::from_le_bytes(bytes);

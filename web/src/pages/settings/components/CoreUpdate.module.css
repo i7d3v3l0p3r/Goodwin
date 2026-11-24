@@ -1,0 +1,4 @@
+.content { display: grid; gap: 12px; justify-items: start; }
+.version, .note { margin: 0; }
+.note { color: var(--muted); font-size: .9rem; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

@@ -80,7 +80,7 @@ impl AssistantSettings {
             &self.pipeline.speech,
         ] {
             ensure!(
-                crate::plugins::valid_id(&stage.provider),
+                crate::plugins::valid_provider_id(&stage.provider),
                 "Invalid provider ID"
             );
             stage.selection.validate()?;

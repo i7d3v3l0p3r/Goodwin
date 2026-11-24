@@ -1,0 +1,69 @@
+.wake-dataset {
+  width: min(100%, var(--gw-page-content-width, 58rem));
+  margin-inline: auto;
+}
+
+.wake-dataset :is(p, ul) {
+  margin: 0;
+}
+
+.wake-dataset p {
+  color: var(--gw-color-muted);
+}
+
+.wake-dataset__controls,
+.wake-dataset__toolbar,
+.wake-dataset__clip-head,
+.wake-dataset__actions,
+.wake-dataset__labels,
+.wake-dataset__pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gw-space-2, 0.5rem);
+}
+
+.wake-dataset__controls,
+.wake-dataset__toolbar,
+.wake-dataset__clip-head,
+.wake-dataset__actions {
+  justify-content: space-between;
+  gap: var(--gw-space-4, 1rem);
+}
+
+.wake-dataset__controls .gw-stack {
+  flex: 1 1 24rem;
+  align-items: flex-start;
+}
+
+.wake-dataset__toolbar {
+  align-items: flex-end;
+}
+
+.wake-dataset__minimum {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--gw-space-2, 0.5rem);
+  margin-top: var(--gw-space-4, 1rem);
+}
+
+.wake-dataset__minimum input {
+  max-width: 10rem;
+}
+
+.wake-dataset__minimum p {
+  flex-basis: 100%;
+}
+
+.wake-dataset__clips {
+  display: grid;
+  gap: var(--gw-space-3, 0.75rem);
+  padding: 0;
+  list-style: none;
+}
+
+.wake-dataset__clip-head {
+  margin-bottom: var(--gw-space-3, 0.75rem);
+  overflow-wrap: anywhere;
+}

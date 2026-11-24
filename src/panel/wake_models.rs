@@ -11,21 +11,21 @@ use serde_json::json;
 use tokio::time::timeout;
 
 use crate::{
-    wake::InstallError,
+    wake::{InstallError, runtimes},
     wake_catalog::{Catalog, valid_model_id},
 };
 
 use super::{Panel, problem};
 
 pub(super) async fn catalog() -> Response {
-    match tokio::task::spawn_blocking(Catalog::latest).await {
+    match tokio::task::spawn_blocking(|| Catalog::latest(runtimes())).await {
         Ok(Ok(catalog)) => Json(json!({
             "tag": catalog.tag,
             "models": catalog.models.into_iter().map(|model| model.selection).collect::<Vec<_>>(),
         }))
         .into_response(),
         Ok(Err(error)) => {
-            eprintln!("Could not get the wake model catalog: {error:#}");
+            log::warn!("Could not get the wake model catalog: {error:#}");
             problem(StatusCode::BAD_GATEWAY, "wake_catalog_unavailable")
         }
         Err(_) => problem(
@@ -62,11 +62,11 @@ pub(super) async fn install(State(panel): State<Panel>, Json(install): Json<Inst
         }
         Ok(Err(InstallError::Unknown)) => problem(StatusCode::NOT_FOUND, "invalid_wake_model"),
         Ok(Err(InstallError::Unavailable(error))) => {
-            eprintln!("Could not get the wake model catalog: {error:#}");
+            log::warn!("Could not get the wake model catalog: {error:#}");
             problem(StatusCode::BAD_GATEWAY, "wake_catalog_unavailable")
         }
         Ok(Err(InstallError::Failed(error))) => {
-            eprintln!("Could not install the wake model: {error:#}");
+            log::error!("Could not install the wake model: {error:#}");
             problem(StatusCode::INTERNAL_SERVER_ERROR, "wake_model_failed")
         }
         Err(_) => problem(StatusCode::INTERNAL_SERVER_ERROR, "wake_model_failed"),

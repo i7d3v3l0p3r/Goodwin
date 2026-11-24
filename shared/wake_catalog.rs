@@ -12,6 +12,48 @@ use sha2::{Digest, Sha256};
 const RELEASES: &str = "https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases";
 const CATALOG_LIMIT: u64 = 64 * 1024;
 const MODEL_LIMIT: u64 = 32 * 1024 * 1024;
+pub(crate) fn tflite_marker() -> &'static [u8] {
+    include_str!("wake-tflite-capability.txt")
+        .trim_end()
+        .as_bytes()
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum Runtime {
+    #[serde(rename = "livekit-v2-standard-onnx")]
+    Standard,
+    #[serde(rename = "livekit-v2-micro-onnx")]
+    Micro,
+    #[serde(rename = "livekit-v2-micro-tflite")]
+    MicroTflite,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Runtime {
+    pub(crate) fn available(with_tflite: bool) -> &'static [Self] {
+        if with_tflite {
+            &[Self::Standard, Self::Micro, Self::MicroTflite]
+        } else {
+            &[Self::Standard, Self::Micro]
+        }
+    }
+
+    pub(crate) fn format(self) -> &'static str {
+        match self {
+            Self::Standard | Self::Micro => "onnx",
+            Self::MicroTflite => "tflite",
+            Self::Unknown => "",
+        }
+    }
+
+    fn matches_tier(self, tier: &str) -> bool {
+        matches!(
+            (self, tier),
+            (Self::Standard, "standard") | (Self::Micro | Self::MicroTflite, "micro")
+        )
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Selection {
@@ -19,16 +61,35 @@ pub(crate) struct Selection {
     pub wake_word: String,
     pub tier: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_threshold: Option<f32>,
 }
 
 impl Selection {
+    pub(crate) fn runtime(&self) -> Runtime {
+        self.runtime.unwrap_or(match self.tier.as_str() {
+            "standard" => Runtime::Standard,
+            "micro" => Runtime::Micro,
+            _ => Runtime::Unknown,
+        })
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             valid_model_id(&self.id)
                 && !self.wake_word.trim().is_empty()
                 && self.wake_word.chars().count() <= 80
                 && !self.wake_word.chars().any(char::is_control)
-                && matches!(self.tier.as_str(), "standard" | "micro")
+                && self.runtime().matches_tier(&self.tier)
+                && self
+                    .score_threshold
+                    .is_none_or(|value| (0.0..=1.0).contains(&value))
+                && (self.runtime() != Runtime::MicroTflite
+                    || self
+                        .score_threshold
+                        .is_some_and(|value| 0.0 < value && value < 1.0))
                 && self.sha256.len() == 64
                 && self
                     .sha256
@@ -53,29 +114,26 @@ pub(crate) struct Model {
     #[serde(flatten)]
     pub selection: Selection,
     filename: String,
-    runtime: String,
     format: String,
     sample_rate_hz: u32,
-    goodwin_compatible: bool,
     size_bytes: u64,
 }
 
 impl Model {
-    fn supported(&self) -> bool {
-        self.goodwin_compatible
-            && self.format == "onnx"
-            && self.sample_rate_hz == 16_000
-            && matches!(
-                (self.selection.tier.as_str(), self.runtime.as_str()),
-                ("standard", "livekit-v2-standard-onnx") | ("micro", "livekit-v2-micro-onnx")
-            )
+    fn supported(&self, runtimes: &[Runtime]) -> bool {
+        self.sample_rate_hz == 16_000
+            && self.selection.runtime.is_some_and(|runtime| {
+                runtimes.contains(&runtime)
+                    && runtime.format() == self.format
+                    && runtime.matches_tier(&self.selection.tier)
+            })
     }
 
     fn validate(&self) -> Result<()> {
         self.selection.validate()?;
         ensure!(
             self.filename
-                .strip_suffix(".onnx")
+                .strip_suffix(&format!(".{}", self.format))
                 .is_some_and(valid_model_id)
                 && (1..=MODEL_LIMIT).contains(&self.size_bytes),
             "Invalid wake model asset"
@@ -115,7 +173,7 @@ pub(crate) struct Catalog {
 }
 
 impl Catalog {
-    pub(crate) fn latest() -> Result<Self> {
+    pub(crate) fn latest(runtimes: &[Runtime]) -> Result<Self> {
         let response = get(&format!("{RELEASES}/latest/download/metadata.json"))
             .context("Download the latest wake model catalog")?;
         let mut metadata = Vec::new();
@@ -126,10 +184,10 @@ impl Catalog {
             metadata.len() as u64 <= CATALOG_LIMIT,
             "Wake model catalog is too large"
         );
-        Self::parse(&metadata)
+        Self::parse(&metadata, runtimes)
     }
 
-    fn parse(metadata: &[u8]) -> Result<Self> {
+    fn parse(metadata: &[u8], runtimes: &[Runtime]) -> Result<Self> {
         let mut catalog: Self = serde_json::from_slice(metadata)?;
         ensure!(
             catalog.schema_version == 1,
@@ -144,7 +202,7 @@ impl Catalog {
                     .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())),
             "Invalid wake model release tag"
         );
-        catalog.models.retain(Model::supported);
+        catalog.models.retain(|model| model.supported(runtimes));
         let mut ids = HashSet::new();
         for model in &catalog.models {
             model.validate()?;
@@ -197,15 +255,16 @@ mod tests {
         });
         let mut unsupported = model.clone();
         unsupported["format"] = json!("tflite");
-        let catalog = |models| {
+        let catalog = |models, with_tflite| {
             Catalog::parse(
                 &serde_json::to_vec(&json!({
                     "schema_version": 1, "tag": "v0.1.0", "models": models
                 }))
                 .unwrap(),
+                Runtime::available(with_tflite),
             )
         };
-        let result = catalog(vec![model.clone(), unsupported]).unwrap();
+        let result = catalog(vec![model.clone(), unsupported], false).unwrap();
         let [entry] = result.models.as_slice() else {
             panic!("Expected one model")
         };
@@ -216,8 +275,44 @@ mod tests {
         for bytes in [b"ab".as_slice(), b"abcd", b"abd"] {
             assert!(entry.copy_verified(bytes, std::io::sink()).is_err());
         }
-        assert!(catalog(vec![model.clone(), model.clone()]).is_err());
+        let mut int8 = model.clone();
+        int8["id"] = json!("egor-int8");
+        int8["filename"] = json!("egor-int8.tflite");
+        int8["format"] = json!("tflite");
+        int8["runtime"] = json!("livekit-v2-micro-tflite");
+        int8["score_threshold"] = json!(0.390625);
+        int8["goodwin_compatible"] = json!(false);
+        let mut unknown = int8.clone();
+        unknown["runtime"] = json!("unavailable-runtime");
+        unknown["goodwin_compatible"] = json!(true);
+        let mut unspecified = model.clone();
+        unspecified
+            .as_object_mut()
+            .unwrap()
+            .remove("goodwin_compatible");
+        let models = vec![unspecified, int8.clone(), unknown];
+        assert_eq!(catalog(models.clone(), false).unwrap().models.len(), 1);
+        let supported = catalog(models, true).unwrap();
+        assert_eq!(supported.models.len(), 2);
+        assert_eq!(
+            supported.models[1].selection.runtime(),
+            Runtime::MicroTflite
+        );
+        int8["filename"] = json!("wrong.onnx");
+        assert!(catalog(vec![int8], true).is_err());
+        assert!(catalog(vec![model.clone(), model.clone()], true).is_err());
         model["filename"] = json!("../egor-micro.onnx");
-        assert!(catalog(vec![model]).is_err());
+        assert!(catalog(vec![model], false).is_err());
+    }
+
+    #[test]
+    fn old_manifests_choose_onnx_by_tier() {
+        let legacy: Selection = serde_json::from_value(json!({
+            "id": "goodwin-micro", "wake_word": "Гудвин", "tier": "micro",
+            "sha256": "0".repeat(64)
+        }))
+        .unwrap();
+        legacy.validate().unwrap();
+        assert_eq!(legacy.runtime(), Runtime::Micro);
     }
 }

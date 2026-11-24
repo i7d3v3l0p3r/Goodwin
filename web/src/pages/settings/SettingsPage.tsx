@@ -5,6 +5,9 @@ import { PageHeader } from "../../components/PageHeader";
 import { usePanel } from "../../helpers/panel";
 import { errorLabel, type Language } from "../../helpers/words";
 import { AssistantForm } from "./components/AssistantForm";
+import { CoreUpdate } from "./components/CoreUpdate";
+import { DiagnosticLogs } from "./components/DiagnosticLogs";
+import { SystemResources } from "./components/SystemResources";
 import { WakeWordSettings } from "./components/WakeWordSettings";
 import { MicrophoneGainForm } from "./components/MicrophoneGainForm";
 import { SystemPromptForm } from "./components/SystemPromptForm";
@@ -55,7 +58,6 @@ export function SettingsPage() {
           {section.id === "activation" && <Show when={panel.snapshot()}>{state => <>
             <WakeWordSettings t={panel.t()} listening={state().settings.listening} sensitivity={state().settings.sensitivity}
               visible={active()?.id === "activation"} currentModel={state().wake_model} modelLoaded={state().model}
-              refresh={panel.refresh}
               changeSensitivity={sensitivity => panel.saveSettings({ ...state().settings, sensitivity }, { showError: false })}
               pending={pending()} toggleListening={() => {
                 const settings = state().settings;
@@ -63,7 +65,7 @@ export function SettingsPage() {
               }} />
             <MicrophoneGainForm t={panel.t()} snapshot={state()} pending={pending()} save={panel.saveSettings} />
             <a class={styles.inlineLink} href={settingsSectionPath("diagnostics")}>
-              {panel.t().voiceCheck}<Icon name="arrowRight" size={17} />
+              {panel.t().diagnostics}<Icon name="arrowRight" size={17} />
             </a>
           </>}</Show>}
           {section.id === "assistant" && <Show when={assistantVisited() ? panel.snapshot() : undefined}>{state => <>
@@ -72,10 +74,14 @@ export function SettingsPage() {
             <SystemPromptForm t={panel.t()} systemPrompt={state().system_prompt}
               pending={pending()} save={panel.saveSystemPrompt} />
           </>}</Show>}
-          {section.id === "diagnostics" && <Show when={panel.snapshot()}>{state =>
-            <VoiceCheck t={panel.t()} language={panel.language()} snapshot={state()} reachable={panel.reachable()}
-              pending={panel.pending()} test={panel.testStation} />
-          }</Show>}
+          {section.id === "diagnostics" && <Show when={active()?.id === "diagnostics"}>
+            <Show when={panel.snapshot()}>{state =>
+              <VoiceCheck t={panel.t()} language={panel.language()} snapshot={state()} reachable={panel.reachable()}
+                pending={panel.pending()} test={panel.testStation} />
+            }</Show>
+            <SystemResources t={panel.t()} language={panel.language()} />
+            <DiagnosticLogs t={panel.t()} passwordProtected={panel.access()?.protected === true} />
+          </Show>}
           {section.id === "panel" && <div class={styles.group}>
             <label class={styles.language}>
               {panel.t().language}
@@ -84,6 +90,9 @@ export function SettingsPage() {
               </select>
             </label>
           </div>}
+          {section.id === "update" && <Show when={active()?.id === "update"}>
+            <CoreUpdate t={panel.t()} passwordProtected={panel.access()?.protected === true} />
+          </Show>}
         </section>
       }</For>
       <Show when={active() && panel.error()}><p class={styles.error} role="alert">{errorLabel(panel.t(), panel.error())}</p></Show>

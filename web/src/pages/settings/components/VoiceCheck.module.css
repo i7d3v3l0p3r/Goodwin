@@ -20,20 +20,35 @@
   border-top: 1px solid var(--edge);
 }
 
-.details h3 {
-  margin: 0 0 8px;
-  font-size: .92rem;
+.details h4 {
+  margin: 0 0 10px;
+  font-size: .98rem;
 }
 
-.result { display: grid; justify-items: start; gap: 6px; }
-.details dl {
+.progress { display: grid; justify-items: start; gap: 8px; margin-top: 12px; }
+.report { display: grid; gap: 10px; justify-items: start; }
+.report details { width: 100%; }
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--muted);
+  font-size: .84rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.report h5 { margin: 0 0 4px; font-size: .87rem; }
+.text { min-width: 0; }
+.text p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }
+.timings, .configuration {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 12px;
-  max-width: 370px;
+  gap: 4px 16px;
   margin: 0;
   color: var(--muted);
   font-size: .84rem;
 }
 
-.details dd { font-variant-numeric: tabular-nums; }
+.timings dd { text-align: end; font-variant-numeric: tabular-nums; }
+.configuration { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.configuration dd { color: var(--text); overflow-wrap: anywhere; }

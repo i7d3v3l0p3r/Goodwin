@@ -5,10 +5,19 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-anyhow = "1"
+anyhow = { version = "1", default-features = false }
 goodwin-plugin = { path = "../sdk" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
-[dev-dependencies]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dlmalloc = { version = "0.2.14", features = ["global"] }
+spin = { version = "0.9.9", default-features = false, features = ["spin_mutex"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+anyhow = { version = "1", features = ["std"] }
+serde = { version = "1", features = ["std"] }
+serde_json = { version = "1", features = ["std"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"

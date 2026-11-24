@@ -1,0 +1,13 @@
+{
+  "id": "wake-dataset",
+  "version": "0.1.1",
+  "title": { "en": "Wake-word dataset", "ru": "Датасет слова активации" },
+  "apiVersion": 1,
+  "wasmStorage": true,
+  "web": {
+    "uiKitVersion": 1,
+    "solidRuntimeVersion": 1,
+    "entry": "ui/index.mjs",
+    "styles": ["ui/style.css"]
+  }
+}

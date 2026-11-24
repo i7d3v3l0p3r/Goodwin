@@ -4,17 +4,19 @@ Goodwin is a voice assistant for Yandex Station Mini 3 (`bergamot`).
 
 ## Terms
 
-**Control panel** — The browser interface for chatting with Goodwin, configuring the assistant and microphone, managing plugins, and testing the Station.
+**Control panel** — The browser interface for chatting with Goodwin, configuring the assistant and microphone, managing plugins, viewing diagnostics, and updating a managed Station.
 
 **Assistant engine** — The mode Goodwin uses to handle an assistant request. Goodwin currently uses the cascade.
 
 **Cascade (STT → LLM → TTS)** — The engine that transcribes the user's speech (STT), generates an answer with a language model (LLM), and turns the answer into audio (TTS). Text chat uses the LLM stage. Each stage has its own provider, model, and optional parameters, such as the synthesis voice and speaking rate.
 
-**Model provider** — A plugin that connects Goodwin to an inference service and offers one or more model capabilities for the engine's stages. OpenRouter and OpenAI-compatible are model providers. The control panel can show the provider's model catalog or accept a model ID manually.
+**Model provider** — A plugin that connects Goodwin to an inference service and offers one or more model capabilities for the engine's stages. The OpenAI-compatible plugin can provide multiple named connections, including OpenRouter. The control panel can show a model catalog or accept a model ID manually.
 
-**Plugin** — A separately run native extension that may supply model capabilities, assistant tools, HTTP endpoints, or control panel pages.
+**Provider connection** — A named API configuration with a stable provider ID, protocol, base URL, and optional key. Choose a connection and a model independently for each cascade stage.
 
-**Plugin package** — An independently installable bundle with a manifest, a native executable, and optional prebuilt control panel assets.
+**Plugin** — An extension that runs in a native process or as a WebAssembly (WASM) module in Wasmi. It can supply model capabilities, assistant tools, HTTP endpoints, or control panel pages.
+
+**Plugin package** — An independently installable bundle with a manifest, a native executable or WASM module, and optional prebuilt control panel assets.
 
 **Declarative plugin settings** — Fields a plugin defines in its package manifest. Goodwin renders the form and stores values such as service URLs and API keys per plugin. Open the form from the Plugins list or the header of a custom plugin page.
 
@@ -22,9 +24,9 @@ Goodwin is a voice assistant for Yandex Station Mini 3 (`bergamot`).
 
 **Current conversation** — The messages shown in the web chat. It includes spoken and written exchanges and lasts until a new chat starts or Goodwin restarts.
 
-**Wake word** — The word or phrase a user says to activate Goodwin. The bundled models detect “Гудвин” locally.
+**Wake word** — The word or phrase a user says to activate Goodwin. The selected model detects it locally.
 
-**Wake-word model** — The LiveKit Standard or Micro ONNX model that recognizes the activation phrase on the Station. The loaded model determines which phrase the detector hears.
+**Wake-word model** — A local model that recognizes the activation phrase on the Station. Goodwin supports LiveKit Standard and Micro ONNX models. Station builds also support Micro INT8 TensorFlow Lite models.
 
 **Wake word gain** — A microphone signal multiplier applied to the input of the wake-word model. Wake word sensitivity sets the threshold for accepting a detection.
 

@@ -1,58 +1,79 @@
 import { createContext, createEffect, createSignal, onSettled, useContext } from "solid-js";
-import { ApiError, api, type Access, type Settings, type Snapshot } from "./api";
+import { ApiError, api, type Access, type Message, type Settings, type Snapshot } from "./api";
 import { initialLanguage, words, type Language } from "./words";
 
 export function createPanel() {
   const [language, setLanguage] = createSignal<Language>(initialLanguage());
   const [access, setAccess] = createSignal<Access>();
   const [snapshot, setSnapshot] = createSignal<Snapshot>();
+  const [chatDraft, setChatDraft] = createSignal<Message>();
   const [reachable, setReachable] = createSignal(true);
   const [pending, setPending] = createSignal(false);
   const [error, setError] = createSignal("");
   const [microphonePending, setMicrophonePending] = createSignal(false);
   const [microphoneError, setMicrophoneError] = createSignal("");
   const t = () => words[language()];
-  let stopped = false;
-  let refreshVersion = 0;
-  let timer = 0;
+  let events: EventSource | undefined;
+  let retry = 0;
+  let retryDelay = 1000;
 
-  function requireLogin() {
-    setAccess({ protected: true, authorized: false, setup_required: false });
-    setSnapshot(undefined);
-    setMicrophoneError("");
-  }
-
-  async function refresh(recheckAccess = false) {
-    const version = ++refreshVersion;
-    try {
-      const state = (recheckAccess ? undefined : access()) ?? await api<Access>("access");
-      const next = state.authorized ? await api<Snapshot>("state") : undefined;
-      if (stopped || version !== refreshVersion) return;
-      setAccess(state);
-      setSnapshot(previous => previous && next && JSON.stringify(previous.plugins) === JSON.stringify(next.plugins)
-        ? { ...next, plugins: previous.plugins }
-        : next);
-      setReachable(true);
-    } catch (reason) {
-      if (stopped || version !== refreshVersion) return;
-      if (reason instanceof ApiError && reason.code === "login_required") {
-        requireLogin();
-      } else {
-        setReachable(false);
-      }
+  function updateAccess(state: Access) {
+    setAccess(state);
+    if (!state.authorized) {
+      setSnapshot(undefined);
+      setChatDraft(undefined);
+      setMicrophoneError("");
     }
   }
 
-  async function poll() {
-    if (!pending() && !microphonePending()) await refresh(!access()?.authorized);
-    if (!stopped) timer = window.setTimeout(poll, 750);
+  function connect() {
+    window.clearTimeout(retry);
+    events?.close();
+    const source = new EventSource("/api/events");
+    events = source;
+
+    source.onopen = () => {
+      if (events !== source) return;
+      retryDelay = 1000;
+      setReachable(true);
+    };
+    source.onerror = () => {
+      if (events !== source) return;
+      setReachable(false);
+      if (source.readyState === EventSource.CLOSED) {
+        retry = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 15_000);
+      }
+    };
+    source.addEventListener("access", (event: MessageEvent<string>) => {
+      if (events === source) updateAccess(JSON.parse(event.data) as Access);
+    });
+    source.addEventListener("state", (event: MessageEvent<string>) => {
+      if (events !== source) return;
+      const next = JSON.parse(event.data) as Snapshot;
+      setSnapshot(previous => previous && JSON.stringify(previous.plugins) === JSON.stringify(next.plugins)
+        ? { ...next, plugins: previous.plugins }
+        : next);
+      setChatDraft(next.chat_draft);
+    });
+    source.addEventListener("chat_delta", (event: MessageEvent<string>) => {
+      if (events !== source) return;
+      const { id, text } = JSON.parse(event.data) as Pick<Message, "id" | "text">;
+      setChatDraft(previous => ({
+        id, role: "assistant", text: previous?.id === id ? previous.text + text : text,
+      }));
+    });
   }
 
   onSettled(() => {
-    void poll();
+    connect();
+    const recheckAccess = () => { if (access()?.authorized === false) connect(); };
+    window.addEventListener("focus", recheckAccess);
     return () => {
-      stopped = true;
-      window.clearTimeout(timer);
+      window.removeEventListener("focus", recheckAccess);
+      window.clearTimeout(retry);
+      events?.close();
+      events = undefined;
     };
   });
 
@@ -76,17 +97,17 @@ export function createPanel() {
     if (isPending()) return false;
     setActionPending(true);
     setActionError("");
-    refreshVersion++;
     try {
       await request();
-      await refresh(options.recheckAccess);
+      if (options.recheckAccess) connect();
       return true;
     } catch (reason) {
       const code = reason instanceof ApiError ? reason.code : "internal";
       if (code === "login_required") {
-        requireLogin();
+        updateAccess({ protected: true, authorized: false, setup_required: false });
+        connect();
       } else if (code === "setup_complete" || code === "setup_required") {
-        await refresh(true);
+        connect();
         if (code === "setup_complete") setActionError(code);
       } else if (options.onError) {
         options.onError(code);
@@ -112,19 +133,16 @@ export function createPanel() {
   }
 
   return {
-    access, snapshot, reachable, pending, error, language, t, status, changeLanguage, clearError, refresh,
-    busy: () => pending() || !!snapshot()?.active,
+    access, snapshot, chatDraft, reachable, pending, error, language, t, status, changeLanguage, clearError,
+    busy: () => pending() || !snapshot() || !!snapshot()?.active,
     microphonePending, microphoneError,
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
       action(() => api("setup", "POST", { password, confirmation }), { recheckAccess: true }),
-    login: (password: string) => action(async () => {
-      await api("login", "POST", { password });
-      setAccess(undefined);
-    }, { recheckAccess: true }),
+    login: (password: string) => action(() => api("login", "POST", { password }), { recheckAccess: true }),
     logout: () => action(async () => {
       await api("logout", "POST", {});
-      requireLogin();
+      updateAccess({ protected: true, authorized: false, setup_required: false });
     }, { recheckAccess: true }),
     send: (message: string) => action(() => api("chat", "POST", { message })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),

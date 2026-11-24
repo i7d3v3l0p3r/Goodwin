@@ -15,7 +15,6 @@ export function WakeWordSettings(props: {
   currentModel: WakeModel | null;
   modelLoaded: boolean;
   pending: boolean;
-  refresh: () => Promise<void>;
   toggleListening: () => void;
   changeSensitivity: (value: number) => Promise<boolean>;
 }) {
@@ -29,7 +28,10 @@ export function WakeWordSettings(props: {
   const [catalogFailed, setCatalogFailed] = createSignal(false);
   const [error, setError] = createSignal<string>();
   const selected = () => catalog()?.models.find(model => model.id === id());
-  const modelLabel = (model: WakeModel) => `${model.wake_word} · ${model.tier === "micro" ? "Micro" : "Standard"}`;
+  const modelLabel = (model: WakeModel) => {
+    const tier = model.runtime === "livekit-v2-micro-tflite" ? "Micro INT8" : model.tier === "micro" ? "Micro" : "Standard";
+    return `${model.wake_word} · ${tier}`;
+  };
   const sensitivity = () => preview() ?? props.sensitivity;
   const canInstall = () => Boolean(selected() && (!props.modelLoaded || selected()?.sha256 !== props.currentModel?.sha256));
   protectDraft(() => !installing() && canInstall(), isSettingsPath);
@@ -73,7 +75,6 @@ export function WakeWordSettings(props: {
     setError(undefined);
     try {
       await api<WakeModel>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
-      await props.refresh();
       setInstalled(true);
       setId("");
     } catch (failure) {

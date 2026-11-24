@@ -40,8 +40,11 @@ async fn chat_failure_stays_on_its_message_without_replacing_the_last_voice_test
         Some(Failure::ProviderUnavailable)
     ));
     let last_test = state.last_voice_test.unwrap();
-    assert!(last_test.source == Source::ManualTest);
-    assert!(matches!(last_test.error, Some(Failure::NoSpeech)));
+    assert!(last_test.report.source == Source::ManualTest);
+    assert!(matches!(last_test.report.error, Some(Failure::NoSpeech)));
+    let voice = state.last_voice.unwrap();
+    assert!(voice.report.source == Source::ManualTest);
+    assert!(voice.details.error_stage == Some(Stage::Recording));
 
     assert!(app.clear_chat().is_ok());
     let cleared = app.snapshot();
@@ -62,11 +65,12 @@ fn the_last_voice_test_ignores_regular_wake_requests_and_updates_after_a_wake_te
     app.finish(wake, None);
     let state = app.snapshot();
     assert!(state.last.unwrap().source == Source::Wake);
-    assert!(state.last_voice_test.unwrap().source == Source::ManualTest);
+    assert!(state.last_voice.unwrap().report.source == Source::Wake);
+    assert!(state.last_voice_test.unwrap().report.source == Source::ManualTest);
 
     let test = app.start(Source::WakeTest).ok().unwrap();
     app.finish(test, Some(Failure::NoWake));
     let report = app.snapshot().last_voice_test.unwrap();
-    assert!(report.source == Source::WakeTest);
-    assert!(matches!(report.error, Some(Failure::NoWake)));
+    assert!(report.report.source == Source::WakeTest);
+    assert!(matches!(report.report.error, Some(Failure::NoWake)));
 }

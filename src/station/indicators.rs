@@ -56,7 +56,7 @@ impl Indicators {
             let thread = thread::Builder::new()
                 .name("goodwin-indicators".into())
                 .spawn(move || run(hardware, receiver))
-                .map_err(|error| eprintln!("Could not start the Station indicators: {error}"))
+                .map_err(|error| log::warn!("Could not start the Station indicators: {error}"))
                 .ok()?;
             Some(Worker {
                 events,

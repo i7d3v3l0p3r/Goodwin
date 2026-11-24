@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use ort::{
-    session::{Session, SessionInputValue, builder::GraphOptimizationLevel},
-    tensor::TensorElementType,
-    value::{DynValue, Tensor, TensorRef, ValueType},
-};
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
+use tract_onnx::prelude::{
+    DatumType, Framework, InferenceModelExt, IntoTValue, IntoTensor, Tensor, TypedModel,
+    TypedRunnableModel,
+};
 
 use super::{FRAME_SAMPLES, SAMPLE_RATE};
 
@@ -20,119 +19,90 @@ const WARMUP_FRAMES: usize = 2 * SAMPLE_RATE / FRAME_SAMPLES;
 type Features = [f32; FRAMES * BANDS];
 
 pub(super) struct MicroModel {
-    session: Session,
+    plan: TypedRunnableModel<TypedModel>,
     frontend: Frontend,
-    input_names: Vec<String>,
-    state_outputs: Vec<String>,
-    state: Vec<DynValue>,
-    warm: Vec<Vec<f32>>,
+    state: Vec<Tensor>,
+    warm: Vec<Tensor>,
 }
 
 impl MicroModel {
-    pub(super) fn load(bytes: &[u8], params: [f32; 3]) -> Result<Self> {
-        // Match the backend used by LiveKit's Rust client on the Station and desktop.
-        ort::set_api(ort_tract::api());
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .commit_from_memory(bytes)?;
-        let mut input_names = Vec::new();
-        let mut state_outputs = Vec::new();
-        let mut state = Vec::new();
-        for input in session.inputs() {
-            let name = input.name();
-            let ValueType::Tensor { ty, shape, .. } = input.dtype() else {
-                anyhow::bail!("Micro input {name} must be a tensor");
-            };
-            ensure!(
-                *ty == TensorElementType::Float32,
-                "Micro input {name} must be float32"
-            );
-            match (name, &shape[..]) {
-                ("mel", [1, 8, 40]) => continue,
-                ("mel", _) => anyhow::bail!("Micro mel input must have shape [1, 8, 40]"),
-                (_, [1, length]) if *length > 0 => {
-                    state.push(
-                        Tensor::from_array((
-                            [1, *length as usize],
-                            vec![0.0_f32; *length as usize],
-                        ))?
-                        .into_dyn(),
-                    );
-                }
-                _ => anyhow::bail!("Invalid Micro state input {name}"),
-            }
-            input_names.push(name.to_owned());
-            state_outputs.push(format!("{name}_out"));
-        }
-        let has_output = |name| session.outputs().iter().any(|output| output.name() == name);
+    pub(super) fn load(mut bytes: &[u8], params: [f32; 3]) -> Result<Self> {
+        let onnx = tract_onnx::onnx();
+        let proto = onnx.proto_model_for_read(&mut bytes)?;
+        let graph = proto.graph.as_ref().context("Micro model has no graph")?;
+        let state_names: Vec<_> = graph
+            .input
+            .iter()
+            .map(|input| input.name.as_str())
+            .filter(|&name| name != "mel")
+            .collect();
+        let state_outputs: Vec<_> = state_names
+            .iter()
+            .map(|name| format!("{name}_out"))
+            .collect();
+        let output_names = std::iter::once("score").chain(state_outputs.iter().map(String::as_str));
         ensure!(
-            has_output("score") && state_outputs.iter().all(|name| has_output(name)),
+            output_names
+                .clone()
+                .all(|name| graph.output.iter().any(|output| output.name == name)),
             "Micro model must return score and all recurrent states"
         );
+        let input_names = std::iter::once("mel").chain(state_names.iter().copied());
+        let mut graph = onnx.model_for_proto_model(&proto)?;
+        graph.set_input_names(input_names)?;
+        graph.set_output_names(output_names)?;
+        let graph = graph.into_optimized()?;
+
+        let mel = graph.input_fact(0)?;
+        ensure!(
+            mel.datum_type == DatumType::F32
+                && mel.shape.as_concrete() == Some(&[1, FRAMES, BANDS]),
+            "Micro mel input must be float32 with shape [1, {FRAMES}, {BANDS}]"
+        );
+        let mut state = Vec::with_capacity(state_names.len());
+        for (index, name) in state_names.iter().enumerate() {
+            let input = graph.input_fact(index + 1)?;
+            let Some([1, length]) = input.shape.as_concrete() else {
+                anyhow::bail!("Invalid Micro state input {name}");
+            };
+            ensure!(
+                input.datum_type == DatumType::F32 && *length > 0,
+                "Invalid Micro state input {name}"
+            );
+            state.push(Tensor::zero::<f32>(&[1, *length])?);
+        }
         let mut model = Self {
-            session,
+            plan: graph.into_runnable()?,
             frontend: Frontend::new(params),
-            input_names,
-            state_outputs,
             state,
             warm: Vec::new(),
         };
         for _ in 0..WARMUP_FRAMES {
             model.step(&[0; FRAME_SAMPLES])?;
         }
-        model.warm = model
-            .state
-            .iter()
-            .map(|state| {
-                let (_, values) = state.try_extract_tensor::<f32>()?;
-                Ok(values.to_vec())
-            })
-            .collect::<Result<_>>()?;
+        model.warm.clone_from(&model.state);
         Ok(model)
     }
 
-    pub(super) fn reset(&mut self) -> Result<()> {
+    pub(super) fn reset(&mut self) {
         self.frontend.pcm.fill(0.0);
-        self.state = self
-            .warm
-            .iter()
-            .map(|values| Ok(Tensor::from_array(([1, values.len()], values.clone()))?.into_dyn()))
-            .collect::<Result<_>>()?;
-        Ok(())
+        self.state.clone_from(&self.warm);
     }
 
     pub(super) fn step(&mut self, frame: &[i16; FRAME_SAMPLES]) -> Result<f32> {
         let features = self.frontend.process(frame);
-        let input = TensorRef::from_array_view(([1, FRAMES, BANDS], features.as_slice()))?;
-        let mut inputs = Vec::with_capacity(self.state.len() + 1);
-        inputs.push(("mel", SessionInputValue::from(input)));
-        inputs.extend(
-            self.input_names
-                .iter()
-                .map(String::as_str)
-                .zip(self.state.iter().map(SessionInputValue::from)),
-        );
-        let mut outputs = self.session.run(inputs)?;
-        let (_, scores) = outputs
-            .get("score")
-            .context("Micro score missing")?
-            .try_extract_tensor::<f32>()?;
-        let [score] = scores else {
+        let mel = Tensor::from_shape(&[1, FRAMES, BANDS], &features)?.into_tvalue();
+        // Move the tensors into the plan so its operators can reuse exclusive inputs.
+        let inputs = std::iter::once(mel)
+            .chain(self.state.drain(..).map(IntoTValue::into_tvalue))
+            .collect();
+        let mut outputs = self.plan.run(inputs)?.into_iter();
+        let score = outputs.next().context("Micro score missing")?;
+        let &[score] = score.as_slice::<f32>()? else {
             anyhow::bail!("Micro model returned more or fewer than one score");
         };
-        let score = *score;
         ensure!(score.is_finite(), "Micro model returned an invalid score");
-        let next = self
-            .state_outputs
-            .iter()
-            .map(|name| {
-                outputs
-                    .remove(name)
-                    .with_context(|| format!("Micro state {name} missing"))
-            })
-            .collect::<Result<_>>()?;
-        drop(outputs);
-        self.state = next;
+        self.state.extend(outputs.map(IntoTensor::into_tensor));
         Ok(score)
     }
 }
@@ -235,6 +205,30 @@ fn mel_filters() -> [MelFilter; BANDS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    #[test]
+    fn recurrent_states_follow_tensor_names_and_reset_to_warmup() {
+        // The graph declares inputs as s1, mel, s0 and outputs as s0_out, s1_out, score.
+        // On silence, score = s0, s0_out = s0 + mean(s1), and s1_out = s1 + [1, 3].
+        let encoded = concat!(
+            "CAg6igMKOQoDbWVsEgZzaWduYWwiClJlZHVjZU1lYW4qDQoEYXhlc0ABQAKgAQcqDwoIa2Vl",
+            "cGRpbXMYAKABAgoYCgJzMAoGc2lnbmFsEgVzY29yZSIDQWRkCjgKAnMxEghmZWVkYmFjayIK",
+            "UmVkdWNlTWVhbioLCgRheGVzQAGgAQcqDwoIa2VlcGRpbXMYAaABAgobCgJzMAoIZmVlZGJh",
+            "Y2sSBnMwX291dCIDQWRkChwKAnMxCglpbmNyZW1lbnQSBnMxX291dCIDQWRkEg1vcmRlcmVk",
+            "LXN0YXRlKhsIAQgCEAEiCAAAgD8AAEBAQglpbmNyZW1lbnRaFAoCczESDgoMCAESCAoCCAEK",
+            "AggCWhkKA21lbBISChAIARIMCgIIAQoCCAgKAggoWhQKAnMwEg4KDAgBEggKAggBCgIIAWIY",
+            "CgZzMF9vdXQSDgoMCAESCAoCCAEKAggBYhgKBnMxX291dBIOCgwIARIICgIIAQoCCAJiFwoF",
+            "c2NvcmUSDgoMCAESCAoCCAEKAggBQgQKABAN",
+        );
+        let bytes = STANDARD.decode(encoded).unwrap();
+        let mut model = MicroModel::load(&bytes, [1.0, 0.0, 1.0]).unwrap();
+        let silence = [0; FRAME_SAMPLES];
+        assert_eq!(model.step(&silence).unwrap(), 600.0);
+        assert_eq!(model.step(&silence).unwrap(), 650.0);
+        model.reset();
+        assert_eq!(model.step(&silence).unwrap(), 600.0);
+    }
 
     #[test]
     fn frontend_matches_livekit_across_pcm_blocks() {

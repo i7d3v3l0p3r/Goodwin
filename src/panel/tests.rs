@@ -1,4 +1,7 @@
+use std::io::Read;
+
 use axum::http::{StatusCode, header};
+use flate2::read::GzDecoder;
 use serde_json::{Value, json};
 
 use super::router;
@@ -9,6 +12,46 @@ use crate::{
     station::Player,
     test_support::serve,
 };
+
+#[tokio::test]
+async fn panel_state_includes_declared_plugin_page_icons() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    app.plugins.mock_plugin(
+        "fixture",
+        Process::mock_rpc(|_, _| unreachable!()),
+        json!({
+            "apiVersion": 1,
+            "pages": [
+                {"id": "main", "path": "", "title": {"en": "Timers", "ru": "Таймеры"}, "navigation": true, "icon": "timer"},
+                {"id": "legacy", "path": "legacy", "title": {"en": "Legacy", "ru": "Архив"}, "navigation": true},
+            ],
+        }),
+    );
+    let (panel, task) = serve(router(app)).await;
+    let state: Value = reqwest::get(format!("{panel}/api/state"))
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pages = &state["plugins"][0]["pages"];
+    assert_eq!(pages[0]["icon"], "timer");
+    assert_eq!(pages[1]["navigation"], true);
+    assert!(pages[1].get("icon").is_none());
+    task.abort();
+}
 
 #[tokio::test]
 async fn panel_lists_models_for_the_requested_provider_and_stage() {
@@ -50,6 +93,122 @@ async fn panel_lists_models_for_the_requested_provider_and_stage() {
 }
 
 #[tokio::test]
+async fn open_panel_shows_resources_but_requires_a_password_for_logs() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (panel, task) = serve(router(app)).await;
+    let resources = reqwest::get(format!("{panel}/api/diagnostics/resources"))
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(resources["supported"], cfg!(target_os = "linux"));
+    let logs = reqwest::get(format!("{panel}/api/diagnostics/logs"))
+        .await
+        .unwrap();
+    assert_eq!(logs.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        logs.json::<Value>().await.unwrap()["error"],
+        "diagnostics_password_required"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn panel_serves_precompressed_assets_at_their_original_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (panel, task) = serve(router(app)).await;
+    let client = reqwest::Client::builder().no_gzip().build().unwrap();
+    for (path, mime, original, compressed) in [
+        (
+            "/",
+            "text/html; charset=utf-8",
+            include_bytes!("../../web/dist/index.html").as_slice(),
+            include_bytes!("../../web/dist/index.html.gz").as_slice(),
+        ),
+        (
+            "/panel.js",
+            "text/javascript; charset=utf-8",
+            include_bytes!("../../web/dist/panel.js").as_slice(),
+            include_bytes!("../../web/dist/panel.js.gz").as_slice(),
+        ),
+        (
+            "/panel.css",
+            "text/css; charset=utf-8",
+            include_bytes!("../../web/dist/panel.css").as_slice(),
+            include_bytes!("../../web/dist/panel.css.gz").as_slice(),
+        ),
+        (
+            "/plugin-runtime-v1.js",
+            "text/javascript; charset=utf-8",
+            include_bytes!("../../web/dist/plugin-runtime-v1.js").as_slice(),
+            include_bytes!("../../web/dist/plugin-runtime-v1.js.gz").as_slice(),
+        ),
+        (
+            "/panel-licenses.md",
+            "text/plain; charset=utf-8",
+            include_bytes!("../../web/dist/panel-licenses.md").as_slice(),
+            include_bytes!("../../web/dist/panel-licenses.md.gz").as_slice(),
+        ),
+    ] {
+        let response = client.get(format!("{panel}{path}")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(response.content_length(), Some(compressed.len() as u64));
+        let body = response.bytes().await.unwrap();
+        assert_eq!(body.as_ref(), compressed);
+        let mut decoded = Vec::new();
+        GzDecoder::new(body.as_ref())
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    let response = client
+        .head(format!("{panel}/panel.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+    assert!(response.bytes().await.unwrap().is_empty());
+    task.abort();
+}
+
+async fn gzip_text(response: reqwest::Response) -> String {
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+    let body = response.bytes().await.unwrap();
+    let mut text = String::new();
+    GzDecoder::new(body.as_ref())
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+#[tokio::test]
 async fn panel_serves_direct_navigation_to_settings() {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
@@ -64,7 +223,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         DEFAULT_MICROPHONE_GAIN,
     );
     let (panel, task) = serve(router(app)).await;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().no_gzip().build().unwrap();
     for path in [
         "/",
         "/settings",
@@ -73,6 +232,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         "/settings/assistant",
         "/settings/diagnostics/",
         "/settings/panel",
+        "/settings/update",
         "/plugins",
         "/plugins/timers",
         "/plugins/fixture/settings",
@@ -83,7 +243,7 @@ async fn panel_serves_direct_navigation_to_settings() {
             response.headers()[header::CONTENT_TYPE],
             "text/html; charset=utf-8"
         );
-        assert!(response.text().await.unwrap().contains("/panel.js"));
+        assert!(gzip_text(response).await.contains("/panel.js"));
     }
     let response = client
         .get(format!("{panel}/plugin-runtime-v1.js"))
@@ -95,7 +255,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         response.headers()[header::CONTENT_TYPE],
         "text/javascript; charset=utf-8"
     );
-    assert!(response.text().await.unwrap().contains("createSignal"));
+    assert!(gzip_text(response).await.contains("createSignal"));
     let response = client
         .get(format!("{panel}/panel-licenses.md"))
         .send()
@@ -106,7 +266,7 @@ async fn panel_serves_direct_navigation_to_settings() {
         response.headers()[header::CONTENT_TYPE],
         "text/plain; charset=utf-8"
     );
-    let licenses = response.text().await.unwrap();
+    let licenses = gzip_text(response).await;
     assert!(licenses.contains("Lucide Icons and Contributors"));
     assert!(licenses.contains("Cole Bemis"));
     let response = client
@@ -132,6 +292,28 @@ async fn panel_serves_direct_navigation_to_settings() {
         response.json::<Value>().await.unwrap()["error"],
         "plugin_password_required"
     );
+    let response = client
+        .get(format!("{panel}/api/core-update"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let update = response.json::<Value>().await.unwrap();
+    assert_eq!(update["version"], crate::core_update::VERSION);
+    assert_eq!(update["supported"], false);
+    for request in [
+        client.get(format!("{panel}/api/core-update/latest")),
+        client
+            .post(format!("{panel}/api/core-update"))
+            .json(&json!({"version": "9.0.0"})),
+    ] {
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"],
+            "core_update_password_required"
+        );
+    }
     task.abort();
 }
 

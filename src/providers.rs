@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use goodwin_plugin::provider::{
-    Capability, ChatRequest, Completion, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
+    Capability, ChatRequest, Completion, MAX_CHAT_BYTES, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
     MAX_SPEECH_CHUNK_BYTES, ModelSelection, SpeechAudio, SpeechRequest, Transcription,
     TranscriptionRequest,
 };
@@ -57,10 +57,15 @@ impl Plugins {
         settings: &StageSettings,
         capability: Capability,
     ) -> Result<Provider, Failure> {
-        let (process, model_catalog) = self
-            .provider(&settings.provider, capability)
-            .ok_or(Failure::ProviderUnavailable)?;
+        let id = &settings.provider;
+        let Some((process, model_catalog)) = self.provider(id, capability) else {
+            log::warn!("Provider unavailable id={id} capability={capability:?}");
+            return Err(Failure::ProviderUnavailable);
+        };
         if !model_catalog && !settings.selection.is_empty() {
+            log::warn!(
+                "Provider does not accept model selection id={id} capability={capability:?}"
+            );
             return Err(Failure::ProviderUnavailable);
         }
         Ok(Provider {
@@ -80,7 +85,7 @@ impl Provider {
     }
 
     pub(crate) fn failure(error: anyhow::Error) -> Failure {
-        eprintln!("Provider plugin request: {error:#}");
+        log::warn!("Provider request failed: {error}");
         Failure::ProviderFailed
     }
 
@@ -104,6 +109,7 @@ impl Provider {
         text: &str,
         instructions: &str,
         history: impl IntoIterator<Item = (&'a str, &'a str)>,
+        on_chunk: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<String> {
         let mut messages = vec![json!({"role": "system", "content": instructions})];
         messages.extend(
@@ -112,19 +118,38 @@ impl Provider {
                 .map(|(role, content)| json!({"role": role, "content": content})),
         );
         messages.push(json!({"role": "user", "content": text}));
-        self.complete(ChatRequest {
+        let request = ChatRequest {
             messages,
             tools: Vec::new(),
             tool_choice: None,
             max_completion_tokens: 256,
-            selection: ModelSelection::default(),
-        })
-        .await?
-        .text()
+            selection: self.selection.clone(),
+        };
+        if let Some(on_chunk) = on_chunk
+            && let Some(mut stream) = self.process.stream_chat(&request)?
+        {
+            let mut answer = String::new();
+            while let Some(chunk) = stream.next().await? {
+                ensure!(
+                    answer.len() + chunk.len() <= MAX_CHAT_BYTES,
+                    "Provider answer exceeds size limit"
+                );
+                answer.push_str(&chunk);
+                on_chunk(&chunk);
+            }
+            let answer = answer.trim();
+            ensure!(!answer.is_empty(), "Empty provider answer");
+            return Ok(answer.to_owned());
+        }
+        self.complete_request(request).await?.text()
     }
 
     pub(crate) async fn complete(&self, mut request: ChatRequest) -> Result<CompletionMessage> {
         request.selection = self.selection.clone();
+        self.complete_request(request).await
+    }
+
+    async fn complete_request(&self, request: ChatRequest) -> Result<CompletionMessage> {
         let result: Completion = self.call(Capability::Chat, request).await?;
         ensure!(result.message.is_object(), "Invalid completion message");
         Ok(CompletionMessage(result.message))

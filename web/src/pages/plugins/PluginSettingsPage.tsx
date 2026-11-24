@@ -1,4 +1,4 @@
-import { useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { Button } from "../../components/ui-kit/Button";
 import { Disclosure } from "../../components/ui-kit/Disclosure";
@@ -12,6 +12,7 @@ import { usePanel } from "../../helpers/panel";
 import { pluginSettingsPath } from "../../helpers/plugins";
 import { errorLabel } from "../../helpers/words";
 import { ExtensionPage } from "./ExtensionPage";
+import { ProviderConnectionsPage } from "./ProviderConnectionsPage";
 import styles from "./PluginSettingsPage.module.css";
 
 type Draft = Record<string, string>;
@@ -20,11 +21,18 @@ type Changes = Record<string, string | boolean | number | null>;
 export function PluginSettingsRoute() {
   const panel = usePanel();
   const params = useParams<{ id: string }>();
-  const legacyPage = () => panel.snapshot()?.plugins.some(plugin =>
-    plugin.id === params.id && !plugin.has_settings && plugin.pages.some(page => page.path === "settings"),
-  );
-  return <Show when={panel.snapshot()} fallback={<PageHeader title={panel.t().settings} />}>
-    <Show when={!legacyPage()} fallback={<ExtensionPage />}><PluginSettingsPage /></Show>
+  const navigate = useNavigate();
+  const plugin = () => panel.snapshot()?.plugins.find(entry => entry.id === params.id);
+  const redirect = () => plugin()?.settings_redirect;
+  const legacyPage = () => !plugin()?.has_settings && plugin()?.pages.some(page => page.path === "settings");
+  const connections = () => plugin()?.connection_settings ? plugin() : undefined;
+  createEffect(redirect, id => {
+    if (id) void navigate(pluginSettingsPath(id), { replace: true });
+  });
+  return <Show when={panel.snapshot() && !redirect()} fallback={<PageHeader title={panel.t().settings} />}>
+    <Show when={connections()} fallback={<Show when={!legacyPage()} fallback={<ExtensionPage />}><PluginSettingsPage /></Show>}>
+      {plugin => <ProviderConnectionsPage plugin={plugin()} />}
+    </Show>
   </Show>;
 }
 

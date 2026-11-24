@@ -5,10 +5,13 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use goodwin_plugin::provider::Capability;
+use goodwin_plugin::{HttpRequest, provider::Capability};
 use serde_json::{Map, Value};
 
-use crate::plugins::{ARCHIVE_LIMIT, Failure as PluginFailure};
+use crate::{
+    config::Access,
+    plugins::{ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure},
+};
 
 use super::{Panel, problem};
 
@@ -23,6 +26,43 @@ pub(super) async fn plugin_models(
     match panel.app.plugins.models(&id, capability).await {
         Ok(catalog) => Json(catalog).into_response(),
         Err(error) => plugin_problem(error),
+    }
+}
+
+pub(super) async fn provider_connections(
+    State(panel): State<Panel>,
+    Path(id): Path<String>,
+) -> Response {
+    match panel.app.plugins.connections(&id).await {
+        Ok(connections) => Json(connections).into_response(),
+        Err(error) => plugin_problem(error),
+    }
+}
+
+pub(super) async fn save_provider_connection(
+    State(panel): State<Panel>,
+    Path(id): Path<String>,
+    Json(update): Json<ConnectionUpdate>,
+) -> Response {
+    let plugins = panel.app.plugins.clone();
+    match tokio::spawn(async move { plugins.save_connection(&id, update).await }).await {
+        Ok(Ok((id, connections))) => {
+            Json(serde_json::json!({"id": id, "connections": connections})).into_response()
+        }
+        Ok(Err(error)) => plugin_problem(error),
+        Err(_) => plugin_problem(PluginFailure::Storage),
+    }
+}
+
+pub(super) async fn remove_provider_connection(
+    State(panel): State<Panel>,
+    Path((id, connection)): Path<(String, String)>,
+) -> Response {
+    let plugins = panel.app.plugins.clone();
+    match tokio::spawn(async move { plugins.remove_connection(&id, connection).await }).await {
+        Ok(Ok(connections)) => Json(connections).into_response(),
+        Ok(Err(error)) => plugin_problem(error),
+        Err(_) => plugin_problem(PluginFailure::Storage),
     }
 }
 
@@ -92,10 +132,13 @@ pub(super) async fn plugin_http(
         .plugins
         .http(
             &id,
-            parts.method.as_str(),
-            &format!("/{path}"),
-            parts.uri.query(),
-            body,
+            HttpRequest {
+                method: parts.method.to_string(),
+                path: format!("/{path}"),
+                query: parts.uri.query().map(str::to_owned),
+                body,
+            },
+            matches!(panel.app.configuration().access(), Access::Password { .. }),
         )
         .await
     {
@@ -142,6 +185,7 @@ fn plugin_problem(error: PluginFailure) -> Response {
     let status = match error {
         PluginFailure::InvalidPackage | PluginFailure::InvalidSettings => StatusCode::BAD_REQUEST,
         PluginFailure::NotFound => StatusCode::NOT_FOUND,
+        PluginFailure::PasswordRequired => StatusCode::FORBIDDEN,
         PluginFailure::StartFailed | PluginFailure::RolledBack => StatusCode::CONFLICT,
         PluginFailure::Storage => StatusCode::INTERNAL_SERVER_ERROR,
         PluginFailure::Unavailable => StatusCode::SERVICE_UNAVAILABLE,

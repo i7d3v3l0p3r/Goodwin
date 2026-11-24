@@ -30,7 +30,20 @@ export function PipelineStageForm(props: {
   invalidParameters: boolean;
   change: (changes: Partial<StageDraft>) => void;
 }) {
-  const providers = createMemo(() => props.plugins.filter(plugin => plugin.providers.includes(props.capability)));
+  const providers = createMemo(() => {
+    const available = props.plugins.filter(plugin => plugin.providers.includes(props.capability));
+    const ids = new Set(available.flatMap(plugin => plugin.connections ?? []).map(connection => connection.providerId));
+    return available.flatMap(plugin => {
+      if (plugin.connection_settings) return (plugin.connections ?? []).map(connection => ({
+        id: connection.providerId, name: connection.name, model_catalog: plugin.model_catalog,
+        speech_streaming: connection.speechStreaming && plugin.speech_streaming === true,
+        revision: `${plugin.revision}:${connection.revision}`,
+      }));
+      if (ids.has(plugin.id)) return [];
+      return [{ id: plugin.id, name: plugin.title[props.language], revision: plugin.revision ?? "",
+        model_catalog: plugin.model_catalog, speech_streaming: plugin.speech_streaming === true }];
+    });
+  });
   const current = () => providers().find(plugin => plugin.id === props.draft.provider);
   const [catalog, setCatalog] = createSignal<ModelCatalog>();
   const [loading, setLoading] = createSignal(false);
@@ -71,7 +84,7 @@ export function PipelineStageForm(props: {
   const speed = () => props.draft.speed ?? speechSpeed.default;
   const speedLabel = () => `${new Intl.NumberFormat(props.language, { maximumFractionDigits: 2 }).format(speed())}×`;
   const streamingAvailable = () => current()?.speech_streaming === true;
-  const providerLabel = () => current()?.title[props.language] ?? `${props.draft.provider} (${props.t.plugins.status.error})`;
+  const providerLabel = () => current()?.name ?? `${props.draft.provider} (${props.t.plugins.status.error})`;
   const modelLabel = () => models().find(model => model.id === props.draft.model)?.name || props.draft.model || defaultLabel();
 
   return <Disclosure ref={node => { stage = node; }} class={styles.stage} name="assistant-stages"
@@ -87,7 +100,7 @@ export function PipelineStageForm(props: {
             <option value={props.draft.provider} selected>{providerLabel()}</option>
           </Show>
           <For each={providers()}>{plugin =>
-            <option value={plugin.id} selected={plugin.id === props.draft.provider}>{plugin.title[props.language]}</option>
+            <option value={plugin.id} selected={plugin.id === props.draft.provider}>{plugin.name}</option>
           }</For>
         </select>}
       </Field>

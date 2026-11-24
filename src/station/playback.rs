@@ -68,7 +68,8 @@ impl Player {
             }
             input.write_all(wave).await?;
             drop(input);
-            ensure!(child.wait().await?.success(), "aplay failed");
+            let status = child.wait().await.context("Wait for aplay")?;
+            ensure!(status.success(), "aplay failed: {status}");
             Ok(())
         })
         .await
@@ -149,8 +150,8 @@ impl Player {
     }
 }
 
-fn playback_failure(error: anyhow::Error) -> Failure {
-    eprintln!("Speech playback: {error:#}");
+pub(crate) fn playback_failure(error: anyhow::Error) -> Failure {
+    log::warn!("Speech playback: {error:#}");
     Failure::Playback
 }
 

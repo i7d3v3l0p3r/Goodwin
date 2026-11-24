@@ -5,31 +5,54 @@ use std::{
 
 use goodwin_plugin::provider::Capability;
 use serde::Serialize;
+use tokio::sync::watch;
 
 use super::{
-    Failure,
+    Failure, connections,
     package::{Label, Manifest, Web},
     process::{Page, Process, Registration},
 };
 
 #[derive(Default)]
-pub(super) struct Registry(RwLock<BTreeMap<String, Entry>>);
+pub(super) struct Registry {
+    entries: RwLock<BTreeMap<String, Entry>>,
+    pub(super) changes: watch::Sender<()>,
+}
 
 impl Registry {
     pub(super) fn read(&self) -> RwLockReadGuard<'_, BTreeMap<String, Entry>> {
-        self.0.read().expect("plugin registry")
+        self.entries.read().expect("plugin registry")
     }
 
     pub(super) fn catalog(&self) -> Vec<View> {
-        self.read().values().map(Entry::view).collect()
+        let entries = self.read();
+        entries
+            .values()
+            .map(|entry| entry.view(Self::connection_owner(&entries, &entry.manifest.id)))
+            .collect()
+    }
+
+    pub(super) fn connection_owner(
+        entries: &BTreeMap<String, Entry>,
+        provider: &str,
+    ) -> Option<&'static str> {
+        const UNIFIED: &str = "openai-compatible";
+        (provider == "openrouter"
+            && entries
+                .get(UNIFIED)
+                .is_some_and(|entry| entry.manifest.provider_connections))
+        .then_some(UNIFIED)
     }
 
     pub(super) fn remove(&self, id: &str) {
-        self.0.write().expect("plugin registry").remove(id);
+        self.entries.write().expect("plugin registry").remove(id);
+        self.changes.send_replace(());
     }
 
     pub(super) fn take(&self) -> BTreeMap<String, Entry> {
-        std::mem::take(&mut *self.0.write().expect("plugin registry"))
+        let entries = std::mem::take(&mut *self.entries.write().expect("plugin registry"));
+        self.changes.send_replace(());
+        entries
     }
 
     pub(super) fn insert(
@@ -39,7 +62,7 @@ impl Registry {
         status: Status,
         error: Option<&'static str>,
     ) {
-        self.0.write().expect("plugin registry").insert(
+        self.entries.write().expect("plugin registry").insert(
             manifest.id.clone(),
             Entry {
                 manifest,
@@ -48,18 +71,25 @@ impl Registry {
                 error,
             },
         );
+        self.changes.send_replace(());
     }
 
     pub(super) fn take_active(&self, id: &str, status: Status) -> Option<Active> {
-        self.0
-            .write()
-            .expect("plugin registry")
-            .get_mut(id)
-            .and_then(|entry| {
-                entry.status = status;
-                entry.error = None;
-                entry.active.take()
-            })
+        let mut entries = self.entries.write().expect("plugin registry");
+        let entry = entries.get_mut(id)?;
+        entry.status = status;
+        entry.error = None;
+        let active = entry.active.take();
+        self.changes.send_replace(());
+        active
+    }
+
+    pub(super) fn set_connections(&self, id: &str, views: Vec<connections::View>) {
+        let mut entries = self.entries.write().expect("plugin registry");
+        if let Some(active) = entries.get_mut(id).and_then(|entry| entry.active.as_mut()) {
+            active.connections = views;
+            self.changes.send_replace(());
+        }
     }
 }
 
@@ -75,6 +105,7 @@ pub(super) struct Active {
     pub(super) process: Process,
     pub(super) registration: Registration,
     pub(super) revision: String,
+    pub(super) connections: Vec<connections::View>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -101,6 +132,10 @@ pub struct View {
     model_catalog: bool,
     speech_streaming: bool,
     has_settings: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings_redirect: Option<&'static str>,
+    connection_settings: bool,
+    connections: Vec<connections::View>,
 }
 
 impl Entry {
@@ -110,8 +145,9 @@ impl Entry {
             .filter(|active| active.process.running())
     }
 
-    fn view(&self) -> View {
+    fn view(&self, settings_redirect: Option<&'static str>) -> View {
         let active = self.live();
+        let provider = active.filter(|_| settings_redirect.is_none());
         let stopped = self.active.is_some() && active.is_none();
         View {
             id: self.manifest.id.clone(),
@@ -126,12 +162,17 @@ impl Entry {
             revision: active.map(|active| active.revision.clone()),
             web: active.and(self.manifest.web.clone()),
             pages: active.map_or_else(Vec::new, |active| active.registration.pages.clone()),
-            providers: active.map_or_else(BTreeSet::new, |active| {
+            providers: provider.map_or_else(BTreeSet::new, |active| {
                 active.registration.providers.clone()
             }),
-            model_catalog: active.is_some_and(|active| active.registration.model_catalog),
-            speech_streaming: active.is_some_and(|active| active.registration.speech_streaming),
-            has_settings: !self.manifest.settings.is_empty(),
+            model_catalog: provider.is_some_and(|active| active.registration.model_catalog),
+            speech_streaming: provider.is_some_and(|active| active.registration.speech_streaming),
+            has_settings: settings_redirect.is_some()
+                || self.manifest.provider_connections
+                || !self.manifest.settings.is_empty(),
+            settings_redirect,
+            connection_settings: self.manifest.provider_connections,
+            connections: active.map_or_else(Vec::new, |active| active.connections.clone()),
         }
     }
 }

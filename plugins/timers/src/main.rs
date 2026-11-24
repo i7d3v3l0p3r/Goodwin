@@ -1,14 +1,30 @@
-mod state;
+#![cfg_attr(target_arch = "wasm32", no_std)]
+#![cfg_attr(target_arch = "wasm32", no_main)]
 
+#[cfg(target_arch = "wasm32")]
+extern crate alloc;
+
+mod state;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
+#[cfg(target_arch = "wasm32")]
+use alloc::vec::Vec;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{sync::Arc, thread};
 
 use anyhow::Result;
-use goodwin_plugin::{Host, HttpRequest, HttpResponse, Plugin, ToolCall, data_dir};
+#[cfg(not(target_arch = "wasm32"))]
+use goodwin_plugin::{Host, data_dir};
+use goodwin_plugin::{HttpRequest, HttpResponse, Plugin, ToolCall};
 use serde_json::{Value, json};
 use state::{Clock, Filter, Timer, now};
 
 struct Timers {
+    #[cfg(not(target_arch = "wasm32"))]
     clock: Arc<Clock>,
+    #[cfg(target_arch = "wasm32")]
+    clock: Clock,
     choices: Option<(u64, Vec<u64>)>,
 }
 
@@ -17,7 +33,10 @@ impl Plugin for Timers {
         json!({
             "apiVersion": 1,
             "voiceContextTool": "list",
-            "pages": [{"id": "main", "path": "", "title": {"en": "Timers", "ru": "Таймеры"}, "navigation": true}],
+            "pages": [{
+                "id": "main", "path": "", "navigation": true, "icon": "timer",
+                "title": {"en": "Timers", "ru": "Таймеры"},
+            }],
             "routes": [
                 {"method": "GET", "path": "/timers"}, {"method": "POST", "path": "/timers"},
                 {"method": "DELETE", "path": "/timers/:id"}
@@ -41,6 +60,7 @@ impl Plugin for Timers {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn ready(&mut self, host: Host) {
         let clock = self.clock.clone();
         thread::spawn(move || clock.schedule(host));
@@ -160,6 +180,7 @@ impl Timers {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     let clock = Arc::new(Clock::load(data_dir()?.join("timers.json"))?);
     goodwin_plugin::run(Timers {
@@ -168,7 +189,7 @@ fn main() -> Result<()> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

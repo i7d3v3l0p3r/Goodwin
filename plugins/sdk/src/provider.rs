@@ -1,3 +1,5 @@
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm-guest")))]
+use alloc::{string::String, vec::Vec};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -5,9 +7,25 @@ use serde_json::{Map, Value};
 pub const MAX_RECORDING_BYTES: usize = 4_000_000;
 pub const MAX_SPEECH_BYTES: usize = 8_000_000;
 pub const MODELS_METHOD: &str = "provider.models";
+pub const CHAT_STREAM_METHOD: &str = "provider.complete_stream";
+pub const CHAT_CHUNK_NOTIFICATION: &str = "provider.chat_chunk";
+pub const MAX_CHAT_CHUNK_BYTES: usize = 16 * 1024;
+pub const MAX_CHAT_BYTES: usize = 256_000;
 pub const SPEECH_STREAM_METHOD: &str = "provider.synthesize_stream";
 pub const SPEECH_CHUNK_NOTIFICATION: &str = "provider.speech_chunk";
 pub const MAX_SPEECH_CHUNK_BYTES: usize = 16 * 1024;
+
+/// An upstream HTTP status that can be reported to the host without the response body.
+#[derive(Debug)]
+pub struct ProviderHttpError(pub u16);
+
+impl core::fmt::Display for ProviderHttpError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "Provider returned HTTP {}", self.0)
+    }
+}
+
+impl core::error::Error for ProviderHttpError {}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]

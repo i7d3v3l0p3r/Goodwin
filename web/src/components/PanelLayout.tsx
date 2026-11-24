@@ -9,7 +9,7 @@ import { pluginPagePath } from "../helpers/plugins";
 import { Brand } from "./Brand";
 import { Button } from "./ui-kit/Button";
 import { ConfirmDialog } from "./ui-kit/ConfirmDialog";
-import { Icon } from "./icons";
+import { Icon, PluginNavigationIcon } from "./icons";
 import styles from "./PanelLayout.module.css";
 
 export function PanelLayout(props: ParentProps) {
@@ -28,7 +28,7 @@ function PanelShell(props: ParentProps) {
   const [menuOpen, setMenuOpen] = createSignal(false);
   const destinations = createMemo(() => panel.snapshot()?.plugins.flatMap(plugin => plugin.pages
     .filter(page => page.navigation)
-    .map(page => ({ path: pluginPagePath(plugin.id, page.path), title: page.title }))));
+    .map(page => ({ path: pluginPagePath(plugin.id, page.path), title: page.title, icon: page.icon }))));
   const current = (path: string) => (route.pathname.replace(/\/$/, "") || "/") === path ? "page" : undefined;
   const settingsCurrent = () => current(settingsPath) ?? (route.pathname.startsWith(`${settingsPath}/`) ? "location" : undefined);
   let menu!: HTMLDialogElement;
@@ -69,7 +69,7 @@ function PanelShell(props: ParentProps) {
         <div class={styles.extensions}>
           <For each={destinations()}>
             {page => <a href={page.path} aria-current={current(page.path)} onClick={props.onNavigate}>
-              <Icon name="plugin" /><span>{page.title[panel.language()]}</span>
+              <PluginNavigationIcon name={page.icon} /><span>{page.title[panel.language()]}</span>
             </a>}
           </For>
         </div>

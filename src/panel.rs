@@ -1,6 +1,9 @@
 mod assets;
 mod auth;
+mod diagnostics;
+mod events;
 mod plugin_routes;
+mod updates;
 mod wake_models;
 
 #[cfg(test)]
@@ -8,6 +11,7 @@ mod tests;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
@@ -31,7 +35,8 @@ use auth::{
     response_headers, setup_password,
 };
 use plugin_routes::{
-    plugin_asset, plugin_catalog, plugin_http, plugin_models, plugin_settings, remove_plugin,
+    plugin_asset, plugin_catalog, plugin_http, plugin_models, plugin_settings,
+    provider_connections, remove_plugin, remove_provider_connection, save_provider_connection,
     update_plugin_settings, upload_plugin,
 };
 
@@ -53,6 +58,13 @@ pub fn router(app: Arc<App>) -> Router {
     };
     let protected = Router::new()
         .route("/api/state", get(snapshot))
+        .route("/api/diagnostics/resources", get(diagnostics::resources))
+        .route("/api/diagnostics/logs", get(diagnostics::logs))
+        .route(
+            "/api/core-update",
+            get(updates::status).post(updates::install),
+        )
+        .route("/api/core-update/latest", get(updates::latest))
         .route("/api/settings", put(settings))
         .route("/api/settings/microphone", put(microphone))
         .route("/api/settings/system-prompt", put(system_prompt))
@@ -65,6 +77,14 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/test", post(test))
         .route("/api/plugins", get(plugin_catalog))
         .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
+        .route(
+            "/api/plugin-connections/{id}",
+            get(provider_connections).put(save_provider_connection),
+        )
+        .route(
+            "/api/plugin-connections/{id}/{connection}",
+            delete(remove_provider_connection),
+        )
         .route(
             "/api/plugin-settings/{id}",
             get(plugin_settings)
@@ -85,6 +105,7 @@ pub fn router(app: Arc<App>) -> Router {
 
     assets::routes()
         .route("/api/access", get(access))
+        .route("/api/events", get(events::subscribe))
         .route("/api/setup", post(setup_password))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
@@ -96,6 +117,7 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(panel)
 }
 
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 async fn snapshot(State(panel): State<Panel>) -> impl IntoResponse {
     Json(panel.app.snapshot())
 }
@@ -113,9 +135,15 @@ async fn settings(State(panel): State<Panel>, Json(update): Json<UpdateSettings>
     let app = Arc::clone(&panel.app);
     let saved =
         tokio::task::spawn_blocking(move || app.configuration().update_settings(settings)).await;
-    match saved {
-        Ok(Ok(())) => snapshot(State(panel)).await.into_response(),
-        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
+    match saved
+        .context("Settings writer task")
+        .and_then(|saved| saved)
+    {
+        Ok(()) => snapshot(State(panel)).await.into_response(),
+        Err(error) => {
+            log::error!("Could not save settings: {error:#}");
+            problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed")
+        }
     }
 }
 
@@ -127,9 +155,15 @@ struct UpdateMicrophone {
 async fn microphone(State(panel): State<Panel>, Json(update): Json<UpdateMicrophone>) -> Response {
     let saved =
         tokio::task::spawn_blocking(move || panel.app.set_microphone_muted(update.muted)).await;
-    match saved {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
+    match saved
+        .context("Microphone settings writer task")
+        .and_then(|saved| saved)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            log::error!("Could not save microphone settings: {error:#}");
+            problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed")
+        }
     }
 }
 
@@ -148,9 +182,15 @@ async fn system_prompt(
     let saved =
         tokio::task::spawn_blocking(move || panel.app.configuration().update_system_prompt(prompt))
             .await;
-    match saved {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed"),
+    match saved
+        .context("System prompt writer task")
+        .and_then(|saved| saved)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            log::error!("Could not save the system prompt: {error:#}");
+            problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed")
+        }
     }
 }
 
@@ -200,7 +240,10 @@ async fn test(State(panel): State<Panel>, Json(test): Json<Test>) -> Response {
     };
     match panel.app.start(source) {
         Ok(_) => StatusCode::ACCEPTED.into_response(),
-        Err(error) => blocked(error),
+        Err(error) => {
+            log::warn!("Voice test could not start source={source:?} error={error:?}");
+            blocked(error)
+        }
     }
 }
 

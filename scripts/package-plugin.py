@@ -19,15 +19,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plugin", type=Path, help="Directory with manifest.json and optional ui/")
     parser.add_argument("executable", type=Path)
-    parser.add_argument("target", help="Runtime platform such as linux-aarch64 or windows-x86_64")
+    parser.add_argument("target", help="Runtime platform such as linux-aarch64, windows-x86_64 or wasm32")
     parser.add_argument("output", type=Path)
     parser.add_argument("--version", help="Override the package version for this build")
+    parser.add_argument("--wasm-state-file", help="JSON state filename in the WASM plugin data directory")
     args = parser.parse_args()
+    if args.wasm_state_file and args.target != "wasm32":
+        parser.error("--wasm-state-file requires the wasm32 target")
 
     manifest = json.loads((args.plugin / "manifest.json").read_text(encoding="utf-8"))
-    suffix = ".exe" if args.target.startswith("windows-") else ""
+    if args.target != "wasm32":
+        manifest.pop("providerConnections", None)
+        manifest.pop("wasmHttp", None)
+        manifest.pop("wasmStorage", None)
+    suffix = ".wasm" if args.target == "wasm32" else ".exe" if args.target.startswith("windows-") else ""
     manifest["executable"] = f"bin/{manifest['id']}{suffix}"
     manifest["target"] = args.target
+    if args.wasm_state_file:
+        manifest["wasmStateFile"] = args.wasm_state_file
     if args.version:
         manifest["version"] = args.version
 

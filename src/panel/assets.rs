@@ -7,11 +7,11 @@ use axum::{
 
 use super::Panel;
 
-const INDEX: &str = include_str!("../../web/dist/index.html");
-const SCRIPT: &str = include_str!("../../web/dist/panel.js");
-const PLUGIN_RUNTIME: &str = include_str!("../../web/dist/plugin-runtime-v1.js");
-const STYLE: &str = include_str!("../../web/dist/panel.css");
-const LICENSES: &str = include_str!("../../web/dist/panel-licenses.md");
+const INDEX: &[u8] = include_bytes!("../../web/dist/index.html.gz");
+const SCRIPT: &[u8] = include_bytes!("../../web/dist/panel.js.gz");
+const PLUGIN_RUNTIME: &[u8] = include_bytes!("../../web/dist/plugin-runtime-v1.js.gz");
+const STYLE: &[u8] = include_bytes!("../../web/dist/panel.css.gz");
+const LICENSES: &[u8] = include_bytes!("../../web/dist/panel-licenses.md.gz");
 
 pub(super) fn routes() -> Router<Panel> {
     let mut router = Router::new().route("/", get(index));
@@ -21,6 +21,7 @@ pub(super) fn routes() -> Router<Panel> {
         "/settings/assistant",
         "/settings/diagnostics",
         "/settings/panel",
+        "/settings/update",
     ] {
         router = router
             .route(path, get(index))
@@ -53,6 +54,14 @@ async fn index() -> Response {
     asset("text/html; charset=utf-8", INDEX)
 }
 
-fn asset(mime: &'static str, content: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, mime)], content).into_response()
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
+fn asset(mime: &'static str, content: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CONTENT_ENCODING, "gzip"),
+        ],
+        content,
+    )
+        .into_response()
 }

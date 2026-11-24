@@ -35,6 +35,7 @@ export interface WakeModel {
   id: string;
   wake_word: string;
   tier: "standard" | "micro";
+  runtime?: "livekit-v2-standard-onnx" | "livekit-v2-micro-onnx" | "livekit-v2-micro-tflite";
   sha256: string;
 }
 
@@ -49,6 +50,22 @@ export interface Report {
   timings: { stage: Stage; ms: number }[];
   error: string | null;
   message_id?: number;
+}
+
+export interface VoiceReport extends Report {
+  started_at_ms: number;
+  transcription: VoiceModel;
+  chat: VoiceModel;
+  speech: VoiceModel;
+  transcript: string | null;
+  answer: string | null;
+  playback: "streaming" | "buffered" | "announcement" | null;
+  error_stage: Stage | null;
+}
+
+interface VoiceModel {
+  provider: string;
+  model: string | null;
 }
 
 export interface Message {
@@ -67,9 +84,11 @@ export interface Snapshot {
   wake_model: WakeModel | null;
   active: Report | null;
   last: Report | null;
-  last_voice_test?: Report | null;
+  last_voice: VoiceReport | null;
+  last_voice_test?: VoiceReport | null;
   messages: Message[];
   plugins: Plugin[];
+  chat_draft?: Message;
 }
 
 export type Label = Record<"en" | "ru", string>;
@@ -79,6 +98,7 @@ export interface PluginPage {
   path: string;
   title: Label;
   navigation: boolean;
+  icon?: string;
 }
 
 export interface Plugin {
@@ -94,6 +114,20 @@ export interface Plugin {
   model_catalog: boolean;
   speech_streaming?: boolean;
   has_settings: boolean;
+  settings_redirect?: string;
+  connection_settings?: boolean;
+  connections?: ProviderConnection[];
+}
+
+export interface ProviderConnection {
+  id: string;
+  providerId: string;
+  name: string;
+  protocol: "openai" | "openrouter";
+  baseUrl: string;
+  hasKey: boolean;
+  speechStreaming: boolean;
+  revision: number;
 }
 
 export interface PluginSettingField {

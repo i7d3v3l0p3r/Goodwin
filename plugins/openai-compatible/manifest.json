@@ -3,6 +3,8 @@
   "version": "0.3.0",
   "title": { "en": "OpenAI-compatible provider", "ru": "OpenAI-совместимый провайдер" },
   "apiVersion": 1,
+  "providerConnections": true,
+  "wasmHttp": { "baseUrlSetting": "base_url", "keySetting": "key" },
   "settings": [
     {
       "id": "base_url",

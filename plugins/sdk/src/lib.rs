@@ -1,3 +1,11 @@
+#![cfg_attr(all(target_arch = "wasm32", not(feature = "wasm-guest")), no_std)]
+
+#[cfg(target_arch = "wasm32")]
+extern crate alloc;
+
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm-guest")))]
+use alloc::string::String;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     fs,
     io::{self, BufRead, Write},
@@ -5,26 +13,52 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::{Context, ensure};
+#[cfg(not(target_arch = "wasm32"))]
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-guest"))]
+pub mod audio;
 pub mod provider;
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-guest"))]
+pub mod services;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod settings;
+pub mod wake;
 
+#[cfg(not(target_arch = "wasm32"))]
 use provider::{
-    Capability, ChatRequest, Completion, MODELS_METHOD, ModelCatalog, ModelsRequest,
-    SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest, Transcription,
-    TranscriptionRequest,
+    Capability, MODELS_METHOD, ProviderHttpError, SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD,
+};
+use provider::{
+    ChatRequest, Completion, ModelCatalog, ModelsRequest, SpeechAudio, SpeechRequest,
+    Transcription, TranscriptionRequest,
 };
 
 pub trait Plugin {
     fn registration(&self) -> Value;
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn ready(&mut self, _host: Host) {}
 
     fn http(&mut self, _request: HttpRequest) -> Result<HttpResponse> {
         Ok(HttpResponse::json(404, json!({"error": "not_found"})))
+    }
+
+    fn supports_wake_events(&self) -> bool {
+        false
+    }
+
+    fn wake_event(&mut self, _event: wake::Observation) -> Result<()> {
+        anyhow::bail!("Wake events are unavailable")
+    }
+
+    fn wake_subscription(&self) -> u64 {
+        0
     }
 
     fn tool(&mut self, _call: ToolCall) -> Result<Value> {
@@ -37,6 +71,18 @@ pub trait Plugin {
 
     fn complete(&mut self, _request: ChatRequest) -> Result<Completion> {
         anyhow::bail!("Chat completion is unavailable")
+    }
+
+    fn supports_chat_streaming(&self) -> bool {
+        false
+    }
+
+    fn complete_stream(
+        &mut self,
+        _request: ChatRequest,
+        _emit: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        anyhow::bail!("Chat streaming is unavailable")
     }
 
     fn synthesize(&mut self, _request: SpeechRequest) -> Result<SpeechAudio> {
@@ -60,7 +106,7 @@ pub trait Plugin {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
@@ -95,16 +141,20 @@ pub struct ToolCall {
     pub voice_turn: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct Host(Arc<Mutex<Output>>);
 
+#[cfg(not(target_arch = "wasm32"))]
 type SendFrame = dyn FnMut(&Value) -> Result<()> + Send;
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Output {
     send: Box<SendFrame>,
     pending_signals: Option<usize>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Host {
     pub fn play_timer_signal(&self) -> Result<()> {
         let mut output = self.0.lock().expect("plugin output");
@@ -125,12 +175,14 @@ impl Host {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Output {
     fn send_timer_signal(&mut self) -> Result<()> {
         (self.send)(&json!({"jsonrpc": "2.0", "method": "play_timer_signal"}))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
 struct Request {
     jsonrpc: String,
@@ -139,10 +191,12 @@ struct Request {
     params: Value,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(plugin: impl Plugin) -> Result<()> {
     run_protocol(plugin, io::stdin().lock(), send)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_protocol(
     mut plugin: impl Plugin,
     input: impl BufRead,
@@ -164,15 +218,32 @@ fn run_protocol(
     plugin.ready(host.clone());
     let speech_streaming =
         init.params["speechStreaming"] == true && plugin.supports_speech_streaming();
+    let chat_streaming = init.params["chatStreaming"] == true && plugin.supports_chat_streaming();
+    let wake_events = init.params["wakeEvents"] == true && plugin.supports_wake_events();
     let mut registration = plugin.registration();
     if speech_streaming {
         registration["speechStreaming"] = json!(true);
+    }
+    if chat_streaming {
+        registration["chatStreaming"] = json!(true);
+    }
+    if wake_events {
+        registration["wakeEvents"] = json!(true);
+        registration["wakeSubscription"] = json!(plugin.wake_subscription());
+    }
+    if init.params["pageIcons"] != true
+        && let Some(pages) = registration.get_mut("pages").and_then(Value::as_array_mut)
+    {
+        for page in pages.iter_mut().filter_map(Value::as_object_mut) {
+            page.remove("icon");
+        }
     }
     host.confirm_ready(&json!({"jsonrpc": "2.0", "id": init.id, "result": registration}))?;
 
     for line in input {
         let request: Request = serde_json::from_str(&line?)?;
         ensure!(request.jsonrpc == "2.0", "Unexpected RPC version");
+        let previous_subscription = wake_events.then(|| plugin.wake_subscription());
         let result = match request.method.as_str() {
             "http" => serde_json::from_value(request.params)
                 .map_err(Into::into)
@@ -187,6 +258,18 @@ fn run_protocol(
             method if method == Capability::Chat.method() => {
                 dispatch(request.params, |request| plugin.complete(request))
             }
+            provider::CHAT_STREAM_METHOD if chat_streaming => dispatch(request.params, |chat| {
+                plugin.complete_stream(chat, &mut |text| {
+                    ensure!(
+                        !text.is_empty() && text.len() <= provider::MAX_CHAT_CHUNK_BYTES,
+                        "Invalid chat chunk length"
+                    );
+                    (host.0.lock().expect("plugin output").send)(&json!({
+                        "jsonrpc": "2.0", "method": provider::CHAT_CHUNK_NOTIFICATION,
+                        "params": {"requestId": request.id, "text": text}
+                    }))
+                })
+            }),
             method if method == Capability::Speech.method() => {
                 dispatch(request.params, |request| plugin.synthesize(request))
             }
@@ -199,20 +282,34 @@ fn run_protocol(
                 })
             }),
             MODELS_METHOD => dispatch(request.params, |request| plugin.models(request)),
+            wake::EVENT_METHOD if wake_events => {
+                dispatch(request.params, |event| plugin.wake_event(event))
+            }
             _ => Err(anyhow::anyhow!("Unknown RPC method")),
         };
-        let response = match result {
+        let mut response = match result {
             Ok(result) => json!({"jsonrpc": "2.0", "id": request.id, "result": result}),
             Err(error) => {
                 eprintln!("Plugin request: {error:#}");
-                json!({"jsonrpc": "2.0", "id": request.id, "error": {"code": -32603, "message": "Plugin request failed"}})
+                let mut reply = json!({"code": -32603, "message": "Plugin request failed"});
+                if let Some(status) = error.downcast_ref::<ProviderHttpError>() {
+                    reply["data"] = json!({"http_status": status.0});
+                }
+                json!({"jsonrpc": "2.0", "id": request.id, "error": reply})
             }
         };
+        if let Some(previous) = previous_subscription {
+            let subscription = plugin.wake_subscription();
+            if subscription != previous {
+                response["wakeSubscription"] = json!(subscription);
+            }
+        }
         (host.0.lock().expect("plugin output").send)(&response)?;
     }
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn dispatch<T: DeserializeOwned, U: Serialize>(
     params: Value,
     handler: impl FnOnce(T) -> Result<U>,
@@ -222,6 +319,7 @@ fn dispatch<T: DeserializeOwned, U: Serialize>(
     )?)?)?)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn send(message: &Value) -> Result<()> {
     let mut output = io::stdout().lock();
     serde_json::to_writer(&mut output, message)?;
@@ -230,12 +328,14 @@ fn send(message: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn data_dir() -> Result<PathBuf> {
     std::env::var_os("GOODWIN_PLUGIN_DATA")
         .map(PathBuf::from)
         .context("GOODWIN_PLUGIN_DATA is missing")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_json<T: Default + DeserializeOwned>(path: &Path) -> Result<T> {
     match fs::File::open(path) {
         Ok(file) => Ok(serde_json::from_reader(file)?),
@@ -244,6 +344,7 @@ pub fn read_json<T: Default + DeserializeOwned>(path: &Path) -> Result<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let directory = path
         .parent()
@@ -257,7 +358,7 @@ pub fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -324,6 +425,36 @@ mod tests {
         assert!(frames.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn page_icons_are_sent_only_to_hosts_that_support_them() {
+        struct PagesPlugin;
+
+        impl Plugin for PagesPlugin {
+            fn registration(&self) -> Value {
+                json!({"apiVersion": 1, "pages": [{"id": "main", "navigation": true, "icon": "timer"}]})
+            }
+        }
+
+        for supported in [false, true] {
+            let mut initialize: Value = serde_json::from_slice(INITIALIZE).unwrap();
+            if supported {
+                initialize["params"]["pageIcons"] = json!(true);
+            }
+            let input = initialize.to_string();
+            run_protocol(PagesPlugin, input.as_bytes(), move |frame| {
+                let page = &frame["result"]["pages"][0];
+                assert_eq!(page["id"], "main");
+                assert_eq!(page["navigation"], true);
+                assert_eq!(
+                    page.get("icon").and_then(Value::as_str),
+                    supported.then_some("timer")
+                );
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
     struct SpeechPlugin;
 
     impl Plugin for SpeechPlugin {
@@ -333,6 +464,10 @@ mod tests {
 
         fn supports_speech_streaming(&self) -> bool {
             true
+        }
+
+        fn synthesize(&mut self, _request: SpeechRequest) -> Result<SpeechAudio> {
+            Err(anyhow::Error::new(ProviderHttpError(429)).context("Upstream request failed"))
         }
 
         fn synthesize_stream(
@@ -347,6 +482,26 @@ mod tests {
                 channels: 1,
             })
         }
+    }
+
+    #[test]
+    fn provider_failures_report_the_http_status_to_the_host() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&frames);
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"apiVersion":1}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"provider.synthesize","params":{"text":"Готово"}}"#,
+        );
+        run_protocol(SpeechPlugin, input.as_bytes(), move |frame| {
+            captured.lock().unwrap().push(frame.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            frames.lock().unwrap()[1]["error"],
+            json!({"code": -32603, "message": "Plugin request failed", "data": {"http_status": 429}})
+        );
     }
 
     #[test]
@@ -383,5 +538,64 @@ mod tests {
             })
         );
         assert_eq!(frames[3], json!({"jsonrpc":"2.0","id":5,"result":null}));
+    }
+
+    #[test]
+    fn chat_chunks_are_negotiated_and_keep_the_request_id() {
+        struct ChatPlugin;
+        impl Plugin for ChatPlugin {
+            fn registration(&self) -> Value {
+                json!({"apiVersion": 1, "providers": ["chat"]})
+            }
+
+            fn supports_chat_streaming(&self) -> bool {
+                true
+            }
+
+            fn complete_stream(
+                &mut self,
+                _request: ChatRequest,
+                emit: &mut dyn FnMut(&str) -> Result<()>,
+            ) -> Result<()> {
+                emit("Готово")?;
+                emit("!")
+            }
+        }
+
+        for enabled in [false, true] {
+            let frames = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&frames);
+            let input = format!(
+                "{}\n{}\n",
+                json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"apiVersion": 1, "chatStreaming": enabled}}),
+                json!({"jsonrpc": "2.0", "id": 7, "method": "provider.complete_stream", "params": {"messages": [], "max_completion_tokens": 256}}),
+            );
+            run_protocol(ChatPlugin, input.as_bytes(), move |frame| {
+                captured.lock().unwrap().push(frame.clone());
+                Ok(())
+            })
+            .unwrap();
+            let frames = frames.lock().unwrap();
+            if enabled {
+                assert_eq!(frames[0]["result"]["chatStreaming"], true);
+                for (frame, text) in frames[1..3].iter().zip(["Готово", "!"]) {
+                    assert_eq!(
+                        *frame,
+                        json!({
+                            "jsonrpc": "2.0", "method": "provider.chat_chunk",
+                            "params": {"requestId": 7, "text": text}
+                        })
+                    );
+                }
+                assert_eq!(
+                    frames[3],
+                    json!({"jsonrpc": "2.0", "id": 7, "result": null})
+                );
+            } else {
+                assert!(frames[0]["result"].get("chatStreaming").is_none());
+                assert_eq!(frames.len(), 2);
+                assert_eq!(frames[1]["error"]["code"], -32603);
+            }
+        }
     }
 }

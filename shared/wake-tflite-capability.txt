@@ -1,0 +1,1 @@
+GOODWIN_WAKE_RUNTIME=livekit-v2-micro-tflite

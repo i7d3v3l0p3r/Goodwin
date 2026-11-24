@@ -40,6 +40,26 @@ def add_bytes(archive: tarfile.TarFile, name: str, data: bytes, mode: int = 0o64
     archive.addfile(info, io.BytesIO(data))
 
 
+def licenses(binary: bytes) -> bytes:
+    license_text = (ROOT / "LICENSE").read_bytes()
+    if b"goodwin.plugins.wasmi.v1" in binary:
+        license_text += b"\n\nWasmi\n\n" + (ROOT / "licenses/wasmi-mit.txt").read_bytes()
+    marker = (ROOT / "shared/wake-tflite-capability.txt").read_bytes().strip()
+    if marker not in binary:
+        return license_text
+    sources = ROOT / "target/wake-tflite"
+    for title, directory in (
+        ("TensorFlow Lite Micro", sources / "tflite-micro"),
+        ("LiveKit WakeWord", sources / "livekit-wakeword"),
+        ("FlatBuffers", sources / "deps/flatbuffers"),
+    ):
+        license_text += b"\n\n" + title.encode() + b"\n\n" + (directory / "LICENSE").read_bytes()
+        notice = directory / "NOTICE"
+        if notice.is_file():
+            license_text += b"\n" + notice.read_bytes()
+    return license_text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/aarch64-unknown-linux-musl/release/goodwin")
@@ -52,7 +72,7 @@ def main() -> None:
     files = {
         "goodwin": (binary, 0o755),
         "start.sh": ((ROOT / "scripts/start-station.sh").read_text().encode(), 0o755),
-        "LICENSE": ((ROOT / "LICENSE").read_bytes(), 0o644),
+        "LICENSE": (licenses(binary), 0o644),
         "README.md": (GUIDE.encode(), 0o644),
     }
     checksums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"

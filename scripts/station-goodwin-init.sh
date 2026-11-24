@@ -5,7 +5,6 @@ umask 077
 bin=/data/opt/bin/goodwin
 data=/data/opt/etc/goodwin
 pidfile=/tmp/goodwin.pid
-log=/tmp/goodwin.log
 
 running() {
     [ -s "$pidfile" ] && start-stop-daemon -K -t -q -p "$pidfile" -x "$bin"
@@ -26,8 +25,9 @@ start() {
         echo "Goodwin executable or settings missing" >&2
         return 1
     fi
+    # BusyBox closes the daemon's output descriptors, so Goodwin opens its own journal.
     start-stop-daemon -S -b -m -q -p "$pidfile" -x "$bin" -- \
-        serve "$data" 0.0.0.0:8787 </dev/null >>"$log" 2>&1
+        serve "$data" 0.0.0.0:8787 </dev/null
 }
 
 stop() {

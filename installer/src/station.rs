@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use crate::{
     package::{self, Source},
-    wake_catalog::Catalog,
+    wake_catalog::{Catalog, Runtime, tflite_marker},
 };
 
 const INSTALL: &str = include_str!("../install-station.sh");
@@ -168,6 +168,7 @@ pub(crate) fn install(
 
     let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
     let (source, bundled_models) = package::prepare(source, work.path(), &log)?;
+    let mut model_file = None;
     let choice = if bundled_models {
         model.bundled_arg()?
     } else {
@@ -186,29 +187,49 @@ pub(crate) fn install(
             }
         };
         if let Some(id) = id {
+            let payload = work.path().join("payload");
+            let binary = fs::read(payload.join("goodwin"))?;
+            let marker = tflite_marker();
+            let with_tflite = binary.windows(marker.len()).any(|bytes| bytes == marker);
+            let runtimes = Runtime::available(with_tflite);
+            drop(binary);
             log(format!("Скачиваем модель активации {id}…"));
             let latest;
             let catalog = match catalog {
                 Some(catalog) => catalog,
                 None => {
-                    latest = Catalog::latest().context("Не удалось загрузить каталог моделей")?;
+                    latest = Catalog::latest(runtimes)
+                        .context("Не удалось загрузить каталог моделей")?;
                     &latest
                 }
             };
-            let payload = work.path().join("payload");
+            let model = catalog
+                .models
+                .iter()
+                .find(|model| model.selection.id == id)
+                .context("В каталоге нет выбранной модели активации")?;
+            ensure!(
+                runtimes.contains(&model.selection.runtime()),
+                "Выбранная сборка Goodwin не поддерживает эту модель активации"
+            );
+            let name = match model.selection.runtime() {
+                Runtime::MicroTflite => "wake-model.tflite",
+                _ => "wake-model.onnx",
+            };
             let selection = catalog
-                .download(id, fs::File::create(payload.join("wake-model.onnx"))?)
+                .download(id, fs::File::create(payload.join(name))?)
                 .context("Не удалось скачать или проверить модель активации")?;
             serde_json::to_writer(
                 fs::File::create(payload.join("wake-model.json"))?,
                 selection,
             )?;
+            model_file = Some(name);
             "catalog"
         } else {
             "keep"
         }
     };
-    let scratch_kib = package::build_payload(work.path(), choice == "catalog")?;
+    let scratch_kib = package::build_payload(work.path(), model_file)?;
     for (name, script) in [("install-station.sh", INSTALL), ("init.sh", INIT)] {
         fs::write(work.path().join(name), script.replace("\r\n", "\n"))?;
     }

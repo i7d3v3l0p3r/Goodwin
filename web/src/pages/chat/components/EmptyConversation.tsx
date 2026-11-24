@@ -21,8 +21,10 @@ export function EmptyConversation(props: { t: Words; snapshot?: Snapshot; reacha
   const [missingSettings, setMissingSettings] = createSignal<string>();
   const providers = () => props.snapshot?.plugins.filter(plugin => plugin.status === "ready" && plugin.providers.includes("chat"));
   const selectedId = () => props.snapshot?.settings.assistant.pipeline.chat.provider;
-  const provider = () => providers()?.find(plugin => plugin.id === selectedId());
-  const settingsId = createMemo(() => props.reachable && provider()?.has_settings ? selectedId() : undefined);
+  const connectionProvider = () => providers()?.find(plugin => plugin.connections?.some(connection => connection.providerId === selectedId()));
+  const connection = () => connectionProvider()?.connections?.find(connection => connection.providerId === selectedId());
+  const provider = () => connectionProvider() ?? providers()?.find(plugin => !plugin.connection_settings && plugin.id === selectedId());
+  const settingsId = createMemo(() => props.reachable && !connection() && provider()?.has_settings ? provider()?.id : undefined);
 
   createEffect(settingsId, id => {
     setMissingSettings(undefined);
@@ -39,10 +41,13 @@ export function EmptyConversation(props: { t: Words; snapshot?: Snapshot; reacha
     const t = props.t;
     const selected = props.snapshot.plugins.find(plugin => plugin.id === selectedId());
     if (selected?.status === "starting" || selected?.status === "updating") return undefined;
-    if (!provider()) return providers()?.length
+    if (!provider()) return providers()?.some(plugin => !plugin.connection_settings || plugin.connections?.length)
       ? { description: t.selectChatProviderHint, label: t.selectChatProvider, href: settingsSectionPath("assistant") }
       : { description: t.installChatProviderHint, label: t.plugins.title, href: "/plugins" };
     const id = settingsId();
+    if (connection()?.protocol === "openrouter" && !connection()?.hasKey) {
+      return { description: t.configureChatProviderHint, label: t.plugins.configure, href: pluginSettingsPath(provider()!.id) };
+    }
     if (id && missingSettings() === id) {
       return { description: t.configureChatProviderHint, label: t.plugins.configure, href: pluginSettingsPath(id) };
     }

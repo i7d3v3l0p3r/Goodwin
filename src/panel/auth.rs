@@ -15,8 +15,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use blake2::{Blake2s256, Digest};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 
 use crate::config::{Access, random_bytes, valid_password_length, verify_password};
 
@@ -33,6 +33,7 @@ const SESSION_FILE: &str = "panel-sessions.json";
 pub(super) struct Auth {
     sessions: HashMap<String, SystemTime>,
     next_login: Option<Instant>,
+    pub(super) changes: watch::Sender<()>,
 }
 
 impl Auth {
@@ -44,7 +45,7 @@ impl Auth {
         };
         Self {
             sessions: sessions.unwrap_or_else(|error| {
-                eprintln!("Could not restore panel sessions: {error:#}");
+                log::warn!("Could not restore panel sessions: {error}");
                 HashMap::new()
             }),
             ..Self::default()
@@ -57,6 +58,7 @@ impl Auth {
         file.as_file().sync_all()?;
         file.persist(dir.join(SESSION_FILE))?;
         self.sessions = sessions;
+        self.changes.send_replace(());
         Ok(())
     }
 }
@@ -117,11 +119,7 @@ fn token(headers: &HeaderMap) -> Option<&str> {
 }
 
 async fn authorized(panel: &Panel, headers: &HeaderMap) -> bool {
-    match panel.app.configuration().access() {
-        Access::Open => true,
-        Access::PendingPassword => false,
-        Access::Password { hash } => has_session(panel, headers, &hash).await,
-    }
+    access_state(panel, headers).await.0.authorized
 }
 
 fn session_key(password_hash: &str, token: &str) -> String {
@@ -135,9 +133,17 @@ fn session_key(password_hash: &str, token: &str) -> String {
 }
 
 async fn has_session(panel: &Panel, headers: &HeaderMap, password_hash: &str) -> bool {
-    let Some(token) = token(headers) else {
-        return false;
-    };
+    session_expiry(panel, headers, password_hash)
+        .await
+        .is_some()
+}
+
+async fn session_expiry(
+    panel: &Panel,
+    headers: &HeaderMap,
+    password_hash: &str,
+) -> Option<SystemTime> {
+    let token = token(headers)?;
     let key = session_key(password_hash, token);
     panel
         .auth
@@ -145,7 +151,8 @@ async fn has_session(panel: &Panel, headers: &HeaderMap, password_hash: &str) ->
         .await
         .sessions
         .get(&key)
-        .is_some_and(|expiry| SystemTime::now() < *expiry)
+        .copied()
+        .filter(|expiry| SystemTime::now() < *expiry)
 }
 
 pub(super) async fn require_password_owner(
@@ -153,13 +160,24 @@ pub(super) async fn require_password_owner(
     request: Request,
     next: Next,
 ) -> Response {
-    let Access::Password { hash } = panel.app.configuration().access() else {
-        return problem(StatusCode::FORBIDDEN, "plugin_password_required");
-    };
-    if !has_session(&panel, request.headers(), &hash).await {
-        return problem(StatusCode::UNAUTHORIZED, "login_required");
+    match password_rejection(&panel, request.headers(), "plugin_password_required").await {
+        None => next.run(request).await,
+        Some(response) => response,
     }
-    next.run(request).await
+}
+
+pub(super) async fn password_rejection(
+    panel: &Panel,
+    headers: &HeaderMap,
+    required: &'static str,
+) -> Option<Response> {
+    let Access::Password { hash } = panel.app.configuration().access() else {
+        return Some(problem(StatusCode::FORBIDDEN, required));
+    };
+    if !has_session(panel, headers, &hash).await {
+        return Some(problem(StatusCode::UNAUTHORIZED, "login_required"));
+    }
+    None
 }
 
 pub(super) async fn require_owner(
@@ -174,15 +192,32 @@ pub(super) async fn require_owner(
     }
 }
 
-pub(super) async fn access(State(panel): State<Panel>, headers: HeaderMap) -> impl IntoResponse {
-    let (protected, authorized, setup_required) = match panel.app.configuration().access() {
-        Access::Open => (false, true, false),
-        Access::PendingPassword => (true, false, true),
-        Access::Password { hash } => (true, has_session(&panel, &headers, &hash).await, false),
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct AccessState {
+    protected: bool,
+    pub(super) authorized: bool,
+    setup_required: bool,
+}
+
+pub(super) async fn access_state(
+    panel: &Panel,
+    headers: &HeaderMap,
+) -> (AccessState, Option<SystemTime>) {
+    let (protected, setup_required, expires) = match panel.app.configuration().access() {
+        Access::Open => (false, false, None),
+        Access::PendingPassword => (true, true, None),
+        Access::Password { hash } => (true, false, session_expiry(panel, headers, &hash).await),
     };
-    Json(json!({
-        "protected": protected, "authorized": authorized, "setup_required": setup_required
-    }))
+    let state = AccessState {
+        protected,
+        authorized: !protected || expires.is_some(),
+        setup_required,
+    };
+    (state, expires)
+}
+
+pub(super) async fn access(State(panel): State<Panel>, headers: HeaderMap) -> impl IntoResponse {
+    Json(access_state(&panel, &headers).await.0)
 }
 
 #[derive(Deserialize)]
@@ -216,7 +251,7 @@ pub(super) async fn setup_password(
         Ok(match create_session(&panel, &hash) {
             Ok(cookie) => session_response(cookie),
             Err(error) => {
-                eprintln!("Could not create initial panel session: {error:#}");
+                log::error!("Could not create initial panel session: {error:#}");
                 StatusCode::NO_CONTENT.into_response()
             }
         })

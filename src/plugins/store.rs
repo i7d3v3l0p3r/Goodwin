@@ -71,7 +71,7 @@ impl Store {
 }
 
 pub(super) fn storage(error: impl std::fmt::Display) -> Failure {
-    eprintln!("Plugin storage: {error}");
+    log::error!("Plugin storage: {error}");
     Failure::Storage
 }
 

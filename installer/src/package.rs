@@ -25,7 +25,6 @@ const LEGACY_FILES: [&str; 5] = [
     "models/NOTICE",
 ];
 const CORE_FILES: [&str; 1] = ["goodwin"];
-const MODEL_FILES: [&str; 2] = ["wake-model.onnx", "wake-model.json"];
 
 pub(crate) enum Source {
     Latest,
@@ -268,7 +267,7 @@ fn verify(path: &Path, name: &str, sums: &HashMap<String, String>) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn build_payload(work: &Path, include_model: bool) -> Result<u64> {
+pub(crate) fn build_payload(work: &Path, model: Option<&str>) -> Result<u64> {
     let input = work.join("payload");
     let output = work.join("payload.tar.gz");
     let mut header = [0; 20];
@@ -286,7 +285,7 @@ pub(crate) fn build_payload(work: &Path, include_model: bool) -> Result<u64> {
     let files = package_files(&input)
         .iter()
         .copied()
-        .chain(MODEL_FILES.into_iter().filter(|_| include_model));
+        .chain(model.into_iter().flat_map(|name| [name, "wake-model.json"]));
     for name in files.clone() {
         writeln!(manifest, "{}  {name}", checksum(&input.join(name))?)?;
     }
@@ -324,7 +323,7 @@ mod tests {
         let unpacked = tempfile::tempdir().unwrap();
         let source = Source::Local(input.path().into());
         prepare(source, unpacked.path(), &|_| {}).unwrap();
-        build_payload(unpacked.path(), false).unwrap();
+        build_payload(unpacked.path(), None).unwrap();
 
         let mut archive = tar::Builder::new(GzEncoder::new(
             File::create(input.path().join(ARCHIVE)).unwrap(),
@@ -341,7 +340,7 @@ mod tests {
         archive.into_inner().unwrap().finish().unwrap();
         let packed = tempfile::tempdir().unwrap();
         prepare(Source::Local(input.path().into()), packed.path(), &|_| {}).unwrap();
-        build_payload(packed.path(), false).unwrap();
+        build_payload(packed.path(), None).unwrap();
         let selected_archive = tempfile::tempdir().unwrap();
         prepare(
             Source::Local(input.path().join(ARCHIVE)),
@@ -349,7 +348,7 @@ mod tests {
             &|_| {},
         )
         .unwrap();
-        build_payload(selected_archive.path(), false).unwrap();
+        build_payload(selected_archive.path(), None).unwrap();
         assert_eq!(
             fs::read(unpacked.path().join("payload/SHA256SUMS")).unwrap(),
             fs::read(packed.path().join("payload/SHA256SUMS")).unwrap(),
@@ -387,7 +386,7 @@ mod tests {
     fn latest_public_release_has_a_valid_station_package() {
         let work = tempfile::tempdir().unwrap();
         let (tag, _) = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
-        build_payload(work.path(), false).unwrap();
+        build_payload(work.path(), None).unwrap();
         assert!(release_tag(&tag));
         assert!(work.path().join("payload.tar.gz").is_file());
     }

@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, ensure};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 
 use crate::assistant::AssistantSettings;
 
@@ -132,6 +133,7 @@ impl Config {
         dir.join("config.json")
     }
 
+    #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub fn load(dir: &Path) -> Result<Self> {
         let file = fs::File::open(Self::path(dir))
             .context("Open config.json (run goodwin setup first)")?;
@@ -175,6 +177,7 @@ pub(crate) struct ConfigStore {
     dir: PathBuf,
     current: Mutex<Config>,
     writer: Mutex<()>,
+    changes: watch::Sender<()>,
 }
 
 impl ConfigStore {
@@ -183,7 +186,12 @@ impl ConfigStore {
             dir: dir.to_owned(),
             current: Mutex::new(config),
             writer: Mutex::new(()),
+            changes: watch::Sender::default(),
         }
+    }
+
+    pub(crate) fn changes(&self) -> watch::Receiver<()> {
+        self.changes.subscribe()
     }
 
     fn current(&self) -> MutexGuard<'_, Config> {
@@ -216,6 +224,7 @@ impl ConfigStore {
         draft.access = Access::Password { hash: hash.clone() };
         draft.save(&self.dir, false)?;
         *self.current() = draft;
+        self.changes.send_replace(());
         Ok(Some(hash))
     }
 
@@ -251,6 +260,7 @@ impl ConfigStore {
         change(&mut draft);
         draft.save(&self.dir, false)?;
         *self.current() = draft;
+        self.changes.send_replace(());
         Ok(())
     }
 }
@@ -265,6 +275,7 @@ pub(crate) fn valid_password_length(password: &str) -> bool {
     (8..=256).contains(&password.len())
 }
 
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 pub fn hash_password(password: &str) -> Result<String> {
     ensure!(
         valid_password_length(password),
@@ -278,6 +289,7 @@ pub fn hash_password(password: &str) -> Result<String> {
         .map_err(|error| anyhow!("{error}"))
 }
 
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 pub fn verify_password(hash: &str, password: &str) -> bool {
     password.len() <= 256
         && PasswordHash::new(hash).is_ok_and(|hash| {

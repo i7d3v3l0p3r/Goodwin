@@ -92,6 +92,7 @@ impl Framing {
     }
 }
 
+#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 pub(super) async fn receive(
     socket: &mut TcpStream,
     data: &mut Vec<u8>,

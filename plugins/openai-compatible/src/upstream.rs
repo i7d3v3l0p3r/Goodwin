@@ -3,23 +3,23 @@ use std::{io::Read, time::Duration};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use goodwin_plugin::provider::{
-    Capability, ChatRequest, Completion, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
-    MAX_SPEECH_CHUNK_BYTES, Model, ModelCatalog, SpeechAudio, SpeechRequest, Transcription,
-    TranscriptionRequest,
-};
-use reqwest::{
-    Method, Url,
-    blocking::{Client, RequestBuilder, Response, multipart},
-    header::{ACCEPT, CONTENT_TYPE},
-    redirect::Policy,
+    Capability, ChatRequest, Completion, MAX_CHAT_BYTES, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
+    MAX_SPEECH_CHUNK_BYTES, Model, ModelCatalog, ProviderHttpError, SpeechAudio, SpeechRequest,
+    Transcription, TranscriptionRequest,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Config;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+mod chat_stream;
+mod transport;
+use transport::{Client, Method, RequestBuilder, Response, send};
+
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    #[default]
     OpenAi,
     OpenRouter,
 }
@@ -50,13 +50,16 @@ struct UpstreamModel {
 impl Upstream {
     pub fn new(protocol: Protocol) -> Result<Self> {
         Ok(Self {
-            client: Client::builder()
-                .connect_timeout(Duration::from_secs(8))
-                .timeout(Duration::from_secs(50))
-                .redirect(Policy::none())
-                .build()?,
+            client: transport::client()?,
             protocol,
         })
+    }
+
+    pub fn with_protocol(&self, protocol: Protocol) -> Self {
+        Self {
+            client: self.client.clone(),
+            protocol,
+        }
     }
 
     pub fn transcribe(
@@ -91,54 +94,91 @@ impl Upstream {
             Protocol::OpenAi => {
                 let wav = STANDARD.decode(request.wav_base64)?;
                 ensure!(wav.len() <= MAX_RECORDING_BYTES, "Invalid recording size");
-                let mut form = multipart::Form::new()
-                    .text("model", model.to_owned())
-                    .text("language", request.language)
-                    .text("response_format", "json")
-                    .part(
-                        "file",
-                        multipart::Part::bytes(wav)
-                            .file_name("recording.wav")
-                            .mime_str("audio/wav")?,
-                    );
+                let mut fields = vec![
+                    ("model".into(), model.to_owned()),
+                    ("language".into(), request.language),
+                    ("response_format".into(), "json".into()),
+                ];
                 for (name, value) in request.selection.parameters {
                     let text = match value {
                         Value::String(text) => text,
                         value => value.to_string(),
                     };
-                    form = form.text(name, text);
+                    fields.push((name, text));
                 }
-                post.multipart(form)
+                transport::wave(post, wav, fields)?
             }
         };
         Ok(serde_json::from_slice(&read(send(post)?, 64_000)?)?)
     }
 
-    pub fn complete(&self, config: &Config, mut request: ChatRequest) -> Result<Completion> {
-        let selection = std::mem::take(&mut request.selection);
+    pub fn complete(&self, config: &Config, request: ChatRequest) -> Result<Completion> {
+        let response = send(self.chat_request(config, &request, false)?)?;
+        read_completion(response)
+    }
+
+    pub fn complete_stream(
+        &self,
+        config: &Config,
+        request: ChatRequest,
+        emit: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        ensure!(
+            request.tools.is_empty(),
+            "Chat text streaming does not support tools"
+        );
+        let response = match send(self.chat_request(config, &request, true)?) {
+            Err(error)
+                if self.protocol == Protocol::OpenAi
+                    && error
+                        .downcast_ref::<ProviderHttpError>()
+                        .is_some_and(|status| matches!(status.0, 400 | 406 | 415 | 422 | 501)) =>
+            {
+                return emit_completion(&self.complete(config, request)?, emit);
+            }
+            result => result?,
+        };
+        let is_event_stream = transport::content_type(&response).is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        });
+        if is_event_stream {
+            return chat_stream::read(response, emit);
+        }
+        emit_completion(&read_completion(response)?, emit)
+    }
+
+    fn chat_request(
+        &self,
+        config: &Config,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<RequestBuilder> {
+        let selection = &request.selection;
         selection.validate()?;
         let model = selection.model.as_deref().unwrap_or(&config.chat_model);
         ensure!(!model.is_empty(), "Configure a chat model");
         let require_parameters = self.protocol == Protocol::OpenRouter && !request.tools.is_empty();
         let mut request = serde_json::to_value(request)?;
-        request
+        let fields = request
             .as_object_mut()
-            .context("Expected a chat request object")?
-            .extend(selection.parameters);
+            .context("Expected a chat request object")?;
+        fields.remove("selection");
+        fields.extend(selection.parameters.clone());
         request["model"] = json!(model);
         if require_parameters {
             request["provider"] = json!({"require_parameters": true});
         }
-        let response = send(
-            self.inference(config, &["chat", "completions"])?
-                .json(&request),
-        )?;
-        let completion: ChatCompletion = serde_json::from_slice(&read(response, 256_000)?)?;
-        completion
-            .choices
-            .into_iter()
-            .next()
-            .context("Server returned no completion")
+        let mut post = self.inference(config, &["chat", "completions"])?;
+        if stream {
+            request["stream"] = json!(true);
+            post = transport::accept(post, "text/event-stream");
+        }
+        Ok(post.json(&request))
     }
 
     pub fn synthesize(&self, config: &Config, request: SpeechRequest) -> Result<SpeechAudio> {
@@ -163,8 +203,7 @@ impl Upstream {
         emit: &mut dyn FnMut(SpeechAudio) -> Result<()>,
     ) -> Result<()> {
         let mut response = send(
-            self.speech_request(config, request)?
-                .header(ACCEPT, "audio/pcm")
+            transport::accept(self.speech_request(config, request)?, "audio/pcm")
                 .timeout(Duration::from_secs(180)),
         )?;
         let (sample_rate, channels) = speech_format(&response)?;
@@ -249,7 +288,7 @@ impl Upstream {
         let mut request = self
             .request(
                 config,
-                Method::GET,
+                Method::Get,
                 if speech {
                     &["audio", "speech", "models"]
                 } else {
@@ -316,11 +355,12 @@ impl Upstream {
     }
 
     fn inference(&self, config: &Config, endpoint: &[&str]) -> Result<RequestBuilder> {
+        #[cfg(not(target_arch = "wasm32"))]
         ensure!(
             self.protocol != Protocol::OpenRouter || !config.key.trim().is_empty(),
             "Configure an OpenRouter API key in the plugin settings"
         );
-        self.request(config, Method::POST, endpoint)
+        self.request(config, Method::Post, endpoint)
     }
 
     fn request(
@@ -329,45 +369,27 @@ impl Upstream {
         method: Method,
         endpoint: &[&str],
     ) -> Result<RequestBuilder> {
-        let mut url = base_url(&config.base_url)?;
-        url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("Invalid API base URL"))?
-            .pop_if_empty()
-            .extend(endpoint);
-        let request = self.client.request(method, url);
-        let key = config.key.trim();
-        Ok(if key.is_empty() {
-            request
-        } else {
-            ensure!(
-                key.bytes().all(|byte| byte.is_ascii_graphic()),
-                "Invalid API key"
-            );
-            request.bearer_auth(key)
-        })
+        transport::request(&self.client, config, method, endpoint)
     }
 }
 
-pub(super) fn base_url(value: &str) -> Result<Url> {
-    ensure!(value.len() <= 2048, "API base URL is too long");
-    let url = Url::parse(value).context("Enter an absolute API base URL")?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.host().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        "Enter an HTTP(S) API base URL without credentials, query or fragment"
-    );
-    Ok(url)
+fn read_completion(response: Response) -> Result<Completion> {
+    let completion: ChatCompletion = serde_json::from_slice(&read(response, MAX_CHAT_BYTES)?)?;
+    completion
+        .choices
+        .into_iter()
+        .next()
+        .context("Server returned no completion")
 }
 
-fn send(request: RequestBuilder) -> Result<Response> {
-    let response = request.send().map_err(reqwest::Error::without_url)?;
-    let status = response.status();
-    ensure!(status.is_success(), "Provider returned HTTP {status}");
-    Ok(response)
+fn emit_completion(
+    completion: &Completion,
+    emit: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    let text = completion.message["content"]
+        .as_str()
+        .context("Missing provider answer")?;
+    chat_stream::emit_text(text, emit)
 }
 
 fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
@@ -407,11 +429,5 @@ fn pcm_format(content_type: &str) -> Result<(u32, u16)> {
 }
 
 fn speech_format(response: &Response) -> Result<(u32, u16)> {
-    pcm_format(
-        response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|header| header.to_str().ok())
-            .unwrap_or_default(),
-    )
+    pcm_format(transport::content_type(response).unwrap_or_default())
 }

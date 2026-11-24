@@ -1,0 +1,630 @@
+use std::fs;
+
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, Request as HttpWireRequest},
+    http::{HeaderMap, header},
+    response::Response,
+    routing::{get, post},
+};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use futures_util::{StreamExt, stream};
+use goodwin_plugin::{
+    provider::{SpeechRequest, TranscriptionRequest},
+    settings::SettingsData,
+    wake::{Frame, Model},
+};
+use tokio::sync::Notify;
+
+use super::*;
+
+macro_rules! wasm {
+    ($name:literal) => {
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/target/wasm32-unknown-unknown/release/goodwin-",
+            $name,
+            ".wasm"
+        ))
+    };
+}
+
+fn install(root: &Path, mut manifest: Value, module: &[u8]) -> Manifest {
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::write(root.join("bin/plugin.wasm"), module).unwrap();
+    fs::create_dir_all(root.join("ui")).unwrap();
+    fs::write(root.join("ui/index.mjs"), "export default null;").unwrap();
+    fs::write(root.join("ui/style.css"), "").unwrap();
+    manifest["target"] = json!("wasm32");
+    manifest["executable"] = json!("bin/plugin.wasm");
+    fs::write(
+        root.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    Manifest::read(root).unwrap()
+}
+
+async fn plugin(root: &Path, data: &Path, manifest: &Manifest) -> (Process, Registration) {
+    let (sound, _) = mpsc::channel(1);
+    let (changes, _) = watch::channel(());
+    Process::start(root, data, manifest, sound, changes)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams() {
+    for (name, source, module) in [
+        (
+            "openai-compatible",
+            include_str!("../../../../plugins/openai-compatible/manifest.json"),
+            wasm!("openai-compatible").as_slice(),
+        ),
+        (
+            "openrouter",
+            include_str!("../../../../plugins/openrouter/manifest.json"),
+            wasm!("openrouter").as_slice(),
+        ),
+    ] {
+        let router_protocol = name == "openrouter";
+        let first_chat = Arc::new(Notify::new());
+        let first_speech = Arc::new(Notify::new());
+        let chat = first_chat.clone();
+        let speech = first_speech.clone();
+        let router = Router::new()
+            .route(
+                "/v1/models",
+                get(move |request: HttpWireRequest| async move {
+                    assert_eq!(request.headers()[header::AUTHORIZATION], "Bearer fixture");
+                    if router_protocol {
+                        assert!(request.uri().query().unwrap().starts_with("endpoints="));
+                    }
+                    axum::Json(json!({"data":[{"id":"fixture"}]}))
+                }),
+            )
+            .route(
+                "/v1/audio/transcriptions",
+                post(move |headers: HeaderMap, body: Bytes| async move {
+                    assert_eq!(headers[header::AUTHORIZATION], "Bearer fixture");
+                    let content_type = headers[header::CONTENT_TYPE].to_str().unwrap();
+                    if router_protocol {
+                        assert_eq!(content_type, "application/json");
+                        let body: Value = serde_json::from_slice(&body).unwrap();
+                        let encoded = body["input_audio"]["data"].as_str().unwrap();
+                        assert!(encoded.starts_with("UklGRg"));
+                        assert_eq!(encoded.len(), MAX_RECORDING_BYTES.div_ceil(3) * 4);
+                    } else {
+                        assert!(content_type.starts_with("multipart/form-data;"));
+                        assert!(body.windows(4).any(|bytes| bytes == b"RIFF"));
+                        assert!(body.len() > MAX_RECORDING_BYTES);
+                    }
+                    axum::Json(json!({"text":"hello"}))
+                }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(
+                    move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                        let chat = chat.clone();
+                        async move {
+                            assert_eq!(headers[header::AUTHORIZATION], "Bearer fixture");
+                            assert_eq!(headers[header::ACCEPT], "text/event-stream");
+                            assert_eq!(body["stream"], true);
+                            streamed(
+                                "text/event-stream",
+                                b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+                                b"data: [DONE]\n\n",
+                                chat,
+                            )
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/v1/audio/speech",
+                post(move |headers: HeaderMap| {
+                    let speech = speech.clone();
+                    async move {
+                        if headers
+                            .get(header::ACCEPT)
+                            .is_none_or(|value| value != "audio/pcm")
+                        {
+                            let silence = stream::iter(
+                                (0..MAX_SPEECH_BYTES).step_by(16 * 1024).map(|offset| {
+                                    static BLOCK: [u8; 16 * 1024] = [0; 16 * 1024];
+                                    Ok::<_, std::io::Error>(Bytes::from_static(
+                                        &BLOCK[..(MAX_SPEECH_BYTES - offset).min(BLOCK.len())],
+                                    ))
+                                }),
+                            );
+                            return Response::builder()
+                                .header(header::CONTENT_TYPE, "audio/pcm")
+                                .body(Body::from_stream(silence))
+                                .unwrap();
+                        }
+                        streamed(
+                            "audio/pcm;rate=16000;channels=2",
+                            &[1, 2, 3, 4, 5],
+                            &[6, 7, 8],
+                            speech,
+                        )
+                    }
+                }),
+            )
+            .layer(DefaultBodyLimit::max(6 * 1024 * 1024));
+        let (server, task) = crate::test_support::serve(router).await;
+        let root = tempfile::tempdir().unwrap();
+        let mut manifest: Value = serde_json::from_str(source).unwrap();
+        if router_protocol {
+            manifest["settings"].as_array_mut().unwrap().push(json!({
+                "id":"base_url", "type":"url", "label":{"en":"URL","ru":"URL"},
+            }));
+            manifest["wasmHttp"] =
+                json!({"baseUrlSetting":"base_url","keySetting":"key","requireKey":true});
+        }
+        let manifest = install(root.path(), manifest, module);
+        let mut settings = SettingsData::default();
+        settings
+            .values
+            .insert("base_url".into(), json!(format!("{server}/v1")));
+        settings.secrets.insert("key".into(), "fixture".into());
+        settings.save(root.path()).unwrap();
+        let (provider, registration) = plugin(root.path(), root.path(), &manifest).await;
+        let provider = if router_protocol {
+            provider
+        } else {
+            crate::plugins::connections::Store::load_or_migrate(
+                name,
+                root.path(),
+                &root.path().join("legacy-router"),
+            )
+            .unwrap();
+            provider.for_connection("default", true)
+        };
+        assert!(registration.chat_streaming && registration.model_catalog);
+        let timer_root = tempfile::tempdir().unwrap();
+        let timer_manifest = install(
+            timer_root.path(),
+            serde_json::from_str(include_str!("../../../../plugins/timers/manifest.json")).unwrap(),
+            wasm!("timers"),
+        );
+        let (timers, _) = plugin(timer_root.path(), timer_root.path(), &timer_manifest).await;
+        let mut wav = vec![0; MAX_RECORDING_BYTES];
+        wav[..4].copy_from_slice(b"RIFF");
+        let selection = serde_json::from_value(json!({"model":"fixture"})).unwrap();
+        let transcript = provider
+            .provider(
+                Capability::Transcription,
+                serde_json::to_value(TranscriptionRequest {
+                    wav_base64: STANDARD.encode(wav),
+                    language: "ru".into(),
+                    selection,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(transcript["text"], "hello");
+        let models = provider
+            .call(MODELS_METHOD, json!({"capability":"chat"}))
+            .await
+            .unwrap();
+        assert!(
+            models["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model["id"] == "fixture")
+        );
+        let mut chat = provider
+            .stream_chat(
+                &serde_json::from_value(json!({
+                    "messages":[], "max_completion_tokens":16, "selection":{"model":"fixture"},
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(8), chat.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_deref(),
+            Some("hello")
+        );
+        timeout(
+            Duration::from_secs(2),
+            timers.call("http", json!({"method":"GET","path":"/timers","body":null})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        first_chat.notify_one();
+        assert!(chat.next().await.unwrap().is_none());
+        if !router_protocol {
+            let mut speech = provider
+                .stream_speech(SpeechRequest {
+                    text: "hello".into(),
+                    selection: serde_json::from_value(json!({"model":"fixture"})).unwrap(),
+                })
+                .unwrap()
+                .unwrap();
+            let first = timeout(Duration::from_secs(8), speech.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!((first.sample_rate, first.channels), (16_000, 2));
+            assert_eq!(STANDARD.decode(first.pcm_base64).unwrap(), [1, 2, 3, 4]);
+            first_speech.notify_one();
+            assert_eq!(
+                STANDARD
+                    .decode(speech.next().await.unwrap().unwrap().pcm_base64)
+                    .unwrap(),
+                [5, 6, 7, 8]
+            );
+            assert!(speech.next().await.unwrap().is_none());
+            let buffered = provider
+                .provider(
+                    Capability::Speech,
+                    json!({
+                        "text":"hello", "selection":{"model":"fixture"},
+                    }),
+                )
+                .await
+                .expect("WASM provider returns a maximum-length buffered PCM reply");
+            assert_eq!(
+                buffered["pcmBase64"].as_str().unwrap().len(),
+                MAX_SPEECH_BYTES.div_ceil(3) * 4
+            );
+        }
+        provider.stop().await;
+        timers.stop().await;
+        task.abort();
+    }
+}
+
+fn streamed(
+    content_type: &'static str,
+    first: &'static [u8],
+    last: &'static [u8],
+    gate: Arc<Notify>,
+) -> Response {
+    let chunks = stream::once(async move { Ok::<_, std::io::Error>(Bytes::from_static(first)) })
+        .chain(stream::once(async move {
+            gate.notified().await;
+            Ok(Bytes::from_static(last))
+        }));
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from_stream(chunks))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn stopping_wasm_plugin_cancels_http_header_and_body_waits() {
+    for stall_headers in [true, false] {
+        let entered = Arc::new(Notify::new());
+        let upstream = entered.clone();
+        let server = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let upstream = upstream.clone();
+                async move {
+                    if stall_headers {
+                        upstream.notify_one();
+                        return std::future::pending::<Response>().await;
+                    }
+                    streamed(
+                        "text/event-stream",
+                        b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+                        b"data: [DONE]\n\n",
+                        upstream,
+                    )
+                }
+            }),
+        );
+        let (address, server) = crate::test_support::serve(server).await;
+        let root = tempfile::tempdir().unwrap();
+        let manifest = install(
+            root.path(),
+            serde_json::from_str(include_str!(
+                "../../../../plugins/openai-compatible/manifest.json"
+            ))
+            .unwrap(),
+            wasm!("openai-compatible"),
+        );
+        let mut settings = SettingsData::default();
+        settings
+            .values
+            .insert("base_url".into(), json!(format!("{address}/v1")));
+        settings.save(root.path()).unwrap();
+        crate::plugins::connections::Store::load_or_migrate(
+            &manifest.id,
+            root.path(),
+            &root.path().join("legacy-router"),
+        )
+        .unwrap();
+        let (process, _) = plugin(root.path(), root.path(), &manifest).await;
+        let provider = process.for_connection("default", true);
+        let mut chat = provider
+            .stream_chat(
+                &serde_json::from_value(json!({
+                    "messages":[], "max_completion_tokens":16, "selection":{"model":"fixture"},
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        if stall_headers {
+            timeout(Duration::from_secs(8), entered.notified())
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(
+                timeout(Duration::from_secs(8), chat.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .as_deref(),
+                Some("hello")
+            );
+        }
+        timeout(Duration::from_secs(2), process.stop())
+            .await
+            .expect("Stopping the plugin cancels a stalled upstream request");
+        assert!(chat.next().await.is_err());
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
+    let router = Router::new()
+        .route(
+            "/first/models",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(headers[header::AUTHORIZATION], "Bearer first-key");
+                axum::Json(json!({"data":[{"id":"first-model"}]}))
+            }),
+        )
+        .route(
+            "/second/models",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(headers[header::AUTHORIZATION], "Bearer second-key");
+                axum::Json(json!({"data":[{"id":"second-model"}]}))
+            }),
+        );
+    let (server, task) = crate::test_support::serve(router).await;
+    let root = tempfile::tempdir().unwrap();
+    let installed = root.path().join("plugins/installed");
+    let slot = installed.join("openai-compatible");
+    let data = slot.join("data");
+    let old_router = installed.join("openrouter/data");
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&old_router).unwrap();
+    let mut old = SettingsData::default();
+    old.values
+        .insert("base_url".into(), json!(format!("{server}/first")));
+    old.secrets.insert("key".into(), "first-key".into());
+    old.save(&data).unwrap();
+    let mut old = SettingsData::default();
+    old.secrets.insert("key".into(), "router-key".into());
+    old.save(&old_router).unwrap();
+    install(
+        &slot.join("package"),
+        serde_json::from_str(include_str!(
+            "../../../../plugins/openai-compatible/manifest.json"
+        ))
+        .unwrap(),
+        wasm!("openai-compatible"),
+    );
+    install(
+        &installed.join("openrouter/package"),
+        serde_json::from_str(include_str!("../../../../plugins/openrouter/manifest.json")).unwrap(),
+        wasm!("openrouter"),
+    );
+
+    let plugins = crate::plugins::Plugins::new(root.path(), crate::station::Player::new());
+    plugins.restore_selected(&["openrouter"]).await;
+    assert!(plugins.settings("openrouter").await.is_ok());
+    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
+    plugins.restore_selected(&["openai-compatible"]).await;
+    assert!(plugins.settings("openrouter").await.is_err());
+    assert!(
+        plugins
+            .update_settings(
+                "openrouter",
+                serde_json::from_value(json!({"key":"obsolete-key"})).unwrap(),
+            )
+            .await
+            .is_err()
+    );
+    let legacy = serde_json::to_value(plugins.catalog())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "openrouter")
+        .unwrap()
+        .clone();
+    assert_eq!(legacy["settings_redirect"], "openai-compatible");
+    assert_eq!(legacy["providers"], json!([]));
+    assert!(
+        plugins
+            .provider("openai-compatible", Capability::Chat)
+            .is_some()
+    );
+    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
+    let old =
+        serde_json::to_value(plugins.connections("openai-compatible").await.ok().unwrap()).unwrap();
+    let router = old
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["providerId"] == "openrouter")
+        .unwrap();
+    assert_eq!(router["protocol"], "openrouter");
+    assert_eq!(router["hasKey"], true);
+    assert_eq!(router["speechStreaming"], false);
+    assert!(router.get("key").is_none());
+    let (id, views) = plugins.save_connection("openai-compatible", serde_json::from_value(json!({
+        "name":"Second server", "protocol":"openai", "baseUrl":format!("{server}/second"), "key":"second-key",
+    })).unwrap()).await.ok().unwrap();
+    let provider = format!("openai-compatible:{id}");
+    assert!(
+        views
+            .iter()
+            .any(|connection| connection.provider_id == provider)
+    );
+    let first = plugins
+        .models("openai-compatible", Capability::Chat)
+        .await
+        .ok()
+        .unwrap();
+    let second = plugins
+        .models(&provider, Capability::Chat)
+        .await
+        .ok()
+        .unwrap();
+    assert_eq!(first.models[0].id, "first-model");
+    assert_eq!(second.models[0].id, "second-model");
+    let (_, views) = plugins.save_connection("openai-compatible", serde_json::from_value(json!({
+        "id": id, "name":"Renamed server", "protocol":"openai", "baseUrl":format!("{server}/second"),
+    })).unwrap()).await.ok().unwrap();
+    assert!(
+        serde_json::to_string(&views)
+            .unwrap()
+            .contains("Renamed server")
+    );
+    let (stale, _) = plugins.provider("openrouter", Capability::Chat).unwrap();
+    plugins
+        .remove_connection("openai-compatible", "openrouter".into())
+        .await
+        .ok()
+        .unwrap();
+    assert!(plugins.provider("openrouter", Capability::Chat).is_none());
+    let error = stale
+        .models(Capability::Chat)
+        .await
+        .err()
+        .expect("The removed connection rejects the stale request");
+    assert!(error.to_string().contains("Plugin rejected the request"));
+    assert!(stale.running());
+    assert_eq!(
+        plugins
+            .models(&provider, Capability::Chat)
+            .await
+            .ok()
+            .unwrap()
+            .models[0]
+            .id,
+        "second-model"
+    );
+    plugins.shutdown().await;
+    plugins.restore().await;
+    assert!(plugins.provider("openrouter", Capability::Chat).is_none());
+    assert_eq!(
+        plugins
+            .models(&provider, Capability::Chat)
+            .await
+            .ok()
+            .unwrap()
+            .models[0]
+            .id,
+        "second-model"
+    );
+    plugins.remove("openai-compatible").await.ok().unwrap();
+    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
+    assert!(plugins.settings("openrouter").await.is_ok());
+    plugins.shutdown().await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn wasm_dataset_captures_audio_and_reopens_saved_clips() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = install(
+        root.path(),
+        serde_json::from_str(include_str!(
+            "../../../../plugins/wake-dataset/manifest.json"
+        ))
+        .unwrap(),
+        wasm!("wake-dataset"),
+    );
+    let data = tempfile::tempdir().unwrap();
+    let (dataset, registration) = plugin(root.path(), data.path(), &manifest).await;
+    assert!(registration.wake_events);
+    assert_eq!(dataset.wake_subscription(), None);
+    dataset
+        .call(
+            "http",
+            json!({"method":"PUT", "path":"/capture", "body":{"enabled":true}}),
+        )
+        .await
+        .unwrap();
+    let subscription = dataset.wake_subscription().unwrap();
+    dataset
+        .observe_wake(
+            subscription,
+            &Event::Frame(Frame {
+                stream: 10,
+                index: 0,
+                model: Model {
+                    id: "fixture".into(),
+                    wake_word: "Goodwin".into(),
+                    kind: "micro".into(),
+                    sha256: "abc".into(),
+                },
+                ended_at_ms: 1000,
+                sample_rate: 16_000,
+                gain: 1.0,
+                threshold: 0.4,
+                score: 0.5,
+                pcm: STANDARD.encode([0; 2560]),
+            }),
+        )
+        .unwrap();
+    dataset
+        .observe_wake(subscription, &Event::End { stream: 10 })
+        .unwrap();
+    let list = dataset
+        .call(
+            "http",
+            json!({"method":"GET", "path":"/clips", "body":null}),
+        )
+        .await
+        .unwrap();
+    let id = list["body"]["clips"][0]["id"].as_u64().unwrap();
+    dataset
+        .call(
+            "http",
+            json!({"method":"PUT", "path":format!("/clips/{id}"), "body":{"label":"positive"}}),
+        )
+        .await
+        .unwrap();
+    dataset.stop().await;
+    let (dataset, _) = plugin(root.path(), data.path(), &manifest).await;
+    assert_eq!(dataset.wake_subscription(), None);
+    assert!(
+        data.path()
+            .join(format!("clips/positive/{id}.clip"))
+            .is_file()
+    );
+    let audio = dataset
+        .call(
+            "http",
+            json!({"method":"GET", "path":format!("/clips/{id}/audio"), "body":null}),
+        )
+        .await
+        .unwrap();
+    let wav = STANDARD
+        .decode(audio["body"]["wav"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&wav[..4], b"RIFF");
+    assert_eq!(wav.len(), 44 + 2560);
+    dataset.stop().await;
+}

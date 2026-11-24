@@ -253,6 +253,83 @@ async fn password_mode_protects_settings_and_session_survives_restart_until_logo
 }
 
 #[tokio::test]
+async fn diagnostic_logs_require_a_signed_in_session_and_disable_caching() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    fs::write(dir.path().join("goodwin.log"), "Goodwin journal fixture\n").unwrap();
+    let (panel, task) = start_panel(dir.path()).await;
+    let client = reqwest::Client::new();
+    let logs = format!("{panel}/api/diagnostics/logs");
+    let unauthorized = client.get(&logs).send().await.unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    let cookie = login(&client, &panel).await;
+    let response = client
+        .get(&logs)
+        .header(header::COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["supported"], true);
+    assert!(body.get("kernel").is_some());
+    assert_eq!(body["goodwin"], "Goodwin journal fixture");
+    task.abort();
+}
+
+#[tokio::test]
+async fn private_plugin_routes_require_a_signed_in_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = |access| async {
+        let app = App::new(
+            dir.path().into(),
+            Config {
+                access,
+                settings: Settings::default(),
+                system_prompt: String::new(),
+            },
+            Player::new(),
+            DEFAULT_MICROPHONE_GAIN,
+        );
+        app.plugins.mock_plugin(
+            "fixture",
+            crate::plugins::Process::mock_rpc(|_, _| {
+                Ok(json!({"status": 200, "body": {"private": true}}))
+            }),
+            json!({"apiVersion": 1, "routes": [
+                {"method": "GET", "path": "/private", "password_required": true}
+            ]}),
+        );
+        serve(router(app)).await
+    };
+    let (panel, task) = start(Access::Open).await;
+    let response = reqwest::get(format!("{panel}/api/plugins/fixture/private"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "plugin_password_required");
+    task.abort();
+
+    let (panel, task) = start(Access::Password {
+        hash: hash_password(PASSWORD).unwrap(),
+    })
+    .await;
+    let client = reqwest::Client::new();
+    let cookie = login(&client, &panel).await;
+    let response = client
+        .get(format!("{panel}/api/plugins/fixture/private"))
+        .header(header::COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    task.abort();
+}
+
+#[tokio::test]
 async fn expired_session_is_rejected_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path());

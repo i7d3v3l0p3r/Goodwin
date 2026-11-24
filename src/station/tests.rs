@@ -409,6 +409,12 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
         .unwrap();
     assert_eq!(state["messages"][1]["text"], "Четыре");
     assert_eq!(state["last"]["error"], Value::Null);
+    let voice = &state["last_voice"];
+    assert_eq!(voice["source"], "manual_test");
+    assert_eq!(voice["playback"], "buffered");
+    assert_eq!(voice["answer"], "Четыре");
+    assert!(!voice["transcript"].as_str().unwrap().is_empty());
+    assert!(voice["started_at_ms"].as_u64().unwrap() > 0);
     let stages: Vec<_> = state["last"]["timings"]
         .as_array()
         .unwrap()
@@ -444,6 +450,7 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
         .await
         .unwrap();
     assert_eq!(state["last"]["error"], "provider_failed");
+    assert_eq!(state["last_voice"]["answer"], "Четыре");
     assert_eq!(sink.lock().unwrap().len(), 1);
 
     let status = client
@@ -457,6 +464,11 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
     wait_for(|| app.active().is_none()).await;
     let state = serde_json::to_value(app.snapshot()).unwrap();
     assert_eq!(state["last"]["error"], Value::Null);
+    app.clear_chat().expect("clear chat");
+    let state = serde_json::to_value(app.snapshot()).unwrap();
+    assert_eq!(state["last_voice"]["transcript"], Value::Null);
+    assert_eq!(state["last_voice"]["answer"], Value::Null);
+    assert_eq!(state["last_voice"]["playback"], "buffered");
 
     for task in [capture, mic_task, panel_task] {
         task.abort();
@@ -486,13 +498,16 @@ async fn wake_word_without_a_transcribed_question_plays_a_local_retry_prompt() {
     );
     assert!(app.microphone_connected(&app.microphone_mute()));
     app.set_model(true, None);
-    let id = app.start(Source::Wake).ok().expect("start wake request");
+    let id = app.start(Source::Wake).expect("start wake request");
     app.stage(id, Stage::Transcribing);
     app.voice(id, vec![128; 320], true, RecordingGain::Automatic(4.0))
         .await;
 
     let state = serde_json::to_value(app.snapshot()).unwrap();
     assert_eq!(state["last"]["error"], "no_speech");
+    assert_eq!(state["last_voice"]["transcript"], "Гудвин.");
+    assert_eq!(state["last_voice"]["error_stage"], "transcribing");
+    assert_eq!(state["last_voice"]["playback"], "announcement");
     assert_eq!(state["messages"], json!([]));
     let played = sink.lock().unwrap();
     assert_eq!(played.len(), 1);

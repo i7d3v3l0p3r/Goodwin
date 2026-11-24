@@ -8,3 +8,4 @@
 /datasets/
 .codex
 prototypes
+__pycache__/

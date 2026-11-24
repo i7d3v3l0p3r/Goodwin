@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "title": { "en": "OpenRouter", "ru": "OpenRouter" },
   "apiVersion": 1,
+  "wasmHttp": { "baseUrl": "https://openrouter.ai/api/v1", "keySetting": "key", "requireKey": true },
   "settings": [
     {
       "id": "key", "type": "secret",

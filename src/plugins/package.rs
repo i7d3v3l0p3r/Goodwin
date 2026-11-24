@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use super::settings::{self, Field};
 
@@ -40,9 +41,33 @@ pub struct Manifest {
     api_version: u32,
     target: String,
     pub executable: String,
+    pub(super) wasm_state_file: Option<String>,
+    pub(super) wasm_http: Option<WasmHttp>,
+    #[serde(default)]
+    pub(super) provider_connections: bool,
+    #[serde(default)]
+    #[cfg_attr(
+        not(all(feature = "wasm-plugins", target_os = "linux")),
+        allow(dead_code)
+    )]
+    pub(super) wasm_storage: bool,
     pub web: Option<Web>,
     #[serde(default)]
     pub(super) settings: Vec<Field>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct WasmHttp {
+    pub(super) base_url: Option<String>,
+    pub(super) base_url_setting: Option<String>,
+    pub(super) key_setting: String,
+    #[serde(default)]
+    #[cfg_attr(
+        not(all(feature = "wasm-plugins", target_os = "linux")),
+        allow(dead_code)
+    )]
+    pub(super) require_key: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -104,6 +129,10 @@ pub fn path(value: &str) -> bool {
 }
 
 impl Manifest {
+    pub(super) fn is_wasm(&self) -> bool {
+        self.target == "wasm32"
+    }
+
     pub fn read(root: &Path) -> Result<Self> {
         let file = fs::File::open(root.join("manifest.json")).context("Missing plugin manifest")?;
         ensure!(
@@ -129,18 +158,47 @@ impl Manifest {
             "Unsupported plugin API version"
         );
         settings::validate(&manifest.settings)?;
+        ensure!(
+            !manifest.provider_connections || (manifest.is_wasm() && manifest.wasm_http.is_some()),
+            "Provider connections require WASM HTTP access"
+        );
+        if let Some(http) = &manifest.wasm_http {
+            ensure!(
+                http.base_url.is_some() != http.base_url_setting.is_some()
+                    && settings::wasm_http_fields(
+                        &manifest.settings,
+                        http.base_url_setting.as_deref(),
+                        &http.key_setting,
+                    ),
+                "Invalid WASM HTTP configuration"
+            );
+            if let Some(base) = &http.base_url {
+                let url = Url::parse(base)?;
+                ensure!(
+                    base.len() <= 2048 && url.scheme() == "https" && settings::valid_base_url(base),
+                    "Invalid fixed WASM HTTP URL"
+                );
+            }
+        }
         let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         ensure!(
-            manifest.target == target,
+            manifest.is_wasm() || manifest.target == target,
             "Plugin requires {} but this host is {target}",
             manifest.target
         );
         ensure!(
             manifest.executable.starts_with("bin/")
                 && path(&manifest.executable)
+                && (!manifest.is_wasm() || manifest.executable.ends_with(".wasm"))
                 && root.join(&manifest.executable).is_file(),
             "Missing plugin executable"
         );
+        if let Some(file) = &manifest.wasm_state_file {
+            ensure!(
+                manifest.is_wasm() && path(file) && !file.contains('/') && file.ends_with(".json"),
+                "Invalid WASM state filename"
+            );
+        }
         if let Some(web) = &manifest.web {
             ensure!(
                 web.ui_kit_version == UI_KIT_VERSION,
@@ -170,10 +228,12 @@ impl Manifest {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                _root.join(&self.executable),
-                fs::Permissions::from_mode(0o700),
-            )?;
+            if !self.is_wasm() {
+                fs::set_permissions(
+                    _root.join(&self.executable),
+                    fs::Permissions::from_mode(0o700),
+                )?;
+            }
         }
         Ok(())
     }

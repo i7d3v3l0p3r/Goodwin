@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+### English
+
+- Timers is available as a WASM package and retains saved timers when upgrading from the native package.
+- The Timers WASM package is smaller with `no_std` and link-time optimization.
+- OpenAI-compatible manages multiple named provider connections, including OpenRouter. Existing provider selections and credentials carry over when the unified WASM package is installed.
+- After migration, standalone OpenRouter settings open the unified provider settings. Deleting the migrated connection leaves the other connections available.
+- Pending WASM provider requests are cancelled when Goodwin stops. Updates also wait for older Goodwin builds to finish stopping when their first stop attempt times out.
+- WASM provider connections share Goodwin's HTTP client and support streaming. The Wake-word dataset WASM package keeps recordings in its existing data directory.
+- Station builds run WASM plugins through Wasmi with per-plugin memory and execution limits. WASM plugins can register pages, HTTP routes and assistant tools.
+- Goodwin embeds precompressed panel assets and serves them as gzip.
+- An optional Hotpath build profiles Rust allocations by function and thread on the Station.
+- Station builds can run Micro INT8 wake-word models through TensorFlow Lite Micro. The panel and installer check the model runtime against the Goodwin build.
+- Micro wake-word models use one inference graph and reuse the recurrent state tensors between audio frames.
+- The panel receives status and chat updates as they happen. Replies from OpenRouter and streaming OpenAI-compatible servers appear as the model generates them.
+- Plugins can choose an icon for each page listed in the sidebar and mobile menu. Timers and Wake-word dataset have their own icons.
+- The **Wake-word dataset** plugin collects audio windows and model scores while Goodwin listens. Set a minimum score for collection, listen to and label recordings, download labelled WAVs with their metadata, or clear all recordings from the panel.
+- The Goodwin service writes a timestamped journal with startup, microphone, plugin, and request events. Failed requests include the stage and provider when available. The journal rotates automatically and is visible in **Settings → Diagnostics**.
+- **Settings → Diagnostics** shows what Goodwin heard and answered in its latest voice request, with stage timings, models and errors. The page also shows system and Goodwin resource usage on Linux and gives signed-in users access to recent kernel and Goodwin logs.
+- Check for and install Goodwin updates from **Settings → Goodwin update** on a Station set up with the installer. Goodwin verifies the release, restarts, and restores the previous version if the new service fails its startup check.
+
+### Русский
+
+- Плагин «Таймеры» доступен в WASM и сохраняет таймеры при обновлении с нативного пакета.
+- Размер WASM-пакета «Таймеров» уменьшен за счёт `no_std` и LTO.
+- OpenAI-compatible поддерживает несколько именованных подключений, включая OpenRouter. При установке объединённого WASM-пакета сохраняются ключи и выбранные в ассистенте подключения.
+- После миграции настройки отдельного OpenRouter открывают страницу объединённого провайдера. Удаление перенесённого подключения не прерывает работу остальных.
+- При остановке Goodwin отменяет ожидающие HTTP-запросы WASM-провайдеров. Если старая версия не остановилась с первой попытки, установщик дожидается её завершения.
+- WASM-подключения провайдеров используют общий HTTP-клиент Goodwin и поддерживают потоковые ответы. WASM-пакет датасета слова активации сохраняет записи в том же каталоге данных.
+- Сборки для Станции запускают WASM-плагины через Wasmi с лимитами памяти и выполнения для каждого плагина. WASM-плагины могут регистрировать страницы, HTTP-маршруты и инструменты ассистента.
+- Goodwin встраивает заранее сжатые файлы панели и отдаёт их в gzip.
+- Диагностическая сборка с Hotpath показывает аллокации Rust по функциям и потокам на Станции.
+- Сборка для Станции поддерживает модели активации Micro INT8 через TensorFlow Lite Micro. Панель и установщик проверяют, поддерживает ли сборка нужный рантайм модели.
+- Модели активации Micro используют один граф вычислений и переиспользуют тензоры состояния между аудиокадрами.
+- Панель получает изменения состояния и чата сразу. Ответы OpenRouter и OpenAI-совместимых серверов с поддержкой стриминга появляются по мере генерации.
+- Плагины могут выбирать иконку для каждой страницы в боковом и мобильном меню. У «Таймеров» и «Датасета слова активации» свои иконки.
+- Плагин **Датасет слова активации** сохраняет аудиофрагменты и оценки модели во время прослушивания. В панели можно задать минимальную оценку для записи, прослушать и разметить фрагменты, скачать размеченные WAV с метаданными или удалить все записи.
+- Сервис Goodwin ведёт журнал с отметками времени для запуска, микрофона, плагинов и запросов. При сбое видны этап и провайдер, если он участвовал в запросе. Журнал автоматически ротируется и доступен в разделе **Настройки → Диагностика**.
+- В разделе **Настройки → Диагностика** можно посмотреть, что Гудвин услышал и ответил в последнем голосовом запросе, длительность этапов, модели и ошибки. Там же доступны показатели ресурсов системы и Goodwin на Linux, а после входа с паролем — свежие записи журналов ядра и Goodwin.
+- Проверяйте и устанавливайте обновления Goodwin из раздела **Настройки → Обновление Goodwin** на Станции, настроенной установщиком. Goodwin проверяет релиз, перезапускается и восстанавливает предыдущую версию, если новая не проходит проверку запуска.
+
 ## [0.2.0] - 2026-11-24
 
 ### English

@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use goodwin_plugin::provider::Capability;
@@ -10,6 +10,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::{
+    assistant::{PipelineSettings, StageSettings},
     config::{Config, ConfigStore, RequestSettings, Settings},
     plugins::{Plugins, View as PluginView},
     providers::Provider,
@@ -27,7 +28,7 @@ pub(crate) use voice::VOICE_INSTRUCTIONS;
 const CHAT_INSTRUCTIONS: &str =
     "You are Goodwin, a home assistant. Reply concisely in the user's language.";
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Chat,
@@ -36,7 +37,7 @@ pub enum Source {
     WakeTest,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     AwaitingWake,
@@ -47,7 +48,7 @@ pub enum Stage {
     Playing,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
     Busy,
@@ -56,6 +57,7 @@ pub enum Failure {
     Model,
     ProviderUnavailable,
     ProviderFailed,
+    ChatInterrupted,
     Playback,
     NoSpeech,
     NoWake,
@@ -77,12 +79,74 @@ pub struct Report {
     message_id: Option<u64>,
 }
 
+#[derive(Clone, Serialize)]
+struct VoiceModel {
+    provider: String,
+    model: Option<String>,
+}
+
+impl From<&StageSettings> for VoiceModel {
+    fn from(settings: &StageSettings) -> Self {
+        Self {
+            provider: settings.provider.clone(),
+            model: settings.selection.model.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PlaybackMode {
+    Streaming,
+    Buffered,
+    Announcement,
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceDetails {
+    started_at_ms: u64,
+    transcription: VoiceModel,
+    chat: VoiceModel,
+    speech: VoiceModel,
+    transcript: Option<String>,
+    answer: Option<String>,
+    playback: Option<PlaybackMode>,
+    error_stage: Option<Stage>,
+}
+
+impl VoiceDetails {
+    fn new(pipeline: &PipelineSettings) -> Self {
+        Self {
+            started_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            transcription: (&pipeline.transcription).into(),
+            chat: (&pipeline.chat).into(),
+            speech: (&pipeline.speech).into(),
+            transcript: None,
+            answer: None,
+            playback: None,
+            error_stage: None,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct VoiceReport {
+    #[serde(flatten)]
+    report: Report,
+    #[serde(flatten)]
+    details: VoiceDetails,
+}
+
 struct Turn {
     id: u64,
     started: Instant,
     report: Report,
     request: RequestSettings,
     wake_word: Option<String>,
+    voice: Option<VoiceDetails>,
 }
 
 pub(crate) struct ActiveTurn {
@@ -111,11 +175,13 @@ struct Runtime {
     voice_turn: u64,
     active: Option<Turn>,
     last: Option<Report>,
-    last_voice_test: Option<Report>,
+    last_voice: Option<VoiceReport>,
+    last_voice_test: Option<VoiceReport>,
     microphone: bool,
     model: bool,
     wake_model: Option<Selection>,
     messages: VecDeque<Message>,
+    chat_draft: Option<Message>,
 }
 
 pub struct App {
@@ -123,6 +189,9 @@ pub struct App {
     config: ConfigStore,
     runtime: Mutex<Runtime>,
     microphone_mute: watch::Sender<bool>,
+    changes: watch::Sender<()>,
+    chat_changes: watch::Sender<()>,
+    panel_shutdown: watch::Sender<bool>,
     pub player: Player,
     pub(crate) indicators: Indicators,
     pub plugins: Plugins,
@@ -140,12 +209,30 @@ pub struct Snapshot {
     wake_model: Option<Selection>,
     active: Option<Report>,
     last: Option<Report>,
-    last_voice_test: Option<Report>,
+    last_voice: Option<VoiceReport>,
+    last_voice_test: Option<VoiceReport>,
     messages: VecDeque<Message>,
     plugins: Vec<PluginView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) chat_draft: Option<Message>,
+}
+
+impl Snapshot {
+    pub(crate) fn chat_cursor(&self) -> Option<(u64, usize)> {
+        self.chat_draft
+            .as_ref()
+            .map(|draft| (draft.id, draft.text.len()))
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct ChatDelta {
+    id: u64,
+    text: String,
 }
 
 impl App {
+    #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub(crate) fn new(
         dir: PathBuf,
         config: Config,
@@ -161,6 +248,9 @@ impl App {
             config,
             runtime: Mutex::new(Runtime::default()),
             microphone_mute,
+            changes: watch::Sender::default(),
+            chat_changes: watch::Sender::default(),
+            panel_shutdown: watch::Sender::default(),
             player,
             indicators: Indicators::new(),
             plugins,
@@ -175,6 +265,36 @@ impl App {
 
     fn runtime(&self) -> MutexGuard<'_, Runtime> {
         self.runtime.lock().expect("runtime mutex")
+    }
+
+    pub(crate) fn changes(&self) -> watch::Receiver<()> {
+        self.changes.subscribe()
+    }
+
+    pub(crate) fn chat_changes(&self) -> watch::Receiver<()> {
+        self.chat_changes.subscribe()
+    }
+
+    pub(crate) fn panel_shutdown(&self) -> watch::Receiver<bool> {
+        self.panel_shutdown.subscribe()
+    }
+
+    pub(crate) fn stop_panel(&self) {
+        self.panel_shutdown.send_replace(true);
+    }
+
+    pub(crate) fn chat_delta(&self, cursor: &mut Option<(u64, usize)>) -> Option<ChatDelta> {
+        let runtime = self.runtime();
+        let draft = runtime.chat_draft.as_ref()?;
+        let offset = cursor
+            .filter(|(id, _)| *id == draft.id)
+            .map_or(0, |(_, offset)| offset);
+        let text = draft.text.get(offset..).filter(|text| !text.is_empty())?;
+        *cursor = Some((draft.id, draft.text.len()));
+        Some(ChatDelta {
+            id: draft.id,
+            text: text.to_owned(),
+        })
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -192,9 +312,11 @@ impl App {
             wake_model: runtime.wake_model.clone(),
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
+            last_voice: runtime.last_voice.clone(),
             last_voice_test: runtime.last_voice_test.clone(),
             messages: runtime.messages.clone(),
             plugins: self.plugins.catalog(),
+            chat_draft: runtime.chat_draft.clone(),
         }
     }
 
@@ -221,7 +343,10 @@ impl App {
         if mute.has_changed().unwrap_or(true) || *mute.borrow() {
             return false;
         }
-        runtime.microphone = true;
+        if !runtime.microphone {
+            runtime.microphone = true;
+            self.changes.send_replace(());
+        }
         true
     }
 
@@ -230,7 +355,9 @@ impl App {
     }
 
     fn end_capture(&self, runtime: &mut Runtime, error: Failure) {
-        runtime.microphone = false;
+        if std::mem::take(&mut runtime.microphone) {
+            self.changes.send_replace(());
+        }
         if let Some(id) = runtime.active.as_ref().and_then(|turn| {
             matches!(turn.report.stage, Stage::AwaitingWake | Stage::Recording).then_some(turn.id)
         }) {
@@ -242,6 +369,7 @@ impl App {
         let mut runtime = self.runtime();
         runtime.model = loaded;
         runtime.wake_model = selection;
+        self.changes.send_replace(());
     }
 
     pub(crate) fn take_pending_wake_model(&self) -> Option<PendingModel> {
@@ -256,6 +384,7 @@ impl App {
         let pending = self.wake_models.take_pending()?;
         runtime.model = true;
         runtime.wake_model = Some(pending.selection.clone());
+        self.changes.send_replace(());
         Some(pending)
     }
 
@@ -306,6 +435,8 @@ impl App {
                 error: None,
                 message_id: None,
             },
+            voice: (source != Source::Chat)
+                .then(|| VoiceDetails::new(&request.settings.assistant.pipeline)),
             request,
             wake_word: runtime
                 .wake_model
@@ -313,6 +444,8 @@ impl App {
                 .map(|model| model.wake_word.clone()),
         });
         self.indicators.stage(source, stage);
+        self.changes.send_replace(());
+        log::info!("Request started id={id} source={source:?}");
         Ok(id)
     }
 
@@ -324,6 +457,7 @@ impl App {
                 turn.report.stage == Stage::AwaitingWake && stage != Stage::AwaitingWake;
             turn.report.stage = stage;
             self.indicators.stage(turn.report.source, stage);
+            self.changes.send_replace(());
             if wake_test_done {
                 self.wake_models.changed.notify_one();
             }
@@ -339,23 +473,64 @@ impl App {
             let mut turn = runtime.active.take().expect("matching active turn");
             turn.record_timing();
             turn.report.error = error;
+            let source = turn.report.source;
+            let elapsed_ms: u64 = turn.report.timings.iter().map(|timing| timing.ms).sum();
+            if let Some(error) = error {
+                let stage = turn
+                    .voice
+                    .as_ref()
+                    .and_then(|details| details.error_stage)
+                    .unwrap_or(turn.report.stage);
+                let capability = match stage {
+                    Stage::Transcribing => Some(Capability::Transcription),
+                    Stage::Thinking => Some(Capability::Chat),
+                    Stage::Synthesizing | Stage::Playing => Some(Capability::Speech),
+                    Stage::AwaitingWake | Stage::Recording => None,
+                };
+                let provider = capability.map_or("-", |capability| {
+                    turn.request
+                        .settings
+                        .assistant
+                        .pipeline
+                        .get(capability)
+                        .provider
+                        .as_str()
+                });
+                log::warn!(
+                    "Request failed id={id} source={source:?} stage={stage:?} provider={provider} error={error:?} elapsed_ms={elapsed_ms}"
+                );
+            } else {
+                log::info!("Request completed id={id} source={source:?} elapsed_ms={elapsed_ms}");
+            }
             self.indicators.finish(turn.report.source);
             if turn.report.stage == Stage::AwaitingWake {
                 self.wake_models.changed.notify_one();
             }
-            if let Some(id) = turn.report.message_id
+            if let Some(error) = error
+                && let Some(id) = turn.report.message_id
                 && let Some(message) = runtime
                     .messages
                     .iter_mut()
                     .rev()
                     .find(|message| message.id == id)
             {
-                message.error = error;
+                message.error.get_or_insert(error);
             }
-            if matches!(turn.report.source, Source::ManualTest | Source::WakeTest) {
-                runtime.last_voice_test = Some(turn.report.clone());
+            if let Some(mut details) = turn.voice {
+                if error.is_some() {
+                    details.error_stage.get_or_insert(turn.report.stage);
+                }
+                let voice = VoiceReport {
+                    report: turn.report.clone(),
+                    details,
+                };
+                if matches!(turn.report.source, Source::ManualTest | Source::WakeTest) {
+                    runtime.last_voice_test = Some(voice.clone());
+                }
+                runtime.last_voice = Some(voice);
             }
             runtime.last = Some(turn.report);
+            self.changes.send_replace(());
         }
     }
 
@@ -365,11 +540,46 @@ impl App {
             return Err(Failure::Busy);
         }
         runtime.messages.clear();
+        let Runtime {
+            last_voice,
+            last_voice_test,
+            ..
+        } = &mut *runtime;
+        for voice in [last_voice, last_voice_test].into_iter().flatten() {
+            voice.details.transcript = None;
+            voice.details.answer = None;
+        }
+        self.changes.send_replace(());
         Ok(())
+    }
+
+    fn update_voice(&self, id: u64, update: impl FnOnce(&mut VoiceDetails, Stage)) {
+        let mut runtime = self.runtime();
+        if let Some(turn) = runtime.active.as_mut().filter(|turn| turn.id == id)
+            && let Some(details) = &mut turn.voice
+        {
+            update(details, turn.report.stage);
+        }
     }
 
     fn push(&self, role: &'static str, text: String) {
         self.runtime().push_message(role, text);
+        self.changes.send_replace(());
+    }
+
+    fn append_chat(&self, id: u64, text: &str) {
+        let mut runtime = self.runtime();
+        if !runtime.active.as_ref().is_some_and(|turn| turn.id == id) {
+            return;
+        }
+        if let Some(draft) = &mut runtime.chat_draft {
+            draft.text.push_str(text);
+        } else if !text.trim().is_empty() {
+            runtime.chat_draft = Some(runtime.message("assistant", text.trim_start().to_owned()));
+        } else {
+            return;
+        }
+        self.chat_changes.send_replace(());
     }
 
     pub async fn chat(&self, id: u64, text: String) {
@@ -379,7 +589,14 @@ impl App {
                 return;
             };
             let request = turn.request.clone();
-            let context: Vec<_> = runtime.messages.iter().rev().take(12).cloned().collect();
+            let context: Vec<_> = runtime
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| message.role != "assistant" || message.error.is_none())
+                .take(12)
+                .cloned()
+                .collect();
             let message_id = runtime.push_message("user", text.clone());
             runtime
                 .active
@@ -387,6 +604,7 @@ impl App {
                 .expect("matching active turn")
                 .report
                 .message_id = Some(message_id);
+            self.changes.send_replace(());
             (request, context)
         };
         let instructions = if request.system_prompt.is_empty() {
@@ -405,7 +623,7 @@ impl App {
                 return;
             }
         };
-        let error = match provider
+        let answer = provider
             .reply(
                 &text,
                 instructions,
@@ -413,33 +631,61 @@ impl App {
                     .iter()
                     .rev()
                     .map(|message| (message.role, message.text.as_str())),
+                Some(&mut |text| self.append_chat(id, text)),
             )
-            .await
-        {
-            Ok(answer) => {
-                self.push("assistant", answer);
+            .await;
+        let mut runtime = self.runtime();
+        if !runtime.active.as_ref().is_some_and(|turn| turn.id == id) {
+            return;
+        }
+        let draft = runtime.chat_draft.take();
+        let error = match (answer, draft) {
+            (Ok(text), Some(mut draft)) => {
+                draft.text = text;
+                runtime.add_message(draft);
                 None
             }
-            Err(error) => Some(Provider::failure(error)),
+            (Ok(text), None) => {
+                runtime.push_message("assistant", text);
+                None
+            }
+            (Err(error), Some(mut draft)) => {
+                draft.error = Some(Failure::ChatInterrupted);
+                if let Some(turn) = &mut runtime.active {
+                    turn.report.message_id = Some(draft.id);
+                }
+                runtime.add_message(draft);
+                Some(Provider::failure(error))
+            }
+            (Err(error), None) => Some(Provider::failure(error)),
         };
-        self.finish(id, error);
+        self.finish_turn(&mut runtime, id, error);
     }
 }
 
 impl Runtime {
     fn push_message(&mut self, role: &'static str, text: String) -> u64 {
+        let message = self.message(role, text);
+        let id = message.id;
+        self.add_message(message);
+        id
+    }
+
+    fn message(&mut self, role: &'static str, text: String) -> Message {
         self.next_message += 1;
-        let id = self.next_message;
-        self.messages.push_back(Message {
-            id,
+        Message {
+            id: self.next_message,
             role,
             text,
             error: None,
-        });
+        }
+    }
+
+    fn add_message(&mut self, message: Message) {
+        self.messages.push_back(message);
         if self.messages.len() > 60 {
             self.messages.pop_front();
         }
-        id
     }
 }
 

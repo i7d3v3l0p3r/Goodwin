@@ -68,7 +68,7 @@ impl Field {
     }
 }
 
-fn valid_base_url(text: &str) -> bool {
+pub(super) fn valid_base_url(text: &str) -> bool {
     Url::parse(text).is_ok_and(|url| {
         matches!(url.scheme(), "http" | "https")
             && url.host().is_some()
@@ -77,6 +77,16 @@ fn valid_base_url(text: &str) -> bool {
             && url.query().is_none()
             && url.fragment().is_none()
     })
+}
+
+pub(super) fn wasm_http_fields(fields: &[Field], base: Option<&str>, key: &str) -> bool {
+    base.is_none_or(|id| {
+        fields
+            .iter()
+            .any(|field| field.id == id && field.kind == Kind::Url)
+    }) && fields
+        .iter()
+        .any(|field| field.id == key && field.kind == Kind::Secret)
 }
 
 pub(super) fn validate(fields: &[Field]) -> Result<()> {

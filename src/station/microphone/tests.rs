@@ -31,6 +31,8 @@ fn queue_model(app: &App) -> tokio::sync::oneshot::Receiver<()> {
             wake_word: "Егор".into(),
             tier: "standard".into(),
             sha256: "0".repeat(64),
+            runtime: None,
+            score_threshold: None,
         },
         WakeModel::load(&path).unwrap(),
     )

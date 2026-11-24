@@ -11,7 +11,7 @@ use tokio::sync::{Notify, oneshot};
 
 use crate::wake_catalog::{Catalog, Selection};
 
-use super::{FRAME_SAMPLES, WakeModel};
+use super::{FRAME_SAMPLES, WakeModel, runtimes};
 
 const MANIFEST: &str = "wake-model.json";
 
@@ -44,7 +44,7 @@ pub(crate) enum InstallError {
 impl WakeModels {
     pub(crate) fn new(dir: &Path) -> Self {
         let selected = read_selection(dir).unwrap_or_else(|error| {
-            eprintln!("Could not read wake model selection: {error:#}");
+            log::warn!("Could not read wake model selection: {error}");
             None
         });
         Self {
@@ -72,11 +72,13 @@ impl WakeModels {
 
     pub(crate) fn initial_model(&self) -> Result<(WakeModel, Option<Selection>)> {
         let selected = self.selected();
-        let path = selected.as_ref().map_or_else(
-            || legacy_model_path(&self.dir),
-            |selection| self.model_path(selection),
-        );
-        let model = WakeModel::load(&path)?;
+        let (model, path) = if let Some(selection) = &selected {
+            let path = self.model_path(selection);
+            (WakeModel::load_selected(&path, selection)?, path)
+        } else {
+            let path = legacy_model_path(&self.dir);
+            (WakeModel::load(&path)?, path)
+        };
         println!("Loaded {} wake model from {}", model.kind(), path.display());
         Ok((model, selected))
     }
@@ -96,7 +98,7 @@ impl WakeModels {
         {
             return Err(InstallError::Busy);
         }
-        let catalog = Catalog::latest().map_err(InstallError::Unavailable)?;
+        let catalog = Catalog::latest(runtimes()).map_err(InstallError::Unavailable)?;
         if catalog.tag != tag {
             return Err(InstallError::CatalogChanged);
         }
@@ -116,7 +118,7 @@ impl WakeModels {
         fs::create_dir_all(&models)?;
         let mut model_file = NamedTempFile::new_in(&models)?;
         let selected = catalog.download(id, model_file.as_file_mut())?;
-        let mut model = WakeModel::load(model_file.path())?;
+        let mut model = WakeModel::load_selected(model_file.path(), selected)?;
         model.predict(&[0; FRAME_SAMPLES])?;
         model.reset()?;
 
@@ -130,7 +132,7 @@ impl WakeModels {
         if let Err(error) = manifest.persist(self.dir.join(MANIFEST)) {
             if previous
                 .as_ref()
-                .is_none_or(|old| old.sha256 != selected.sha256)
+                .is_none_or(|old| self.model_path(old) != target)
             {
                 let _ = fs::remove_file(&target);
             }
@@ -138,11 +140,13 @@ impl WakeModels {
         }
 
         let activated = self.queue_model(selected.clone(), model);
-        if let Some(old) = previous.filter(|old| old.sha256 != selected.sha256)
-            && let Err(error) = fs::remove_file(self.model_path(&old))
+        if let Some(old) = previous
+            .map(|old| self.model_path(&old))
+            .filter(|old| *old != target)
+            && let Err(error) = fs::remove_file(old)
             && error.kind() != ErrorKind::NotFound
         {
-            eprintln!("Could not remove the previous wake model: {error}");
+            log::warn!("Could not remove the previous wake model: {error}");
         }
         Ok((selected.clone(), activated))
     }
@@ -167,9 +171,11 @@ impl WakeModels {
     }
 
     fn model_path(&self, selected: &Selection) -> PathBuf {
-        self.dir
-            .join("wake-models")
-            .join(format!("{}.onnx", selected.sha256))
+        self.dir.join("wake-models").join(format!(
+            "{}.{}",
+            selected.sha256,
+            selected.runtime().format()
+        ))
     }
 }
 
