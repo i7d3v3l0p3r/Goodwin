@@ -519,19 +519,20 @@ impl Guest {
             host.chunks = chunks;
             host.shutdown = shutdown;
         }
-        let result = self.exchange(frame, response_limit);
+        let fuel = if self.input.is_some() {
+            1_000_000_000
+        } else {
+            CALL_FUEL
+        };
+        let result = self.exchange(frame, response_limit, fuel);
         if let Some(host) = self.store.data_mut().host.as_mut() {
             host.finish();
         }
         result
     }
 
-    fn exchange(&mut self, frame: &[u8], response_limit: usize) -> Result<Reply> {
-        self.store.set_fuel(if self.input.is_some() {
-            1_000_000_000
-        } else {
-            CALL_FUEL
-        })?;
+    fn exchange(&mut self, frame: &[u8], response_limit: usize, fuel: u64) -> Result<Reply> {
+        self.store.set_fuel(fuel)?;
         let offset = if let Some(input) = &self.input {
             input
                 .call(&mut self.store, frame.len() as i32)
@@ -846,19 +847,17 @@ mod tests {
         assert_eq!(response(reply, 1).unwrap().unwrap()["status"], 200);
     }
 
-    #[tokio::test]
-    async fn wasm_instruction_limit_traps_a_guest_loop() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("loop.wasm");
-        fs::write(&path, LIMITS).unwrap();
-        let guest = Instance::open(path).await.unwrap();
-        let error = timeout(
-            Duration::from_secs(2),
-            guest.call(json!({"id":1,"method":"loop"})),
-        )
-        .await
-        .expect("guest loop must finish through the instruction limit")
-        .unwrap_err();
+    #[test]
+    fn wasm_instruction_limit_traps_a_guest_loop() {
+        let mut guest = Guest::from_bytes(LIMITS).unwrap();
+        let fuel = 10_000;
+        let (reply, _) = guest
+            .exchange(br#"{"id":1,"method":"grow"}"#, FRAME_LIMIT, fuel)
+            .unwrap();
+        assert_eq!(response(reply, 1).unwrap().unwrap()["status"], 200);
+        let error = guest
+            .exchange(br#"{"id":1,"method":"loop"}"#, FRAME_LIMIT, fuel)
+            .unwrap_err();
         assert_eq!(
             error
                 .downcast_ref::<wasmi::Error>()

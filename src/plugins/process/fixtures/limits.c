@@ -12,7 +12,7 @@ __attribute__((export_name("goodwin_call")))
 int32_t goodwin_call(int32_t length) {
     for (int32_t i = 0; i + 3 < length; ++i) {
         if (buffer[i] == 'l' && buffer[i + 1] == 'o' && buffer[i + 2] == 'o' && buffer[i + 3] == 'p') {
-            for (;;) {}
+            for (volatile uint32_t tick = 0; tick < 100000; ++tick) {}
         }
     }
     if (__builtin_wasm_memory_grow(0, 8) != (uintptr_t)-1) {

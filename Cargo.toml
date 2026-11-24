@@ -1,6 +1,6 @@
 [package]
 name = "goodwin"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "An alternative voice assistant for Yandex Station"
 license = "MIT"

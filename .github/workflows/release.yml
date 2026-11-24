@@ -61,14 +61,19 @@ jobs:
             exit 1
           }
 
-      - name: Build, test and package
+      - name: Build panel and test dependencies
         run: |
           npm ci --prefix web
           npm run build --prefix web
           python scripts/build-wake-tflite.py
           rustup target add wasm32-unknown-unknown
           python scripts/build-wasm-plugins.py
-          cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins
+
+      - name: Test with Station runtimes
+        run: cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins
+
+      - name: Build and package the Station release
+        run: |
           python scripts/build-wake-tflite.py --target aarch64-musl
           target=aarch64-unknown-linux-musl
           linker="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
