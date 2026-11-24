@@ -1,5 +1,6 @@
 import { createSignal, onSettled, Show } from "solid-js";
 import { Button } from "../../../components/ui-kit/Button";
+import { ConfirmDialog } from "../../../components/ui-kit/ConfirmDialog";
 import { InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { ApiError, api } from "../../../helpers/api";
 import { errorLabel, type Words } from "../../../helpers/words";
@@ -24,6 +25,7 @@ export function CoreUpdate(props: { t: Words; passwordProtected: boolean }) {
   const [action, setAction] = createSignal<"check" | "install">();
   const [actionError, setActionError] = createSignal("");
   const [connectionError, setConnectionError] = createSignal("");
+  const [confirmation, setConfirmation] = createSignal<string>();
   const job = () => status()?.job;
   const updating = () => job()?.phase === "downloading" || job()?.phase === "installing";
   const completed = () => job()?.phase === "completed" && job()?.version === status()?.version;
@@ -98,13 +100,16 @@ export function CoreUpdate(props: { t: Words; passwordProtected: boolean }) {
               {action() === "check" ? t().coreUpdateChecking : t().coreUpdateCheck}
             </Button>
             <Show when={release()?.available ? release() : undefined}>{next =>
-              <Button type="button" variant="primary" disabled={!ready()} onClick={() => void install(next().version)}>
+              <Button type="button" variant="primary" disabled={!ready()} onClick={() => setConfirmation(next().version)}>
                 {t().coreUpdateInstall(next().version)}
               </Button>
             }</Show>
           </div>
           <Show when={release()?.available && !updating()}>
             <p class={styles.note}>{t().coreUpdateRestart}</p>
+            <a href={`https://github.com/i7d3v3l0p3r/Goodwin/releases/tag/v${encodeURIComponent(release()!.version)}`}>
+              {t().coreUpdateNotes}
+            </a>
           </Show>
           <Show when={release()?.available === false}>
             <p role="status" class={styles.note}>{t().coreUpdateCurrent}</p>
@@ -134,5 +139,12 @@ export function CoreUpdate(props: { t: Words; passwordProtected: boolean }) {
         ? <p role="status" class={styles.note}>{t().coreUpdateReconnecting}</p>
         : <InlineError>{errorLabel(t(), code())}</InlineError>
     }</Show>
+    <ConfirmDialog open={Boolean(confirmation())} title={t().coreUpdateInstall(confirmation() ?? "")}
+      description={t().coreUpdateRestart} cancel={t().cancel} confirm={t().coreUpdateConfirm} disabled={!ready()}
+      onCancel={() => setConfirmation(undefined)} onConfirm={() => {
+        const version = confirmation();
+        setConfirmation(undefined);
+        if (version && ready()) void install(version);
+      }} />
   </div>;
 }

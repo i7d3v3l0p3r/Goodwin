@@ -7,6 +7,7 @@ use std::{
 
 use goodwin_plugin::provider::Capability;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::{
@@ -77,6 +78,16 @@ pub struct Report {
     error: Option<Failure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_test: Option<ChatTest>,
+    #[serde(skip)]
+    tested_configuration: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatTest {
+    model: VoiceModel,
+    answered: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -175,6 +186,7 @@ struct Runtime {
     voice_turn: u64,
     active: Option<Turn>,
     last: Option<Report>,
+    last_chat_test: Option<Report>,
     last_voice: Option<VoiceReport>,
     last_voice_test: Option<VoiceReport>,
     microphone: bool,
@@ -209,8 +221,11 @@ pub struct Snapshot {
     wake_model: Option<Selection>,
     active: Option<Report>,
     last: Option<Report>,
+    last_chat_test: Option<Report>,
+    chat_test_current: bool,
     last_voice: Option<VoiceReport>,
     last_voice_test: Option<VoiceReport>,
+    voice_test_current: bool,
     messages: VecDeque<Message>,
     plugins: Vec<PluginView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,10 +314,29 @@ impl App {
 
     pub fn snapshot(&self) -> Snapshot {
         let runtime = self.runtime();
+        let request = self.config.request_settings();
+        let chat_test_current = runtime
+            .last_chat_test
+            .as_ref()
+            .and_then(|report| report.tested_configuration)
+            .is_some_and(|tested| {
+                tested == self.test_configuration(Source::Chat, &request, &runtime)
+            });
+        let voice_test_current = runtime
+            .last_voice_test
+            .as_ref()
+            .and_then(|test| {
+                test.report
+                    .tested_configuration
+                    .map(|tested| (test.report.source, tested))
+            })
+            .is_some_and(|(source, tested)| {
+                tested == self.test_configuration(source, &request, &runtime)
+            });
         let RequestSettings {
             settings,
             system_prompt,
-        } = self.config.request_settings();
+        } = request;
         Snapshot {
             settings,
             system_prompt,
@@ -312,12 +346,45 @@ impl App {
             wake_model: runtime.wake_model.clone(),
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
+            last_chat_test: runtime.last_chat_test.clone(),
+            chat_test_current,
             last_voice: runtime.last_voice.clone(),
             last_voice_test: runtime.last_voice_test.clone(),
+            voice_test_current,
             messages: runtime.messages.clone(),
             plugins: self.plugins.catalog(),
             chat_draft: runtime.chat_draft.clone(),
         }
+    }
+
+    fn test_configuration(
+        &self,
+        source: Source,
+        request: &RequestSettings,
+        runtime: &Runtime,
+    ) -> [u8; 32] {
+        let settings = &request.settings;
+        let pipeline = &settings.assistant.pipeline;
+        let input = if source == Source::Chat {
+            let providers = self
+                .plugins
+                .provider_revisions([(&pipeline.chat.provider, Capability::Chat)]);
+            serde_json::to_vec(&(&pipeline.chat, &request.system_prompt, providers))
+        } else {
+            let providers = self.plugins.provider_revisions([
+                (&pipeline.transcription.provider, Capability::Transcription),
+                (&pipeline.chat.provider, Capability::Chat),
+                (&pipeline.speech.provider, Capability::Speech),
+            ]);
+            serde_json::to_vec(&(
+                settings,
+                &request.system_prompt,
+                providers,
+                runtime.model,
+                &runtime.wake_model,
+            ))
+        };
+        Sha256::digest(input.expect("test configuration is serializable")).into()
     }
 
     pub(crate) fn microphone_mute(&self) -> watch::Receiver<bool> {
@@ -401,6 +468,14 @@ impl App {
     }
 
     pub fn start(&self, source: Source) -> Result<u64, Failure> {
+        self.start_turn(source, false)
+    }
+
+    pub(crate) fn start_chat_test(&self) -> Result<u64, Failure> {
+        self.start_turn(Source::Chat, true)
+    }
+
+    fn start_turn(&self, source: Source, chat_test: bool) -> Result<u64, Failure> {
         let request = self.config.request_settings();
         let mut runtime = self.runtime();
         if source != Source::Chat && *self.microphone_mute.borrow() {
@@ -434,6 +509,13 @@ impl App {
                 timings: Vec::new(),
                 error: None,
                 message_id: None,
+                chat_test: chat_test.then(|| ChatTest {
+                    model: (&request.settings.assistant.pipeline.chat).into(),
+                    answered: false,
+                }),
+                tested_configuration: (chat_test
+                    || matches!(source, Source::ManualTest | Source::WakeTest))
+                .then(|| self.test_configuration(source, &request, &runtime)),
             },
             voice: (source != Source::Chat)
                 .then(|| VoiceDetails::new(&request.settings.assistant.pipeline)),
@@ -529,6 +611,9 @@ impl App {
                 }
                 runtime.last_voice = Some(voice);
             }
+            if turn.report.chat_test.is_some() {
+                runtime.last_chat_test = Some(turn.report.clone());
+            }
             runtime.last = Some(turn.report);
             self.changes.send_replace(());
         }
@@ -589,14 +674,18 @@ impl App {
                 return;
             };
             let request = turn.request.clone();
-            let context: Vec<_> = runtime
-                .messages
-                .iter()
-                .rev()
-                .filter(|message| message.role != "assistant" || message.error.is_none())
-                .take(12)
-                .cloned()
-                .collect();
+            let context: Vec<_> = if turn.report.chat_test.is_some() {
+                Vec::new()
+            } else {
+                runtime
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter(|message| message.role != "assistant" || message.error.is_none())
+                    .take(12)
+                    .cloned()
+                    .collect()
+            };
             let message_id = runtime.push_message("user", text.clone());
             runtime
                 .active
@@ -637,6 +726,13 @@ impl App {
         let mut runtime = self.runtime();
         if !runtime.active.as_ref().is_some_and(|turn| turn.id == id) {
             return;
+        }
+        if let Some(test) = runtime
+            .active
+            .as_mut()
+            .and_then(|turn| turn.report.chat_test.as_mut())
+        {
+            test.answered = answer.as_ref().is_ok_and(|text| !text.trim().is_empty());
         }
         let draft = runtime.chat_draft.take();
         let error = match (answer, draft) {

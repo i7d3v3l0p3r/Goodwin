@@ -7,6 +7,11 @@ fail() {
     exit 2
 }
 
+fail_model() {
+    printf '%s\n' 'GOODWIN_INSTALL_ERROR model'
+    fail "$1"
+}
+
 upload=${1:-}
 choice=${2:-}
 case "${upload%/*}" in /data/opt|/tmp) ;; *) fail 'Invalid upload directory.' ;; esac
@@ -88,10 +93,12 @@ cleanup() {
     if [ "$changed" = 1 ]; then
         echo 'Installation failed. Restoring the previous state.' >&2
         if ! rollback; then
+            printf '%s\n' 'GOODWIN_INSTALL_ERROR recovery_failed'
             echo "Automatic recovery failed. Backup: $stage" >&2
             echo "Installation lock retained: $lock" >&2
             exit 1
         fi
+        printf '%s\n' 'GOODWIN_INSTALL_ERROR rolled_back'
         if [ "$choice" = core ]; then printf '%s\n' 'GOODWIN_CORE_ROLLED_BACK'; fi
     fi
     if [ -n "$stage" ]; then rm -rf "$stage" || :; fi
@@ -101,6 +108,7 @@ cleanup() {
 }
 
 if ! mkdir "$lock"; then
+    printf '%s\n' 'GOODWIN_INSTALL_ERROR locked'
     echo "Another installation is in progress or needs recovery: $lock" >&2
     exit 1
 fi
@@ -128,6 +136,7 @@ if exists "$bin" || exists "$data" || exists "$hook"; then
         [ -L "$bin" ] || [ -L "$data" ] || [ -L "$hook" ] ||
         [ -L "$data/models" ] || [ -L "$data/model" ] ||
         [ -L "$data/wake-models" ] || [ -L "$data/wake-model.json" ]; then
+        printf '%s\n' 'GOODWIN_INSTALL_ERROR layout'
         echo 'The existing installation does not match the Goodwin service layout.' >&2
         exit 1
     fi
@@ -143,9 +152,10 @@ elif [ "$choice" = catalog ]; then
     if [ -f "$payload/wake-model.tflite" ]; then
         extension=tflite
         "$stage/new-bin" wake-check "$payload/wake-model.tflite" "$payload/wake-model.json" ||
-            fail 'The selected Goodwin build could not load the INT8 wake model.'
+            fail_model 'The selected Goodwin build could not load the INT8 wake model.'
     else
-        "$stage/new-bin" wake-check "$payload/wake-model.onnx"
+        "$stage/new-bin" wake-check "$payload/wake-model.onnx" ||
+            fail_model 'The selected Goodwin build could not load the ONNX wake model.'
     fi
     hash=$(sha256sum "$payload/wake-model.$extension")
     mkdir "$stage/new-catalog-models"
@@ -160,17 +170,18 @@ elif [ -d "$payload/models" ]; then
     fi
     case "$model" in standard|micro) ;; *) fail 'Invalid bundled model selection.' ;; esac
     echo "Checking the $model wake model…"
-    "$stage/new-bin" wake-check "$payload/models/$model.onnx"
+    "$stage/new-bin" wake-check "$payload/models/$model.onnx" ||
+        fail_model 'The selected Goodwin build could not load the bundled wake model.'
     printf '%s\n' "$model" > "$stage/new-model"
 elif [ "$choice" != keep ] || [ "$mode" = fresh ]; then
-    fail 'The selected wake model is missing from the installation payload.'
+    fail_model 'The selected wake model is missing from the installation payload.'
 fi
 
 if [ "$mode" = update ] && [ "$choice" != catalog ] &&
     [ -f "$data/wake-model.json" ] &&
     grep -q '"runtime"[[:space:]]*:[[:space:]]*"livekit-v2-micro-tflite"' "$data/wake-model.json"; then
     "$stage/new-bin" wake-check --installed "$data" ||
-        fail 'The selected Goodwin build could not load the installed INT8 wake model.'
+        fail_model 'The selected Goodwin build could not load the installed INT8 wake model.'
 fi
 
 if [ "$mode" = fresh ]; then
@@ -250,6 +261,12 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         printf '%s' "$access" | grep -Eq '"authorized"[[:space:]]*:[[:space:]]*(true|false)' &&
         printf '%s' "$access" | grep -Eq '"protected"[[:space:]]*:[[:space:]]*(true|false)'; then
         changed=0
+        if version=$("$bin" --version 2>/dev/null); then
+            case "$version" in
+                ''|*[!0-9A-Za-z.+-]*) ;;
+                *) printf 'GOODWIN_INSTALL_VERSION %s\n' "$version" ;;
+            esac
+        fi
         echo "GOODWIN_INSTALL_OK $mode"
         exit 0
     fi

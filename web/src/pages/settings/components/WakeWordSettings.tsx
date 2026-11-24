@@ -86,8 +86,9 @@ export function WakeWordSettings(props: {
   }
 
   return <section aria-labelledby="wake-word-title">
-    <h3 id="wake-word-title">{props.t.wakeWord}</h3>
+    <h2 id="wake-word-title">{props.t.wakeWord}</h2>
     <Switch label={props.t.listening(props.currentModel?.wake_word ?? props.t.defaultWakeWord)}
+      hint={props.t.voiceRecovery.listeningHint}
       checked={props.listening} disabled={props.pending} onChange={props.toggleListening} />
     <label class={styles.sensitivity} for="sensitivity">
       <span>{props.t.sensitivity} <output aria-hidden="true">{Math.round(sensitivity() * 100)}%</output></span>

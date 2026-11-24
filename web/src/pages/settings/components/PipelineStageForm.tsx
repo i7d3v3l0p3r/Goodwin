@@ -28,11 +28,12 @@ export function PipelineStageForm(props: {
   t: Words;
   language: Language;
   invalidParameters: boolean;
+  focusOnOpen: boolean;
   change: (changes: Partial<StageDraft>) => void;
 }) {
   const providers = createMemo(() => {
-    const available = props.plugins.filter(plugin => plugin.providers.includes(props.capability));
-    const ids = new Set(available.flatMap(plugin => plugin.connections ?? []).map(connection => connection.providerId));
+    const available = props.plugins.filter(plugin => plugin.status === "ready" && plugin.providers.includes(props.capability));
+    const ids = new Set(props.plugins.flatMap(plugin => plugin.connections ?? []).map(connection => connection.providerId));
     return available.flatMap(plugin => {
       if (plugin.connection_settings) return (plugin.connections ?? []).map(connection => ({
         id: connection.providerId, name: connection.name, model_catalog: plugin.model_catalog,
@@ -72,6 +73,11 @@ export function PipelineStageForm(props: {
       parameters.open = true;
       parameters.querySelector("textarea")?.focus();
     }
+  });
+  createEffect(() => props.focusOnOpen, focus => {
+    if (!focus) return;
+    stage.open = true;
+    stage.querySelector("summary")?.focus();
   });
 
   const models = () => catalog()?.models ?? [];

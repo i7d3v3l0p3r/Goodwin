@@ -16,6 +16,8 @@ const LICENSES: &[u8] = include_bytes!("../../web/dist/panel-licenses.md.gz");
 pub(super) fn routes() -> Router<Panel> {
     let mut router = Router::new().route("/", get(index));
     for path in [
+        "/setup",
+        "/station",
         "/settings",
         "/settings/activation",
         "/settings/assistant",

@@ -8,6 +8,7 @@ import { SaveActions } from "../../components/ui-kit/SaveActions";
 import { PageHeader } from "../../components/PageHeader";
 import { api, ApiError, type PluginSettings } from "../../helpers/api";
 import { protectDraft } from "../../helpers/drafts";
+import { setupPath } from "../../helpers/readiness";
 import { usePanel } from "../../helpers/panel";
 import { pluginSettingsPath } from "../../helpers/plugins";
 import { errorLabel } from "../../helpers/words";
@@ -130,6 +131,7 @@ function PluginSettingsPage() {
         "PATCH", Object.fromEntries(updates));
       if (request === generation) {
         populate(updated);
+        panel.updateProviderSettings(params.id, updated);
         for (const { id, type } of updated.fields) {
           if (type !== "secret") continue;
           const input = form.elements.namedItem(id);
@@ -149,7 +151,10 @@ function PluginSettingsPage() {
   return <>
     <PageHeader title={plugin()?.title[panel.language()] ?? panel.t().settings} />
     <section class={["gw-page", styles.body]} aria-label={panel.t().settings}>
-      <a class={styles.link} href="/plugins">{words().back}</a>
+      <div class="gw-row">
+        <a class={styles.link} href="/plugins">{words().back}</a>
+        <a class={styles.link} href={setupPath}>{panel.t().firstRun.checkWork}</a>
+      </div>
       <Show when={plugin()?.status === "error"}>
         <p class={styles.description}>{errorLabel(panel.t(), "plugin_unavailable")}</p>
       </Show>

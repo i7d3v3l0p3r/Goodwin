@@ -1,10 +1,12 @@
-import { createSignal, Show } from "solid-js";
+import { useNavigate } from "@solidjs/router";
+import { createEffect, createSignal, Show } from "solid-js";
 import { Brand } from "../../components/Brand";
 import { Button } from "../../components/ui-kit/Button";
 import { Field } from "../../components/ui-kit/Field";
 import { InlineError } from "../../components/ui-kit/Feedback";
 import { usePanel } from "../../helpers/panel";
-import { errorLabel } from "../../helpers/words";
+import { errorLabel, type Language } from "../../helpers/words";
+import { setupPath, stationPath } from "../../helpers/readiness";
 import styles from "./LoginPage.module.css";
 
 export function LoginPage() {
@@ -12,6 +14,12 @@ export function LoginPage() {
 
   return <main class={styles.entry}>
     <Brand class={styles.brand} />
+    <label class={styles.language}>
+      {panel.t().language}
+      <select value={panel.language()} onChange={event => panel.changeLanguage(event.currentTarget.value as Language)}>
+        <option value="en">English</option><option value="ru">Русский</option>
+      </select>
+    </label>
     <Show when={panel.access()?.protected} fallback={<p role="status">{panel.status()}</p>}>
       <Show when={panel.access()?.setup_required} fallback={<PasswordForm setup={false} />}>
         <PasswordForm setup />
@@ -22,6 +30,8 @@ export function LoginPage() {
 
 function PasswordForm(props: { setup: boolean }) {
   const panel = usePanel();
+  const navigate = useNavigate();
+  createEffect(() => props.setup ? panel.t().setupTitle : panel.t().login, title => { document.title = `${title} · Goodwin`; });
   const [password, setPassword] = createSignal("");
   const [confirmation, setConfirmation] = createSignal("");
   const [validation, setValidation] = createSignal("");
@@ -56,7 +66,9 @@ function PasswordForm(props: { setup: boolean }) {
       focusError(error);
       return;
     }
-    const ok = props.setup ? await panel.setupPassword(password(), confirmation()) : await panel.login(password());
+    const settingUp = props.setup;
+    const ok = settingUp ? await panel.setupPassword(password(), confirmation()) : await panel.login(password());
+    if (ok && settingUp) void navigate(panel.setupDismissed() ? stationPath : setupPath, { replace: true });
     if (!ok) focusError(panel.error());
   }
 
@@ -78,7 +90,7 @@ function PasswordForm(props: { setup: boolean }) {
         </Field>
       </Show>
       <Button variant="primary" type="submit" disabled={panel.pending()}>
-        {props.setup ? panel.t().createPassword : panel.t().login}
+        {panel.pending() ? panel.t().saving : props.setup ? panel.t().createPassword : panel.t().login}
       </Button>
       <Show when={code() && !passwordIssue(code()) && !confirmationIssue(code())}>
         <InlineError>{errorLabel(panel.t(), code())}</InlineError>

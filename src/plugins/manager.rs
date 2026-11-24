@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use goodwin_plugin::{
@@ -7,7 +7,7 @@ use goodwin_plugin::{
     settings::SettingsData,
     wake::Event,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
 use serde_json::{Map, Value};
@@ -22,7 +22,7 @@ use super::{
     Failure, VoiceTools, connections,
     package::{self, Manifest},
     process::Process,
-    registry::{Active, Registry, Status, View},
+    registry::{Active, Entry, Registry, Status, View},
     settings::{self, Field},
     store::{Store, copy_data, storage},
 };
@@ -42,6 +42,58 @@ struct Manager {
 pub struct HttpResponse {
     pub status: u16,
     pub body: Option<Value>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProviderRevision {
+    package: String,
+    settings: u64,
+    connection: Option<u64>,
+}
+
+struct RegisteredProvider<'a> {
+    entry: &'a Entry,
+    active: &'a Active,
+    connection: Option<&'a connections::View>,
+}
+
+fn registered_provider<'a>(
+    registry: &'a BTreeMap<String, Entry>,
+    id: &str,
+    capability: Capability,
+) -> Option<RegisteredProvider<'a>> {
+    for entry in registry.values() {
+        if let Some(active) = entry.live()
+            && let Some(connection) = active
+                .connections
+                .iter()
+                .find(|view| view.provider_id == id)
+        {
+            return active
+                .registration
+                .providers
+                .contains(&capability)
+                .then_some(RegisteredProvider {
+                    entry,
+                    active,
+                    connection: Some(connection),
+                });
+        }
+    }
+    let entry = registry.get(id)?;
+    if entry.manifest.provider_connections || Registry::connection_owner(registry, id).is_some() {
+        return None;
+    }
+    let active = entry.live()?;
+    active
+        .registration
+        .providers
+        .contains(&capability)
+        .then_some(RegisteredProvider {
+            entry,
+            active,
+            connection: None,
+        })
 }
 
 impl Plugins {
@@ -155,54 +207,49 @@ impl Plugins {
         let _operation = self.0.lifecycle.lock().await;
         let fields = self.settings_fields(id)?;
         let directory = self.0.store.slot(id).join("data");
-        tokio::task::spawn_blocking(move || {
+        let view = tokio::task::spawn_blocking(move || {
             let data = SettingsData::read(&directory).map_err(storage)?;
             let data = settings::apply(&fields, data, patch)?;
             data.save(&directory).map_err(storage)?;
             Ok(settings::View::new(fields, data))
         })
         .await
-        .map_err(storage)?
+        .map_err(storage)??;
+        self.0.registry.settings_changed(id);
+        Ok(view)
     }
 
     pub(crate) fn provider(&self, id: &str, capability: Capability) -> Option<(Process, bool)> {
         let registry = self.0.registry.read();
-        if let Some((active, connection)) = registry
-            .values()
-            .filter_map(|entry| entry.live())
-            .find_map(|active| {
-                active
-                    .connections
-                    .iter()
-                    .find(|connection| connection.provider_id == id)
-                    .map(|connection| (active, connection))
+        let RegisteredProvider {
+            active, connection, ..
+        } = registered_provider(&registry, id, capability)?;
+        let process = match connection {
+            Some(connection) => active
+                .process
+                .for_connection(&connection.id, connection.speech_streaming),
+            None => active.process.clone(),
+        };
+        Some((process, active.registration.model_catalog))
+    }
+
+    pub(crate) fn provider_revisions<const N: usize>(
+        &self,
+        stages: [(&str, Capability); N],
+    ) -> [Option<ProviderRevision>; N] {
+        let registry = self.0.registry.read();
+        stages.map(|(id, capability)| {
+            let RegisteredProvider {
+                entry,
+                active,
+                connection,
+            } = registered_provider(&registry, id, capability)?;
+            Some(ProviderRevision {
+                package: active.revision.clone(),
+                settings: entry.settings_revision,
+                connection: connection.map(|connection| connection.request_revision),
             })
-        {
-            return active
-                .registration
-                .providers
-                .contains(&capability)
-                .then(|| {
-                    (
-                        active
-                            .process
-                            .for_connection(&connection.id, connection.speech_streaming),
-                        active.registration.model_catalog,
-                    )
-                });
-        }
-        let entry = registry.get(id)?;
-        if entry.manifest.provider_connections
-            || Registry::connection_owner(&registry, id).is_some()
-        {
-            return None;
-        }
-        let active = entry.live()?;
-        active
-            .registration
-            .providers
-            .contains(&capability)
-            .then(|| (active.process.clone(), active.registration.model_catalog))
+        })
     }
 
     pub(crate) async fn connections(&self, id: &str) -> Result<Vec<connections::View>, Failure> {

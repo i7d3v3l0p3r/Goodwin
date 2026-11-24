@@ -3,6 +3,7 @@ import { SymbolMark } from "../../../components/Brand";
 import { Button } from "../../../components/ui-kit/Button";
 import { InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { Icon } from "../../../components/icons";
+import { setupPath } from "../../../helpers/readiness";
 import type { Message, Snapshot } from "../../../helpers/api";
 import { errorLabel, type Words } from "../../../helpers/words";
 import { EmptyConversation } from "./EmptyConversation";
@@ -28,9 +29,9 @@ function ThreadMessage(props: { entry: Message; t: Words; progress?: string; str
 
 export function Conversation(props: {
   t: Words; snapshot?: Snapshot; draftReply?: Message; reachable: boolean; disabled: boolean; error: string;
+  draft: string; editDraft: (text: string) => void; wakeReady: boolean; setupRequired: boolean;
   send: (text: string) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [unread, setUnread] = createSignal(false);
   let scroll!: HTMLDivElement;
@@ -80,11 +81,11 @@ export function Conversation(props: {
   });
 
   async function send() {
-    const text = draft().trim();
-    if (!text || props.disabled || sending()) return;
+    const text = props.draft.trim();
+    if (!text || props.disabled || props.setupRequired || sending()) return;
     setSending(true);
     try {
-      if (await props.send(text) && draft().trim() === text) setDraft("");
+      if (await props.send(text) && props.draft.trim() === text) props.editDraft("");
     } finally {
       setSending(false);
     }
@@ -94,7 +95,8 @@ export function Conversation(props: {
     <div class={styles.threadArea}>
       <div class={styles.threadScroll} ref={scroll} tabindex={0} onScroll={trackScroll}>
         <div class={styles.thread} role="log" aria-label={props.t.chatHistory} aria-relevant="additions">
-          <Show when={messages().length} fallback={<EmptyConversation t={props.t} snapshot={props.snapshot} reachable={props.reachable} />}>
+          <Show when={messages().length} fallback={<EmptyConversation t={props.t} snapshot={props.snapshot}
+            wakeReady={props.wakeReady} setupRequired={props.setupRequired && Boolean(props.snapshot) && props.reachable} />}>
             <For each={messages()} keyed={entry => entry.id}>{entry =>
               <ThreadMessage entry={entry()} t={props.t} streaming={props.draftReply?.id === entry().id}
                 progress={request()?.message_id === entry().id ? progress() : undefined} />
@@ -118,14 +120,20 @@ export function Conversation(props: {
       <Show when={props.error}>
         <div class={styles.composeFeedback}><InlineError>{errorLabel(props.t, props.error)}</InlineError></div>
       </Show>
+      <Show when={props.setupRequired && props.snapshot && props.reachable}>
+        <div class={[styles.composeFeedback, styles.setupHint]} id="chat-setup-hint">
+          <a href={setupPath}>{props.t.firstRun.resume}</a>
+        </div>
+      </Show>
       <form class={styles.compose} onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <textarea rows={1} maxlength={2000} aria-label={props.t.draft} placeholder={props.t.draft} value={draft()}
-          onInput={(event) => setDraft(event.currentTarget.value)}
+        <textarea rows={1} maxlength={2000} aria-label={props.t.draft} placeholder={props.t.draft} value={props.draft}
+          aria-describedby={props.setupRequired && props.snapshot && props.reachable ? "chat-setup-hint" : undefined}
+          onInput={(event) => props.editDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
           }} />
         <Button variant="primary" type="submit" class={styles.send} aria-label={props.t.send}
-          disabled={props.disabled || sending() || !draft().trim()}>
+          disabled={props.disabled || props.setupRequired || sending() || !props.draft.trim()}>
           <Icon name="send" size={21} />
         </Button>
       </form>

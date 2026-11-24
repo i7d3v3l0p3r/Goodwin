@@ -102,6 +102,7 @@ EOF
 package initial
 sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/fresh.out"
 grep 'GOODWIN_INSTALL_OK fresh' "$TEST_ROOT/fresh.out"
+grep 'GOODWIN_INSTALL_VERSION initial' "$TEST_ROOT/fresh.out"
 data=$TEST_ROOT/data/opt/etc/goodwin
 test "$(cat "$data/model")" = standard
 echo retained > "$data/config.json"
@@ -110,6 +111,7 @@ echo custom > "$data/models/custom.onnx"
 package current
 sh "$TEST_ROOT/install-test.sh" "$upload" micro | tee "$TEST_ROOT/update.out"
 grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/update.out"
+grep 'GOODWIN_INSTALL_VERSION current' "$TEST_ROOT/update.out"
 test "$(cat "$TEST_ROOT/running")" = current
 test "$(cat "$data/model")" = micro
 install_init=$upload/init.sh
@@ -130,6 +132,7 @@ if sh "$TEST_ROOT/install-test.sh" "$upload" standard > "$TEST_ROOT/failed.out" 
     exit 1
 fi
 grep 'Restoring the previous state' "$TEST_ROOT/failed.out"
+grep 'GOODWIN_INSTALL_ERROR rolled_back' "$TEST_ROOT/failed.out"
 test "$(cat "$TEST_ROOT/running")" = compact
 test "$(cat "$data/model")" = micro
 test "$(cat "$data/models/standard.onnx")" = current

@@ -37,6 +37,7 @@ export function AssistantForm(props: {
   snapshot: Snapshot;
   pending: boolean;
   error: string;
+  focusStage?: Capability;
   save: (settings: Settings) => Promise<boolean>;
 }) {
   const savedSettings = createMemo(() => draftPipeline(props.snapshot.settings), {
@@ -85,13 +86,14 @@ export function AssistantForm(props: {
   }
 
   return <section aria-labelledby="assistant-title">
-    <h3 id="assistant-title">{props.t.modelsAndVoice}</h3>
+    <h2 id="assistant-title">{props.t.modelsAndVoice}</h2>
     <form class={styles.form} onSubmit={event => { event.preventDefault(); void save(); }}>
       <p class={styles.note}>{props.t.pipeline}</p>
       <fieldset class={styles.stages} disabled={props.pending} aria-labelledby="assistant-title">
         <For each={capabilities}>{capability =>
           <PipelineStageForm capability={capability} draft={draft()[capability]} plugins={props.snapshot.plugins}
             t={props.t} language={props.language} invalidParameters={invalid() === capability}
+            focusOnOpen={props.focusStage === capability}
             change={changes => {
               setDraft(previous => ({ ...previous, [capability]: { ...previous[capability], ...changes } }));
               setSaved(false);

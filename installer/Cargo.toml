@@ -12,7 +12,7 @@ gui = ["dep:eframe", "dep:mdns-sd", "dep:rfd", "dep:webbrowser", "dep:windows-sy
 
 [dependencies]
 anyhow = "1"
-eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"], optional = true }
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"], optional = true }
 flate2 = "1"
 mdns-sd = { version = "0.22", default-features = false, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

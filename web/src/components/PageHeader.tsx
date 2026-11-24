@@ -1,4 +1,4 @@
-import { Show, type ParentProps } from "solid-js";
+import { createEffect, Show, type ParentProps } from "solid-js";
 import { usePanel } from "../helpers/panel";
 import { errorLabel } from "../helpers/words";
 import { Button } from "./ui-kit/Button";
@@ -8,14 +8,11 @@ import styles from "./PageHeader.module.css";
 export function PageHeader(props: ParentProps<{ title: string; showRequestStatus?: boolean }>) {
   const panel = usePanel();
   const muted = () => panel.snapshot()?.settings.microphone_muted === true;
-  const paused = () => {
-    const state = panel.snapshot();
-    return muted() || !panel.reachable() || !state?.microphone || !state.settings.listening || !state.model;
-  };
+  createEffect(() => props.title, title => { document.title = `${title} · Goodwin`; });
 
   return <header class={styles.header}>
-    <h1 title={props.title}>{props.title}</h1>
-    <span class={styles.status} role="status" data-paused={String(paused())} title={panel.status()}
+    <h1 id="panel-page-title" tabindex={-1}>{props.title}</h1>
+    <span class={styles.status} role="status" data-paused={String(!panel.wakeReady())}
       data-local-status={props.showRequestStatus === false && panel.reachable() ? "" : undefined}>
       <i aria-hidden="true" /><span>{panel.status()}</span>
     </span>

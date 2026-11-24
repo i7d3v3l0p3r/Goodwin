@@ -10,7 +10,7 @@ use eframe::egui::{self, Color32, RichText};
 use crate::{
     discovery::{self, Station},
     package::Source,
-    station::{self, Address, Installed, Model},
+    station::{self, Address, InstallIssue, InstallStage, Installed, Model},
     wake_catalog::{Catalog, Runtime},
 };
 
@@ -41,23 +41,155 @@ pub(crate) struct InstallerWindow {
     catalog_worker: Option<Receiver<Result<Catalog, String>>>,
     catalog_error: Option<String>,
     worker: Option<Receiver<Event>>,
+    check_worker: Option<Receiver<Result<bool, InstallFailure>>>,
+    checked: Option<bool>,
     target: Option<InstallTarget>,
-    status: String,
+    stage: Option<InstallStage>,
     log: Vec<String>,
     log_open: bool,
     attempt: u64,
-    failure: Option<String>,
+    failure: Option<InstallFailure>,
+    panel_notice: Option<&'static str>,
     installed: Option<Installed>,
 }
 
+#[derive(Clone)]
 struct InstallTarget {
     name: String,
-    address: String,
+    address: Address,
 }
 
 enum Event {
     Log(String),
-    Done(Result<Installed, String>),
+    Stage(InstallStage),
+    Done(Result<Installed, InstallFailure>),
+}
+
+struct InstallFailure {
+    details: String,
+    issue: Option<InstallIssue>,
+}
+
+impl From<anyhow::Error> for InstallFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            issue: error.downcast_ref::<InstallIssue>().copied(),
+            details: format!("{error:#}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryAction {
+    Adb,
+    Package,
+    Model,
+    Recheck,
+}
+
+impl RecoveryAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Adb => "Открыть настройки ADB",
+            Self::Package => "Выбрать другую сборку",
+            Self::Model => "Выбрать другую модель",
+            Self::Recheck => "Проверить подключение",
+        }
+    }
+}
+
+fn failure_recovery(
+    failure: &InstallFailure,
+    stage: InstallStage,
+) -> (&'static str, Option<RecoveryAction>, bool) {
+    use InstallIssue as Issue;
+    let (hint, action, retry) = match failure.issue {
+        Some(Issue::Adb) => (
+            "Укажите исполняемый файл ADB из Android SDK Platform-Tools и снова проверьте подключение.",
+            Some(RecoveryAction::Adb),
+            false,
+        ),
+        Some(Issue::Connection) => (
+            "Проверьте адрес, порт ADB и подключение компьютера и Станции к одной сети.",
+            None,
+            true,
+        ),
+        Some(Issue::Root) => (
+            "Проверьте права ADB на подготовленной Станции и повторите проверку подключения.",
+            None,
+            true,
+        ),
+        Some(Issue::Unsupported) => (
+            "Выберите другую подготовленную Станцию Мини 3.",
+            None,
+            false,
+        ),
+        Some(Issue::LocalPackage) => (
+            "Выберите другой архив или папку со сборкой Goodwin. Можно сбросить выбор, чтобы скачать релиз.",
+            Some(RecoveryAction::Package),
+            false,
+        ),
+        Some(Issue::Release) => (
+            "Проверьте доступ компьютера к GitHub или выберите локальную сборку.",
+            Some(RecoveryAction::Package),
+            true,
+        ),
+        Some(Issue::Model) => (
+            "Выберите модель, которую поддерживает выбранная сборка Goodwin.",
+            Some(RecoveryAction::Model),
+            false,
+        ),
+        Some(Issue::Locked) => (
+            "Дождитесь завершения другой установки. Если она закончилась, проверьте её журнал и состояние восстановления.",
+            Some(RecoveryAction::Recheck),
+            false,
+        ),
+        Some(Issue::Layout | Issue::RecoveryFailed) => (
+            "Скопируйте журнал для диагностики и проверьте состояние предыдущей установки перед повтором.",
+            None,
+            false,
+        ),
+        Some(Issue::Unconfirmed) => (
+            "Проверьте подключение к той же Станции, чтобы уточнить состояние установки.",
+            Some(RecoveryAction::Recheck),
+            false,
+        ),
+        Some(Issue::RolledBack) => (
+            "Посмотрите в журнале, почему Goodwin не запустился. При необходимости выберите другую сборку.",
+            Some(RecoveryAction::Package),
+            true,
+        ),
+        None => match stage {
+            InstallStage::Connect => (
+                "Проверьте адрес, порт ADB и доступность Станции, затем повторите проверку.",
+                None,
+                true,
+            ),
+            InstallStage::Package => (
+                "Проверьте свободное место на компьютере и выбранную сборку.",
+                Some(RecoveryAction::Package),
+                true,
+            ),
+            InstallStage::Transfer => (
+                "Проверьте связь со Станцией и свободное место на ней, затем повторите установку.",
+                None,
+                true,
+            ),
+            InstallStage::Install => (
+                "Проверьте в журнале, на какой операции остановилась установка.",
+                None,
+                true,
+            ),
+        },
+    };
+    (hint, action, retry)
+}
+
+fn show_failure(ui: &mut egui::Ui, failure: &InstallFailure, hint: &str) {
+    ui.label(
+        RichText::new(failure.details.lines().next().unwrap_or(&failure.details)).color(ERROR),
+    );
+    ui.label(hint);
 }
 
 enum SearchEvent {
@@ -107,6 +239,7 @@ pub(crate) fn configure(ctx: &egui::Context) {
 impl eframe::App for InstallerWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.poll_check();
         self.poll_search();
         self.poll_catalog();
         let busy = self.worker.is_some();
@@ -150,6 +283,53 @@ fn header(ui: &mut egui::Ui) {
         });
     });
 }
+
+fn primary_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.noninteractive.weak_bg_fill = SURFACE;
+        widgets.inactive.weak_bg_fill = ACCENT;
+        widgets.hovered.weak_bg_fill = ACCENT_HOVER;
+        widgets.active.weak_bg_fill = ACCENT_HOVER;
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(RichText::new(label).strong().color(if enabled {
+                PAPER
+            } else {
+                MUTED
+            }))
+            .min_size(egui::vec2(0.0, 40.0))
+            .corner_radius(8),
+        )
+        .clicked()
+    })
+    .inner
+}
+
+fn target_summary(ui: &mut egui::Ui, target: &InstallTarget) {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .inner_margin(9)
+        .corner_radius(8)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&target.name).strong());
+                ui.label(
+                    RichText::new(target.address.serial())
+                        .monospace()
+                        .color(MUTED),
+                );
+            });
+        });
+}
+
+const INSTALL_STEPS: [(InstallStage, &str); 4] = [
+    (InstallStage::Connect, "Подключение"),
+    (InstallStage::Package, "Подготовка пакета"),
+    (InstallStage::Transfer, "Передача на Станцию"),
+    (InstallStage::Install, "Установка и проверка запуска"),
+];
 
 fn card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
@@ -261,18 +441,22 @@ impl InstallerWindow {
                 header(ui);
                 ui.add_space(10.0);
 
-                if self.target.is_some() {
+                if self.stage.is_some() && busy {
                     self.installation(ui, busy);
-                    if self.target.is_some() {
-                        self.installation_log(ui);
-                    }
+                    self.installation_log(ui, true);
                 } else {
                     egui::ScrollArea::vertical()
                         .id_salt("setup")
                         .show(ui, |ui| {
-                            self.station_fields(ui);
-                            if let Some(error) = &self.failure {
-                                ui.label(RichText::new(error).color(ERROR));
+                            if self.stage.is_some() {
+                                self.installation(ui, false);
+                                if self.stage.is_some() {
+                                    self.installation_log(ui, false);
+                                }
+                            } else if self.target.is_some() {
+                                self.connection_screen(ui);
+                            } else {
+                                self.station_fields(ui);
                             }
                         });
                 }
@@ -284,18 +468,33 @@ impl InstallerWindow {
 
     fn station_fields(&mut self, ui: &mut egui::Ui) {
         card(ui, |ui| {
+            ui.heading("1. Выберите Станцию");
             ui.add_enabled_ui(!self.advanced_open, |ui| {
                 self.station_picker(ui);
-                ui.separator();
-                self.wake_model_picker(ui);
             });
             ui.separator();
-            self.controls(ui);
+            let ready = !self.advanced_open
+                && if self.manual {
+                    !self.manual_address.trim().is_empty()
+                } else {
+                    self.selected.is_some_and(|address| {
+                        self.visible_stations()
+                            .iter()
+                            .any(|station| station.address == address)
+                    })
+                };
+            if primary_action(ui, "Проверить подключение", ready) {
+                self.check_connection(ui.ctx());
+            }
         });
     }
 
     fn wake_model_picker(&mut self, ui: &mut egui::Ui) {
-        const KEEP: &str = "Текущая / «Гудвин» Standard при установке";
+        let keep = if self.checked == Some(true) {
+            "Оставить текущую модель"
+        } else {
+            "«Гудвин» Standard"
+        };
         let label = |model: &crate::wake_catalog::Selection| {
             let tier = match model.runtime() {
                 Runtime::MicroTflite => "Micro INT8",
@@ -314,10 +513,10 @@ impl InstallerWindow {
             });
             egui::ComboBox::from_id_salt("wake_model")
                 .selected_text(
-                    selected.map_or_else(|| KEEP.into(), |model| label(&model.selection)),
+                    selected.map_or_else(|| keep.into(), |model| label(&model.selection)),
                 )
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.model, Model::Keep, KEEP);
+                    ui.selectable_value(&mut self.model, Model::Keep, keep);
                     if let Some(catalog) = &self.catalog {
                         for model in &catalog.models {
                             ui.selectable_value(
@@ -408,8 +607,7 @@ impl InstallerWindow {
         if stations.is_empty() {
             ui.allocate_ui(egui::vec2(ui.available_width(), 38.0), |ui| {
                 if let Some(error) = &self.search_error {
-                    ui.label(RichText::new("Не удалось запустить поиск.").color(MUTED))
-                        .on_hover_text(error);
+                    ui.label(RichText::new(error).color(ERROR).small());
                 } else if self.search.is_none() {
                     ui.label(RichText::new("Станции Мини 3 не найдены.").color(MUTED));
                     ui.label(
@@ -467,16 +665,26 @@ impl InstallerWindow {
             }
         });
         if self.manual {
+            let label = ui.label("IP-адрес или имя Станции");
             let input = ui
                 .add(
                     egui::TextEdit::singleline(&mut self.manual_address)
                         .desired_width(f32::INFINITY)
-                        .hint_text("IP-адрес или имя, например 192.168.1.42")
+                        .hint_text("Например, 192.168.1.42")
                         .margin(egui::vec2(10.0, 8.0)),
                 )
-                .on_hover_text(
-                    "Порт ADB по умолчанию — 5555. Другой порт можно указать после двоеточия.",
-                );
+                .labelled_by(label.id);
+            ui.label(
+                RichText::new("Порт ADB по умолчанию — 5555. Другой порт укажите после двоеточия.")
+                    .small()
+                    .color(MUTED),
+            );
+            if let Some(error) = &self.failure {
+                ui.label(RichText::new(&error.details).color(ERROR));
+            }
+            if input.changed() {
+                self.failure = None;
+            }
             if std::mem::take(&mut self.focus_address) {
                 input.request_focus();
             }
@@ -585,157 +793,215 @@ impl InstallerWindow {
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(3.0);
-        ui.horizontal_wrapped(|ui| {
-            let ready = !self.advanced_open
-                && if self.manual {
-                    !self.manual_address.trim().is_empty()
+    fn connection_screen(&mut self, ui: &mut egui::Ui) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
+        let mut back = false;
+        let mut check = false;
+        let mut install = false;
+        let mut recovery = None;
+        card(ui, |ui| {
+            ui.heading("2. Проверьте подключение");
+            target_summary(ui, &target);
+            if self.check_worker.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.label("Проверяем ADB, права и совместимость Станции…");
+                });
+            } else if let Some(updated) = self.checked {
+                ui.label(RichText::new("Станция готова").color(ACCENT).strong());
+                ui.label(if let Some(path) = &self.local_build {
+                    format!("Источник: {}", path.display())
                 } else {
-                    let stations = self
-                        .search
-                        .as_ref()
-                        .map_or(self.stations.as_slice(), |search| search.found.as_slice());
-                    stations
-                        .iter()
-                        .any(|station| Some(station.address) == self.selected)
-                };
-            let install = egui::Button::new(
-                RichText::new("Установить или обновить")
-                    .strong()
-                    .color(if ready { PAPER } else { MUTED }),
-            )
-            .min_size(egui::vec2(0.0, 39.0))
-            .corner_radius(8);
-            let pressed = ui
-                .scope(|ui| {
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    widgets.noninteractive.weak_bg_fill = SURFACE;
-                    widgets.inactive.weak_bg_fill = ACCENT;
-                    widgets.hovered.weak_bg_fill = ACCENT_HOVER;
-                    widgets.active.weak_bg_fill = ACCENT_HOVER;
-                    ui.add_enabled(ready, install)
-                })
-                .inner
-                .clicked();
-            if pressed {
-                self.start(ui.ctx());
-            }
-            if self.local_build.is_some() {
-                ui.label(
-                    RichText::new("Будет использована локальная сборка")
-                        .color(MUTED)
-                        .small(),
+                    "Источник: последний стабильный релиз Goodwin".into()
+                });
+                self.wake_model_picker(ui);
+                install = primary_action(
+                    ui,
+                    if updated {
+                        "Обновить Goodwin"
+                    } else {
+                        "Установить Goodwin"
+                    },
+                    true,
                 );
+            } else if let Some(error) = &self.failure {
+                let (hint, action, retry) = failure_recovery(error, InstallStage::Connect);
+                show_failure(ui, error, hint);
+                ui.collapsing("Подробности", |ui| {
+                    ui.label(&error.details);
+                    if ui.button("Скопировать подробности").clicked() {
+                        ui.ctx().copy_text(error.details.clone());
+                    }
+                });
+                if let Some(action) = action
+                    && primary_action(ui, action.label(), true)
+                {
+                    recovery = Some(action);
+                }
+                if retry {
+                    check = primary_action(ui, "Повторить проверку", true);
+                }
             }
+            back = ui
+                .add_enabled(
+                    self.check_worker.is_none(),
+                    egui::Button::new("К выбору Станции"),
+                )
+                .clicked();
         });
-        ui.label(
-            RichText::new("Для установки нужен сетевой ADB с правами root.")
-                .color(MUTED)
-                .small(),
-        );
+        if back {
+            self.reset_target();
+        } else if install {
+            self.start(ui.ctx());
+        } else if let Some(recovery) = recovery {
+            self.recover(recovery, ui.ctx());
+        } else if check {
+            self.run_check(ui.ctx());
+        }
     }
 
     fn installation(&mut self, ui: &mut egui::Ui, busy: bool) {
         let Some(target) = &self.target else { return };
-        let title = if busy {
-            RichText::new("Устанавливаем Goodwin")
-        } else if let Some(installed) = &self.installed {
-            RichText::new(if installed.updated {
-                "Goodwin обновлён"
-            } else {
-                "Goodwin установлен"
-            })
-            .color(ACCENT)
-        } else {
-            RichText::new("Установка не завершилась").color(ERROR)
-        };
-
         let mut back = false;
+        let mut retry = false;
+        let mut recovery = None;
         card(ui, |ui| {
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.spacing_mut().interact_size.y = 21.0;
-                ui.label(title.size(19.0).strong());
+                let title = if busy {
+                    "3. Устанавливаем Goodwin"
+                } else if let Some(installed) = &self.installed {
+                    if installed.updated {
+                        "Goodwin обновлён"
+                    } else {
+                        "Goodwin установлен"
+                    }
+                } else {
+                    "Установка не завершилась"
+                };
+                ui.heading(title);
+                target_summary(ui, target);
                 if busy {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add(egui::Spinner::new().size(14.0).color(MUTED));
-                        ui.label(RichText::new(&self.status).color(TEXT));
-                    });
+                    let step = self
+                        .stage
+                        .and_then(|stage| INSTALL_STEPS.iter().position(|(id, _)| *id == stage))
+                        .unwrap_or(0);
+                    ui.add(
+                        egui::ProgressBar::new(step as f32 / INSTALL_STEPS.len() as f32).text(
+                            format!(
+                                "Этап {} из {} — {}",
+                                step + 1,
+                                INSTALL_STEPS.len(),
+                                INSTALL_STEPS[step].1
+                            ),
+                        ),
+                    );
+                    ui.label(
+                        RichText::new("Окно можно закрыть после завершения установки.")
+                            .small()
+                            .color(MUTED),
+                    );
                 }
-
-                egui::Frame::new()
-                    .fill(SURFACE)
-                    .inner_margin(9)
-                    .corner_radius(8)
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(&target.name).strong()).truncate(),
-                            )
-                            .on_hover_text(&target.name);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&target.address).monospace().color(MUTED),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&target.address);
-                        });
-                    });
             });
+            if busy {
+                return;
+            }
 
-            if !busy {
-                if let Some(error) = &self.failure {
-                    let summary = error.lines().next().unwrap_or(error);
-                    ui.add(egui::Label::new(RichText::new(summary).color(ERROR)).truncate())
-                        .on_hover_text(summary);
-                }
-                if let Some(installed) = &self.installed {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&installed.panel).monospace().color(MUTED),
-                            )
-                            .truncate(),
-                        )
-                        .on_hover_text(&installed.panel);
-                        ui.add(
-                            egui::Label::new(RichText::new(&installed.source).color(MUTED).small())
-                                .truncate(),
-                        )
-                        .on_hover_text(&installed.source);
-                    });
-                    if !installed.updated {
-                        ui.label("Создайте пароль при первом входе в панель.");
-                    }
-                }
+            if let Some(error) = &self.failure {
+                let stage = self.stage.unwrap_or_default();
+                let (hint, action, can_retry) = failure_recovery(error, stage);
+                show_failure(ui, error, hint);
                 ui.horizontal_wrapped(|ui| {
-                    if let Some(installed) = &self.installed
-                        && ui
-                            .button("Открыть панель")
-                            .on_hover_text(&installed.panel)
-                            .clicked()
-                        && webbrowser::open(&installed.panel).is_err()
+                    if let Some(action) = action
+                        && primary_action(ui, action.label(), true)
                     {
-                        ui.ctx().copy_text(installed.panel.clone());
-                        self.failure =
-                            Some("Не удалось открыть браузер. Адрес панели скопирован.".into());
+                        recovery = Some(action);
                     }
-                    back = secondary_action(ui, "К выбору Станции", false).clicked();
+                    if can_retry {
+                        retry = if action.is_some() {
+                            ui.button("Повторить установку").clicked()
+                        } else {
+                            primary_action(ui, "Повторить установку", true)
+                        };
+                    }
                 });
             }
+            if let Some(installed) = &self.installed {
+                ui.label(
+                    RichText::new(installed.version.as_ref().map_or_else(
+                        || "Сборка не сообщила установленную версию".into(),
+                        |version| format!("Установленная версия Goodwin: {version}"),
+                    ))
+                    .strong(),
+                );
+                ui.label(RichText::new(&installed.source).color(MUTED).small());
+                let panel = installed.panel.clone();
+                ui.label(RichText::new(&panel).monospace());
+                if !installed.updated {
+                    ui.label("В панели вы создадите пароль, подключите провайдера и проверите голосовой ответ.");
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if primary_action(
+                        ui,
+                        if installed.updated {
+                            "Открыть панель"
+                        } else {
+                            "Настроить Goodwin"
+                        },
+                        true,
+                    ) && webbrowser::open(&panel).is_err()
+                    {
+                        ui.ctx().copy_text(panel.clone());
+                        self.panel_notice =
+                            Some("Не удалось открыть браузер. Адрес панели скопирован.");
+                    }
+                    if ui.button("Скопировать адрес").clicked() {
+                        ui.ctx().copy_text(panel);
+                        self.panel_notice = Some("Адрес панели скопирован.");
+                    }
+                });
+            }
+            if let Some(notice) = self.panel_notice {
+                ui.label(RichText::new(notice).color(MUTED));
+            }
+            back = secondary_action(ui, "К выбору Станции", false).clicked();
         });
         if back {
-            self.target = None;
-            self.installed = None;
-            self.failure = None;
-            ui.ctx().request_repaint();
+            self.reset_target();
+        } else if let Some(recovery) = recovery {
+            self.recover(recovery, ui.ctx());
+        } else if retry {
+            self.start(ui.ctx());
         }
     }
 
-    fn installation_log(&mut self, ui: &mut egui::Ui) {
+    fn recover(&mut self, action: RecoveryAction, ctx: &egui::Context) {
+        self.stage = None;
+        self.failure = None;
+        match action {
+            RecoveryAction::Adb => {
+                self.reset_target();
+                self.advanced_open = true;
+            }
+            RecoveryAction::Package => self.advanced_open = true,
+            RecoveryAction::Model => {}
+            RecoveryAction::Recheck => self.run_check(ctx),
+        }
+    }
+
+    fn reset_target(&mut self) {
+        self.target = None;
+        self.checked = None;
+        self.stage = None;
+        self.installed = None;
+        self.failure = None;
+        self.panel_notice = None;
+    }
+
+    fn installation_log(&mut self, ui: &mut egui::Ui, busy: bool) {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 if log_toggle(ui, self.log_open).clicked() {
@@ -754,7 +1020,7 @@ impl InstallerWindow {
                 egui::ScrollArea::vertical()
                     .id_salt(("installation_log", self.attempt))
                     .auto_shrink([false, false])
-                    .max_height(ui.available_height())
+                    .max_height(if busy { ui.available_height() } else { 160.0 })
                     .min_scrolled_height(0.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
@@ -767,20 +1033,17 @@ impl InstallerWindow {
         });
     }
 
-    fn start(&mut self, ctx: &egui::Context) {
-        self.failure = None;
-        self.installed = None;
-        self.log.clear();
-        let target = if self.manual {
+    fn check_connection(&mut self, ctx: &egui::Context) {
+        let address = if self.manual {
             Address::parse(&self.manual_address)
         } else {
             let Some(ip) = self.selected else { return };
             Ok(Address::from_ip(ip))
         };
-        let address = match target {
+        let address = match address {
             Ok(address) => address,
             Err(error) => {
-                self.failure = Some(error.to_string());
+                self.failure = Some(error.into());
                 return;
             }
         };
@@ -792,11 +1055,54 @@ impl InstallerWindow {
                 .find(|station| Some(station.address) == self.selected)
                 .map_or_else(|| "Станция Мини 3".into(), |station| station.name.clone())
         };
-        self.target = Some(InstallTarget {
-            name,
-            address: address.serial(),
+        self.target = Some(InstallTarget { name, address });
+        self.run_check(ctx);
+    }
+
+    fn run_check(&mut self, ctx: &egui::Context) {
+        let Some(target) = &self.target else {
+            return;
+        };
+        let address = target.address.clone();
+        self.checked = None;
+        self.failure = None;
+        let adb = self.adb.clone().unwrap_or_else(station::default_adb);
+        let (send, receive) = mpsc::channel();
+        self.check_worker = Some(receive);
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = station::check(&adb, &address).map_err(InstallFailure::from);
+            let _ = send.send(result);
+            ctx.request_repaint();
         });
+    }
+
+    fn poll_check(&mut self) {
+        let Some(worker) = &self.check_worker else {
+            return;
+        };
+        match worker.try_recv() {
+            Ok(Ok(updated)) => self.checked = Some(updated),
+            Ok(Err(error)) => self.failure = Some(error),
+            Err(TryRecvError::Disconnected) => {
+                self.failure = Some(anyhow::anyhow!("Проверка подключения прервалась.").into())
+            }
+            Err(TryRecvError::Empty) => return,
+        }
+        self.check_worker = None;
+    }
+
+    fn start(&mut self, ctx: &egui::Context) {
+        let Some(target) = &self.target else {
+            return;
+        };
+        let address = target.address.clone();
+        self.failure = None;
+        self.installed = None;
+        self.panel_notice = None;
+        self.log.clear();
         self.attempt = self.attempt.wrapping_add(1);
+        self.stage = Some(InstallStage::Connect);
         let source = self
             .local_build
             .clone()
@@ -806,16 +1112,22 @@ impl InstallerWindow {
         let catalog = self.catalog.clone();
         let ctx = ctx.clone();
         let (send, receive) = mpsc::channel();
-        self.status = "Подключаемся к Станции…".into();
         self.worker = Some(receive);
-        ctx.request_repaint();
         thread::spawn(move || {
-            let result = station::install(&adb, address, source, model, catalog.as_ref(), |line| {
-                let _ = send.send(Event::Log(line));
+            let notify = |event| {
+                let _ = send.send(event);
                 ctx.request_repaint();
-            });
-            let _ = send.send(Event::Done(result.map_err(|error| format!("{error:#}"))));
-            ctx.request_repaint();
+            };
+            let result = station::install_with_progress(
+                &adb,
+                address,
+                source,
+                model,
+                catalog.as_ref(),
+                |line| notify(Event::Log(line)),
+                |stage| notify(Event::Stage(stage)),
+            );
+            notify(Event::Done(result.map_err(InstallFailure::from)));
         });
     }
 
@@ -876,12 +1188,8 @@ impl InstallerWindow {
         let Some(worker) = &self.worker else { return };
         loop {
             match worker.try_recv() {
-                Ok(Event::Log(line)) => {
-                    if line.ends_with('…') {
-                        self.status.clone_from(&line);
-                    }
-                    self.log.push(line);
-                }
+                Ok(Event::Log(line)) => self.log.push(line),
+                Ok(Event::Stage(stage)) => self.stage = Some(stage),
                 Ok(Event::Done(result)) => {
                     match result {
                         Ok(installed) => self.installed = Some(installed),
@@ -893,15 +1201,15 @@ impl InstallerWindow {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.worker = None;
-                    self.installation_failed("Установка прервалась.".into());
+                    self.installation_failed(anyhow::Error::new(InstallIssue::Unconfirmed).into());
                     break;
                 }
             }
         }
     }
 
-    fn installation_failed(&mut self, error: String) {
-        self.log.extend(error.lines().map(str::to_owned));
+    fn installation_failed(&mut self, error: InstallFailure) {
+        self.log.extend(error.details.lines().map(str::to_owned));
         self.log_open = true;
         self.failure = Some(error);
     }
@@ -923,6 +1231,48 @@ mod tests {
     }
 
     #[test]
+    fn installer_requires_verification_or_recovery_before_retrying_uncertain_results() {
+        let failure = InstallFailure::from(anyhow::Error::new(InstallIssue::Unconfirmed));
+        let (_, action, retry) = failure_recovery(&failure, InstallStage::Install);
+        assert!(matches!(action, Some(RecoveryAction::Recheck)));
+        assert!(!retry);
+
+        let failure = InstallFailure::from(anyhow::Error::new(InstallIssue::RecoveryFailed));
+        let (_, action, retry) = failure_recovery(&failure, InstallStage::Install);
+        assert!(action.is_none());
+        assert!(!retry);
+    }
+
+    #[test]
+    fn installation_action_appears_only_after_a_successful_connection_check() {
+        let ctx = egui::Context::default();
+        configure(&ctx);
+        let (send, receive) = mpsc::channel();
+        let mut window = InstallerWindow {
+            target: Some(InstallTarget {
+                name: "Станция Мини 3".into(),
+                address: Address::parse("192.168.1.42").unwrap(),
+            }),
+            check_worker: Some(receive),
+            ..Default::default()
+        };
+        let draw = |window: &mut InstallerWindow| {
+            ctx.run(egui::RawInput::default(), |ctx| window.render(ctx, false))
+        };
+        let pending = draw(&mut window);
+        assert!(visible_text(&pending, "Установить Goodwin").is_none());
+        assert!(visible_text(&pending, "Обновить Goodwin").is_none());
+
+        send.send(Ok(true)).unwrap();
+        window.poll_check();
+        draw(&mut window);
+        let verified = draw(&mut window);
+        assert!(visible_text(&verified, "192.168.1.42:5555").is_some());
+        assert!(visible_text(&verified, "Обновить Goodwin").is_some());
+        assert!(visible_text(&verified, "Установить Goodwin").is_none());
+    }
+
+    #[test]
     fn scrolling_the_installation_log_keeps_the_header_and_stage_in_place() {
         let ctx = egui::Context::default();
         configure(&ctx);
@@ -930,9 +1280,9 @@ mod tests {
         let mut window = InstallerWindow {
             target: Some(InstallTarget {
                 name: "Станция Мини 3".into(),
-                address: "192.168.1.42:5555".into(),
+                address: Address::parse("192.168.1.42:5555").unwrap(),
             }),
-            status: "Отправляем пакет на Станцию…".into(),
+            stage: Some(InstallStage::Transfer),
             log_open: true,
             log: (0..60).map(|line| format!("Log entry {line:02}")).collect(),
             ..Default::default()
@@ -950,7 +1300,7 @@ mod tests {
         frame(&mut window, vec![]);
         let at_end = frame(&mut window, vec![]);
         let header = visible_text(&at_end, "Установщик Goodwin").unwrap().0;
-        let stage = visible_text(&at_end, "Отправляем пакет на Станцию…")
+        let stage = visible_text(&at_end, "Этап 3 из 4 — Передача на Станцию")
             .unwrap()
             .0;
         let (_, log_clip) = visible_text(&at_end, "Log entry 59").unwrap_or_else(|| {
@@ -996,7 +1346,7 @@ mod tests {
             header
         );
         assert_eq!(
-            visible_text(&earlier, "Отправляем пакет на Станцию…")
+            visible_text(&earlier, "Этап 3 из 4 — Передача на Станцию")
                 .unwrap()
                 .0,
             stage

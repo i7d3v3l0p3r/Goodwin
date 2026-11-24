@@ -31,7 +31,7 @@ export function DiagnosticLogs(props: { t: Words; passwordProtected: boolean }) 
   }
 
   return <section aria-labelledby="logs-title">
-    <h3 id="logs-title">{t().diagnosticLogs}</h3>
+    <h2 id="logs-title">{t().diagnosticLogs}</h2>
     <Show when={props.passwordProtected} fallback={<EmptyState>{t().errors.diagnostics_password_required}</EmptyState>}>
       <p class={styles.note}>{t().logsHint}</p>
       <Button type="button" aria-busy={loading() ? "true" : "false"} disabled={loading()} onClick={() => void refresh()}>
@@ -51,10 +51,38 @@ export function DiagnosticLogs(props: { t: Words; passwordProtected: boolean }) 
 }
 
 function Log(props: { title: string; value: string | null; t: Words }) {
+  const [feedback, setFeedback] = createSignal<"copied" | "selected">();
+  let log!: HTMLPreElement;
+
+  async function copy() {
+    if (!props.value) return;
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(props.value);
+        setFeedback("copied");
+        return;
+      }
+    } catch {
+      // The panel can also be served over HTTP on the local network.
+    }
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(log);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    setFeedback("selected");
+    log.focus({ preventScroll: true });
+  }
+
   return <div>
-    <h4>{props.title}</h4>
+    <h3>{props.title}</h3>
     <Show when={props.value} fallback={<EmptyState>{props.value == null ? props.t.logUnavailable : props.t.logEmpty}</EmptyState>}>
-      <pre tabindex={0} aria-label={props.title}>{props.value}</pre>
+      <div class="gw-row">
+        <Button type="button" variant="quiet" onClick={() => void copy()}>{props.t.copyLog}</Button>
+        <span role="status">{feedback() === "copied" ? props.t.logCopied : feedback() === "selected" ? props.t.logSelected : ""}</span>
+      </div>
+      <pre ref={log} tabindex={0} aria-label={props.title}>{props.value}</pre>
     </Show>
   </div>;
 }

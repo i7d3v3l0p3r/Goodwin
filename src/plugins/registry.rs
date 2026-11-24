@@ -69,6 +69,7 @@ impl Registry {
                 active,
                 status,
                 error,
+                settings_revision: 0,
             },
         );
         self.changes.send_replace(());
@@ -84,10 +85,25 @@ impl Registry {
         active
     }
 
-    pub(super) fn set_connections(&self, id: &str, views: Vec<connections::View>) {
+    pub(super) fn set_connections(&self, id: &str, mut views: Vec<connections::View>) {
         let mut entries = self.entries.write().expect("plugin registry");
         if let Some(active) = entries.get_mut(id).and_then(|entry| entry.active.as_mut()) {
+            for view in &mut views {
+                if let Some(previous) = active.connections.iter().find(|previous| {
+                    previous.id == view.id
+                        && previous.request_configuration == view.request_configuration
+                }) {
+                    view.request_revision = previous.request_revision;
+                }
+            }
             active.connections = views;
+            self.changes.send_replace(());
+        }
+    }
+
+    pub(super) fn settings_changed(&self, id: &str) {
+        if let Some(entry) = self.entries.write().expect("plugin registry").get_mut(id) {
+            entry.settings_revision += 1;
             self.changes.send_replace(());
         }
     }
@@ -96,6 +112,7 @@ impl Registry {
 pub(super) struct Entry {
     pub(super) manifest: Manifest,
     pub(super) active: Option<Active>,
+    pub(super) settings_revision: u64,
     status: Status,
     error: Option<&'static str>,
 }
@@ -126,6 +143,7 @@ pub struct View {
     status: Status,
     error: Option<&'static str>,
     revision: Option<String>,
+    settings_revision: u64,
     web: Option<Web>,
     pages: Vec<Page>,
     providers: BTreeSet<Capability>,
@@ -160,6 +178,7 @@ impl Entry {
                 self.error
             },
             revision: active.map(|active| active.revision.clone()),
+            settings_revision: self.settings_revision,
             web: active.and(self.manifest.web.clone()),
             pages: active.map_or_else(Vec::new, |active| active.registration.pages.clone()),
             providers: provider.map_or_else(BTreeSet::new, |active| {

@@ -35,12 +35,6 @@
   .inlineLink:hover { text-decoration: underline; }
 }
 
-.section > h2 {
-  margin: 4px 0 19px;
-  font-size: clamp(1.35rem, 3vw, 1.75rem);
-  letter-spacing: -.025em;
-}
-
 .section > :is(section, details, .group) {
   margin-top: 19px;
   padding-top: 13px;
@@ -49,7 +43,7 @@
 }
 
 .section > details { padding-top: 0; }
-.section > section > h3 { margin: 0 0 8px; font-size: 1rem; }
+.section > section > h2 { margin: 0 0 8px; font-size: 1rem; }
 .section > .inlineLink { margin-top: 10px; }
 
 .language {
@@ -63,6 +57,10 @@
 }
 
 .language select { flex: 0 1 175px; max-width: 100%; }
+.access { display: grid; gap: 8px; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--edge); }
+.access h2 { font-size: 1rem; }
+.access p { color: var(--muted); }
+.access code { overflow-wrap: anywhere; }
 .error { margin-top: 12px; color: var(--danger); font-size: .88rem; }
 
 @media (pointer: coarse) {

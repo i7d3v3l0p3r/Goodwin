@@ -1,18 +1,22 @@
 import { createContext, createEffect, createSignal, onSettled, useContext } from "solid-js";
 import { ApiError, api, type Access, type Message, type Settings, type Snapshot } from "./api";
 import { initialLanguage, words, type Language } from "./words";
+import { capabilities, createProviderReadiness, wakeReady } from "./readiness";
 
 export function createPanel() {
   const [language, setLanguage] = createSignal<Language>(initialLanguage());
   const [access, setAccess] = createSignal<Access>();
   const [snapshot, setSnapshot] = createSignal<Snapshot>();
   const [chatDraft, setChatDraft] = createSignal<Message>();
+  const [draftMessage, setDraftMessage] = createSignal("");
+  const [setupDismissed, setSetupDismissed] = createSignal(localStorage.getItem("goodwin-setup-dismissed") === "true");
   const [reachable, setReachable] = createSignal(true);
   const [pending, setPending] = createSignal(false);
   const [error, setError] = createSignal("");
   const [microphonePending, setMicrophonePending] = createSignal(false);
   const [microphoneError, setMicrophoneError] = createSignal("");
   const t = () => words[language()];
+  const { stageIssue, updateProviderSettings } = createProviderReadiness(snapshot, reachable);
   let events: EventSource | undefined;
   let retry = 0;
   let retryDelay = 1000;
@@ -22,13 +26,19 @@ export function createPanel() {
     if (!state.authorized) {
       setSnapshot(undefined);
       setChatDraft(undefined);
+      setDraftMessage("");
       setMicrophoneError("");
     }
   }
 
-  function connect() {
+  function disconnect() {
     window.clearTimeout(retry);
     events?.close();
+    events = undefined;
+  }
+
+  function connect() {
+    disconnect();
     const source = new EventSource("/api/events");
     events = source;
 
@@ -68,12 +78,15 @@ export function createPanel() {
   onSettled(() => {
     connect();
     const recheckAccess = () => { if (access()?.authorized === false) connect(); };
+    const restorePage = (event: PageTransitionEvent) => { if (event.persisted) connect(); };
     window.addEventListener("focus", recheckAccess);
+    window.addEventListener("pagehide", disconnect);
+    window.addEventListener("pageshow", restorePage);
     return () => {
       window.removeEventListener("focus", recheckAccess);
-      window.clearTimeout(retry);
-      events?.close();
-      events = undefined;
+      window.removeEventListener("pagehide", disconnect);
+      window.removeEventListener("pageshow", restorePage);
+      disconnect();
     };
   });
 
@@ -133,7 +146,17 @@ export function createPanel() {
   }
 
   return {
-    access, snapshot, chatDraft, reachable, pending, error, language, t, status, changeLanguage, clearError,
+    access, snapshot, chatDraft, draftMessage, setDraftMessage, reachable, pending, error, language, t, status, changeLanguage, clearError,
+    stageIssue, updateProviderSettings, wakeReady: () => reachable() && wakeReady(snapshot()),
+    assistantNeedsSetup: () => Boolean(snapshot() && capabilities.some(capability => {
+      const issue = stageIssue(capability);
+      return issue && issue.kind !== "checking";
+    })),
+    setupDismissed,
+    dismissSetup: () => {
+      localStorage.setItem("goodwin-setup-dismissed", "true");
+      setSetupDismissed(true);
+    },
     busy: () => pending() || !snapshot() || !!snapshot()?.active,
     microphonePending, microphoneError,
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
@@ -145,6 +168,7 @@ export function createPanel() {
       updateAccess({ protected: true, authorized: false, setup_required: false });
     }, { recheckAccess: true }),
     send: (message: string) => action(() => api("chat", "POST", { message })),
+    testChat: (message: string) => action(() => api("chat", "POST", { message, test: true })),
     clearChat: () => action(() => api("chat/clear", "POST", {})),
     saveSettings: (settings: Settings, options?: { showError?: boolean }) =>
       action(() => api("settings", "PUT", { settings }), options),

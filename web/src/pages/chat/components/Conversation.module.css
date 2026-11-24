@@ -155,6 +155,9 @@
   margin: 0 auto 9px;
 }
 
+.setupHint { color: var(--accent); font-weight: 600; padding-inline: 4px; }
+.setupHint a { text-underline-offset: 3px; }
+
 @media (max-width: 650px) {
   .thread {
     width: calc(100% - 27px);
@@ -172,4 +175,10 @@
   }
 
   .composeArea { padding: 8px 13px max(12px, env(safe-area-inset-bottom)); }
+}
+
+@media (max-height: 450px) {
+  .thread { padding-top: 12px; }
+  .message { margin-bottom: 13px; }
+  .composeArea { padding-top: 5px; padding-bottom: max(7px, env(safe-area-inset-bottom)); }
 }

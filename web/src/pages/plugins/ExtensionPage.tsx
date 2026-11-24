@@ -1,7 +1,8 @@
 import { useLocation, useNavigate } from "@solidjs/router";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show, useContext } from "solid-js";
 import { PageHeader } from "../../components/PageHeader";
 import { usePanel } from "../../helpers/panel";
+import { DraftProtectionContext } from "../../helpers/drafts";
 import { loadPlugin, pluginPagePath, pluginRequest, pluginSettingsPath } from "../../helpers/plugins";
 import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./ExtensionPage.module.css";
@@ -10,6 +11,7 @@ export function ExtensionPage() {
   const panel = usePanel();
   const location = useLocation();
   const navigate = useNavigate();
+  const drafts = useContext(DraftProtectionContext);
   const [error, setError] = createSignal(false);
   const [container, setContainer] = createSignal<HTMLElement>();
   const path = () => location.pathname.replace(/\/$/, "");
@@ -39,6 +41,9 @@ export function ExtensionPage() {
       pageId: page.id,
       language,
       request: (path, method, body) => pluginRequest(plugin.id, path, method, body),
+      protectDraft: dirty => drafts.register({
+        dirty, keptAt: pathname => pathname.replace(/\/$/, "") === pluginPagePath(plugin.id, page.path),
+      }),
       navigate: path => {
         if (plugin.pages.some(page => page.path === path)) void navigate(pluginPagePath(plugin.id, path));
       },

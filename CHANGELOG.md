@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### English
+
+- Chat comes first in the main navigation and opens from the Goodwin logo. Timers has a direct navigation link when installed. The gear menu opens below its button. The setup wizard shows one step at a time, opens at the next check when the assistant is already connected, and can be skipped in the current browser.
+- Setup checks now identify the tested models and ask you to repeat a check after changing its configuration. Voice diagnostics link failures to the relevant settings.
+- The installer shows recovery actions for common failures and reports the version returned by the installed Goodwin binary.
+- The desktop installer checks Station compatibility and ADB access before installation, exposes its controls to screen readers, and reports installation stages. The panel opens Goodwin setup after you create the password.
+- Goodwin setup guides you through provider configuration and text and voice checks. The panel gives Station, Chat, Assistant, and Add-ons their own navigation entries, including on phones.
+- Chat keeps drafts while navigating, blocks sending when a provider needs configuration, and accounts for microphone mute in its wake-word prompt.
+- The panel shows which assistant stages use a connection before removal, confirms updates before restarting Goodwin, and lets signed-in users copy diagnostic logs.
+- Timers marks stale data and confirms cancellation. The wake-word dataset keeps its filter in the URL and protects unsaved score changes when leaving the page.
+
+### Русский
+
+- «Чат» стоит первым в основной навигации и открывается по логотипу Goodwin. Когда плагин таймеров установлен, в меню есть прямая ссылка «Таймеры». Меню настроек открывается под шестерёнкой. Мастер показывает по одному шагу, сразу переходит к проверке настроенного ассистента и запоминает пропуск в текущем браузере.
+- В настройке Goodwin видны проверенные модели. При изменении конфигурации панель предлагает повторить тест. Голосовая диагностика ведёт из ошибок к нужным настройкам.
+- Установщик предлагает действия для типовых сбоев и показывает версию, которую сообщила установленная сборка Goodwin.
+- Установщик проверяет совместимость Станции и доступ через ADB до установки, предоставляет элементы управления экранным дикторам и показывает этапы установки. Панель открывает настройку Goodwin после создания пароля.
+- Настройка Goodwin помогает подключить провайдера и проверить текстовый и голосовой ответы. «Колонка», «Чат», «Ассистент» и «Дополнения» доступны из основной навигации, в том числе на телефоне.
+- Чат сохраняет черновик при переходе между страницами, блокирует отправку при ненастроенном провайдере и учитывает отключение микрофона в подсказке активации.
+- Панель показывает, какие этапы ассистента используют подключение, запрашивает подтверждение перед перезапуском при обновлении и позволяет копировать журналы после входа с паролем.
+- Плагин «Таймеры» отмечает устаревшие данные и запрашивает подтверждение отмены. Датасет слова активации сохраняет фильтр в URL и предупреждает об уходе со страницы с несохранённым порогом.
+
 ## [0.3.1] - 2026-11-24
 
 ### English

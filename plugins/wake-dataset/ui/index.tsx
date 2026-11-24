@@ -20,6 +20,7 @@ const copy = {
     triggered: "Threshold reached", below: "Below threshold",
     clear: "Clear label", remove: "Delete", confirm: "Delete this recording?",
     removeAll: "Delete all", confirmAll: "Permanently delete all recordings, including labelled ones? Collection will stop.",
+    recordingManagement: "Manage recordings",
   },
   ru: {
     start: "Начать сбор", stop: "Остановить сбор",
@@ -37,6 +38,7 @@ const copy = {
     triggered: "Порог достигнут", below: "Ниже порога",
     clear: "Снять метку", remove: "Удалить", confirm: "Удалить эту запись?",
     removeAll: "Удалить все", confirmAll: "Удалить все записи без возможности восстановления, включая размеченные? Сбор остановится.",
+    recordingManagement: "Управление записями",
   },
 };
 
@@ -75,14 +77,15 @@ interface Page {
   status: Status;
 }
 
-export default function DatasetPage({ language, request }: PluginContext) {
+export default function DatasetPage({ language, request, protectDraft }: PluginContext) {
   const text = copy[language];
   const decimal = new Intl.NumberFormat(language, { maximumFractionDigits: 4 });
   const date = new Intl.DateTimeFormat(language, { dateStyle: "short", timeStyle: "medium" });
   const [status, setStatus] = createSignal<Status>();
   const [minimumDraft, setMinimumDraft] = createSignal<string>();
   const [page, setPage] = createSignal<Page>();
-  const [filter, setFilter] = createSignal<Label>("pending");
+  const savedFilter = new URLSearchParams(window.location.search).get("filter");
+  const [filter, setFilter] = createSignal<Label>(labels.find(label => label === savedFilter) ?? "pending");
   const [busy, setBusy] = createSignal(false);
   const [exported, setExported] = createSignal<number>();
   const [error, setError] = createSignal("");
@@ -109,6 +112,17 @@ export default function DatasetPage({ language, request }: PluginContext) {
     const draft = minimumDraft();
     return draft !== undefined && draft !== "" && Number(draft) !== status()?.minimumScore;
   };
+  let unregisterDraft: (() => void) | undefined;
+
+  function editMinimum(value?: string) {
+    setMinimumDraft(value);
+    if (value && Number(value) !== status()?.minimumScore) {
+      unregisterDraft ??= protectDraft?.(minimumChanged);
+    } else {
+      unregisterDraft?.();
+      unregisterDraft = undefined;
+    }
+  }
   const list = (label: Filter, after: number) => request<Page>(`/clips?filter=${label}&after=${after}`);
   const audio = async (id: number) => wavBytes((await request<{ wav: string }>(`/clips/${id}/audio`)).wav);
 
@@ -225,7 +239,7 @@ export default function DatasetPage({ language, request }: PluginContext) {
     if (!minimumChanged() || !Number.isFinite(minimumScore)) return;
     void change(async () => {
       await request("/capture-settings", "PUT", { minimumScore });
-      setMinimumDraft(undefined);
+      editMinimum();
     });
   }
 
@@ -270,6 +284,7 @@ export default function DatasetPage({ language, request }: PluginContext) {
   }
 
   onCleanup(() => {
+    unregisterDraft?.();
     stopped = true;
     window.clearTimeout(poll);
     stopAudio();
@@ -301,7 +316,7 @@ export default function DatasetPage({ language, request }: PluginContext) {
               <input class="gw-control" type="number" inputmode="decimal" min="0" max="1" step="any"
                 required disabled={busy()} value={minimumDraft() ?? state().minimumScore}
                 aria-describedby="wake-dataset-minimum-hint"
-                onInput={event => setMinimumDraft(event.currentTarget.value)} />
+                onInput={event => editMinimum(event.currentTarget.value)} />
             </label>
             <button type="submit" class="gw-button" disabled={busy() || !minimumChanged()}>{text.save}</button>
             <p id="wake-dataset-minimum-hint" class="gw-field-hint">{text.minimumHint}</p>
@@ -316,6 +331,10 @@ export default function DatasetPage({ language, request }: PluginContext) {
           <select class="gw-control" value={filter()} disabled={busy()} onChange={event => {
             const label = event.currentTarget.value as Label;
             setFilter(label);
+            const url = new URL(window.location.href);
+            if (label === "pending") url.searchParams.delete("filter");
+            else url.searchParams.set("filter", label);
+            window.history.replaceState(window.history.state, "", url);
             setBack([]);
             showPage(label, 0);
           }}>
@@ -325,8 +344,6 @@ export default function DatasetPage({ language, request }: PluginContext) {
         <div class="wake-dataset__labels">
           <button type="button" class="gw-button" disabled={busy() || !((status()?.positive ?? 0) + (status()?.negative ?? 0))}
             onClick={() => void download()}>{text.download}</button>
-          <button type="button" class="gw-button" data-variant="quiet" disabled={busy() || total() === 0}
-            onClick={removeAll}>{text.removeAll}</button>
         </div>
       </div>
       <Show when={error()}><InlineError>{error()}</InlineError></Show>
@@ -396,6 +413,11 @@ export default function DatasetPage({ language, request }: PluginContext) {
           }}>{text.next}</button>
         </div>
       </Show>
+      <details class="gw-disclosure">
+        <summary>{text.recordingManagement}</summary>
+        <button type="button" class="gw-button" data-variant="quiet" disabled={busy() || total() === 0}
+          onClick={removeAll}>{text.removeAll}</button>
+      </details>
     </div>
   );
 }

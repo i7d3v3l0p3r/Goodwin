@@ -1,0 +1,25 @@
+.page { gap: 22px; }
+.summary {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: clamp(15px, 4vw, 25px);
+  border: 1px solid var(--edge);
+  border-radius: var(--gw-radius);
+  background: var(--paper);
+}
+.summary h2 { font-size: 1.15rem; }
+.summary p, .destinations small { color: var(--muted); }
+.destinations { display: grid; gap: 3px; }
+.destinations a {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px;
+  border-bottom: 1px solid var(--edge);
+  text-decoration: none;
+}
+.destinations a:hover, .destinations a:focus-visible { background: var(--active-soft); }
+.destinations small { display: block; }

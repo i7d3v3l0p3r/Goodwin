@@ -52,7 +52,7 @@ export function MicrophoneGainForm(props: {
   }
 
   return <section aria-labelledby="microphone-settings-title">
-    <h3 id="microphone-settings-title">{props.t.audioInput}</h3>
+    <h2 id="microphone-settings-title">{props.t.audioInput}</h2>
     <form class={styles.form} onSubmit={event => void save(event)}>
       <fieldset class={styles.gains} disabled={props.pending}>
         <label class={styles.field}>

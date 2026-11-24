@@ -30,6 +30,7 @@ export function createDraftProtection() {
   createEffect(() => hasDrafts(), dirty => {
     if (!dirty) return;
     function warn(event: BeforeUnloadEvent) {
+      if (!hasDrafts()) return;
       event.preventDefault();
       event.returnValue = true;
     }

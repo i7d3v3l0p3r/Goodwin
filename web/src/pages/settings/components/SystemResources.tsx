@@ -66,7 +66,7 @@ export function SystemResources(props: { t: Words; language: Language }) {
   });
 
   return <section aria-labelledby="resources-title">
-    <h3 id="resources-title">{t().systemResources}</h3>
+    <h2 id="resources-title">{t().systemResources}</h2>
     <Show when={error()}><InlineError>{errorLabel(t(), error())}</InlineError></Show>
     <Show when={data()} fallback={<Show when={!error()}><StatusIndicator tone="pending">{t().loadingResources}</StatusIndicator></Show>}>{sample =>
       <Show when={sample().supported} fallback={<EmptyState>{t().resourcesUnavailable}</EmptyState>}>

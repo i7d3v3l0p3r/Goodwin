@@ -2,7 +2,7 @@
 
 Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`). It runs separately from Alice on a prepared Station. Say “Гудвин” followed by a question in one breath, or send a message from the web panel.
 
-The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Settings → Assistant**, select a provider and model independently for each stage. OpenRouter is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
+The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Assistant**, select a provider and model independently for each stage. OpenRouter is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
 Download the desktop installer, Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
 
@@ -11,9 +11,9 @@ Download the desktop installer, Station package and plugins from [GitHub Release
 The Rust installer runs on Windows, Linux and macOS. It installs Goodwin on a prepared Yandex Station Mini 3 over network ADB with root access and support for the `/data/init.d` service directory. Install [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) and put ADB on your `PATH`, or select the ADB executable under **Дополнительные настройки**.
 
 1. Select a Station from the list. The installer starts an mDNS search for Mini 3 on launch. Click **Обновить** to search again or **Указать адрес вручную** to enter an IP address or hostname. Add an ADB port if it differs from 5555.
-2. Choose a wake word and model tier under **Модель активации**. The installer lists compatible models from the latest [Goodwin-wakeword release](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest). The default keeps the current model on updates and downloads «Гудвин» Standard on a fresh installation.
-3. Click **Установить или обновить**. The installer verifies the Station package and any model download with SHA-256, starts the service and enables it at boot.
-4. Open the panel from the installer and create a password on a fresh installation.
+2. Click **Проверить подключение** to check ADB access and Station compatibility. Confirm the target and package source, then choose a wake word and model tier. The default keeps the current model on updates and downloads «Гудвин» Standard on a fresh installation.
+3. Click **Установить Goodwin** or **Обновить Goodwin**. The installer verifies the Station package and any model download with SHA-256, starts the service and enables it at boot.
+4. After a fresh installation, click **Настроить Goodwin** and create a password. The panel guides you through the provider setup and checks for text and voice replies.
 
 For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs the AArch64 `goodwin` binary. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
 
@@ -44,7 +44,7 @@ The regular installer supports both modes. To build it without desktop dependenc
 
 ### Update from the web panel
 
-On a Station set up with the installer, sign in and open **Settings → Goodwin update**. Check for updates, then select **Install and restart** when a newer stable release is available. The Station needs HTTPS access to GitHub to download and verify the package. If the update page is missing, use the installer to install a build with web update support first.
+On a Station set up with the installer, sign in and open **Station → Goodwin update**. Check for updates, then select **Install and restart** when a newer stable release is available. The Station needs HTTPS access to GitHub to download and verify the package. If the update page is missing, use the installer to install a build with web update support first.
 
 Goodwin checks that the panel starts after the restart and restores the previous executable if startup fails. Settings, plugins and the selected wake-word model are retained. The current chat clears when Goodwin restarts. Reload the panel when it reports that the update is complete.
 
@@ -94,9 +94,9 @@ chmod +x ./goodwin
 ./goodwin serve ./goodwin-data 0.0.0.0:8787
 ```
 
-Open the Station's address on port 8787 and create a panel password. In **Plugins**, upload `openai-compatible-wasm32.tar.gz` and open its settings to configure OpenRouter or another compatible API. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
+Open the Station's address on port 8787 and create a panel password. In **Set up Goodwin**, upload `openai-compatible-wasm32.tar.gz`, configure OpenRouter or another compatible API, and check text and voice replies. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
 
-To enable or change voice activation, open **Settings → Activation and microphone**. Choose a model and click **Download and switch**. The Station needs access to GitHub for the download. The new model takes effect without restarting the service and is saved for subsequent starts.
+To enable or change voice activation, open **Station → Activation and microphone**. Choose a model and click **Download and switch**. The Station needs access to GitHub for the download. The new model takes effect without restarting the service and is saved for subsequent starts.
 
 On a manual installation, you can also place a local LiveKit v2 Standard or Micro ONNX at `goodwin-data/goodwin.onnx` before starting Goodwin. Goodwin reads the managed selection first and uses the local model when no catalog model is selected. Set `GOODWIN_WAKE_MODEL` to use a different local file. Run `goodwin wake-runtimes` to list the runtimes compiled into the binary. Use `goodwin wake-check <model.onnx>` or `goodwin wake-check <model.tflite> <metadata.json>` to check loading, warm-up, and one inference step without the microphone. The Station build supports Micro INT8 TFLite and uses the catalog threshold at 50% sensitivity.
 

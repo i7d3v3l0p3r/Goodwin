@@ -7,6 +7,7 @@ const copy = {
     minutes: "Minutes", seconds: "Seconds", name: "Name (optional)", start: "Start timer",
     active: "Active", completed: "Completed", unnamed: "Timer", cancel: "Cancel",
     loading: "Loading timers…", empty: "No active timers.", failed: "Could not reach the timer plugin.",
+    stale: "Showing the last available timer data.", cancelNamed: (name: string) => `Cancel timer “${name}”?`,
     errors: {
       invalid_timer_duration: "Enter a duration between one second and seven days.",
       invalid_timer_name: "Enter a name of up to 64 characters.",
@@ -18,6 +19,7 @@ const copy = {
     minutes: "Минуты", seconds: "Секунды", name: "Имя (необязательно)", start: "Поставить таймер",
     active: "Активные", completed: "Завершённые", unnamed: "Таймер", cancel: "Отменить",
     loading: "Загружаем таймеры…", empty: "Активных таймеров нет.", failed: "Не удалось обратиться к плагину таймеров.",
+    stale: "Показаны последние доступные данные.", cancelNamed: (name: string) => `Отменить таймер «${name}»?`,
     errors: {
       invalid_timer_duration: "Укажите длительность от одной секунды до семи дней.",
       invalid_timer_name: "Введите имя длиной до 64 символов.",
@@ -119,7 +121,9 @@ export default function TimersPage({ language, request }: PluginContext) {
     }
   }
 
-  const clock = window.setInterval(() => setNow(performance.now() + clockOffset), 250);
+  const clock = window.setInterval(() => {
+    if (!connectionFailed()) setNow(performance.now() + clockOffset);
+  }, 250);
   onCleanup(() => {
     stopped = true;
     window.clearInterval(clock);
@@ -143,7 +147,7 @@ export default function TimersPage({ language, request }: PluginContext) {
             <span class="gw-field-label">{text.name}</span>
             <input class="gw-control" ref={nameInput} name="name" type="text" maxlength={64} />
           </label>
-          <button class="gw-button" data-variant="primary" type="submit" disabled={busy()}>
+          <button class="gw-button" data-variant="primary" type="submit" disabled={busy() || connectionFailed()}>
             {text.start}
           </button>
         </form>
@@ -152,7 +156,7 @@ export default function TimersPage({ language, request }: PluginContext) {
       <section>
         <h2>{text.active}</h2>
         <Show when={connectionFailed()}>
-          <div class="timer-list-error"><InlineError>{text.failed}</InlineError></div>
+          <div class="timer-list-error"><InlineError>{text.failed} {timers() ? text.stale : ""}</InlineError></div>
         </Show>
         <div class="timer-list-status" role="status">
           <Show when={!connectionFailed()}>
@@ -169,8 +173,12 @@ export default function TimersPage({ language, request }: PluginContext) {
                 return <li class="timer-active">
                   <span>{timer().name || text.unnamed}</span>
                   <time datetime={`PT${remaining()}S`}>{countdown(remaining())}</time>
-                  <button class="gw-button" type="button" disabled={busy()}
-                    onClick={() => void change(() => request(`/timers/${timer().id}`, "DELETE"))}>
+                  <button class="gw-button" type="button" disabled={busy() || connectionFailed()}
+                    aria-label={text.cancelNamed(timer().name || text.unnamed)} onClick={() => {
+                      if (window.confirm(text.cancelNamed(timer().name || text.unnamed))) {
+                        void change(() => request(`/timers/${timer().id}`, "DELETE"));
+                      }
+                    }}>
                     {text.cancel}
                   </button>
                 </li>;

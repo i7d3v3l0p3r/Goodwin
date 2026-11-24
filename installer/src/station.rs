@@ -20,12 +20,16 @@ const INSTALL: &str = include_str!("../install-station.sh");
 const INIT: &str = include_str!("../../scripts/station-goodwin-init.sh");
 const SUCCESS: &str = "GOODWIN_INSTALL_OK";
 const INSTALL_EXIT: &str = "GOODWIN_INSTALL_EXIT ";
+const INSTALL_VERSION: &str = "GOODWIN_INSTALL_VERSION ";
+const INSTALL_ERROR: &str = "GOODWIN_INSTALL_ERROR ";
 const DEFAULT_ADB_PORT: u16 = 5555;
 const PREFLIGHT: &str = r#"
 if [ "$(id -u)" != 0 ]; then
     echo ROOT_REQUIRED
 elif [ "$(uname -m)" != aarch64 ] || [ ! -x /etc/init.d/S95data-services ]; then
     echo UNSUPPORTED_STATION
+elif [ -e /data/opt/.goodwin-install-lock ]; then
+    echo INSTALL_LOCKED
 else
     echo GOODWIN_STATION_READY
 fi
@@ -51,6 +55,7 @@ impl Model {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Address {
     host: String,
     port: u16,
@@ -131,6 +136,105 @@ pub(crate) struct Installed {
     pub(crate) source: String,
     pub(crate) panel: String,
     pub(crate) updated: bool,
+    #[cfg(feature = "gui")]
+    pub(crate) version: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstallIssue {
+    Adb,
+    Connection,
+    Root,
+    Unsupported,
+    LocalPackage,
+    Release,
+    Model,
+    Locked,
+    Layout,
+    RolledBack,
+    RecoveryFailed,
+    Unconfirmed,
+}
+
+impl std::fmt::Display for InstallIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Adb => "ADB не найден или не запускается",
+            Self::Connection => "Станция недоступна через ADB",
+            Self::Root => "Для установки на подготовленной Станции нужен ADB с правами root",
+            Self::Unsupported => {
+                "Ожидается подготовленная Станция Мини 3 с поддержкой /data/init.d"
+            }
+            Self::LocalPackage => "Не удалось подготовить локальную сборку",
+            Self::Release => "Не удалось скачать или проверить релиз Goodwin",
+            Self::Model => "Не удалось подготовить или загрузить модель активации",
+            Self::Locked => "Другая установка ещё идёт или требует восстановления",
+            Self::Layout => "Состояние установленного Goodwin не соответствует ожидаемому",
+            Self::RolledBack => "Установка прервалась. Предыдущее состояние восстановлено",
+            Self::RecoveryFailed => "Автоматическое восстановление не завершилось",
+            Self::Unconfirmed => "Станция не подтвердила результат установки",
+        })
+    }
+}
+
+impl std::error::Error for InstallIssue {}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InstallStage {
+    #[default]
+    Connect,
+    Package,
+    Transfer,
+    Install,
+}
+
+fn connect(adb: &Adb<'_>, log: &impl Fn(String)) -> Result<()> {
+    log(format!("Подключаемся к {}…", adb.serial));
+    let output = adb.run(None, 25, ["connect", adb.serial])?;
+    if !output.is_empty() {
+        log(output);
+    }
+    ensure!(
+        adb.on_station(15, ["get-state"])?.trim() == "device",
+        InstallIssue::Connection
+    );
+    match adb.on_station(15, ["shell", PREFLIGHT])?.trim() {
+        "ROOT_REQUIRED" => {
+            bail!(InstallIssue::Root)
+        }
+        "UNSUPPORTED_STATION" => {
+            bail!(InstallIssue::Unsupported)
+        }
+        "INSTALL_LOCKED" => bail!(InstallIssue::Locked),
+        "GOODWIN_STATION_READY" => Ok(()),
+        output => bail!("Не удалось проверить Станцию: {output}"),
+    }
+}
+
+fn already_installed(adb: &Adb<'_>) -> Result<bool> {
+    let existing = adb.on_station(
+        15,
+        [
+            "shell",
+            "if [ -f /data/opt/etc/goodwin/config.json ]; then echo update; else echo fresh; fi",
+        ],
+    )?;
+    match existing.trim() {
+        "fresh" => Ok(false),
+        "update" => Ok(true),
+        _ => bail!("Не удалось определить, установлен ли Goodwin на Станции"),
+    }
+}
+
+#[cfg(feature = "gui")]
+pub(crate) fn check(adb: &Path, address: &Address) -> Result<bool> {
+    let serial = address.serial();
+    let adb = Adb {
+        executable: adb,
+        serial: &serial,
+    };
+    connect(&adb, &|_| {})?;
+    already_installed(&adb)
 }
 
 pub(crate) fn install(
@@ -141,50 +245,41 @@ pub(crate) fn install(
     catalog: Option<&Catalog>,
     log: impl Fn(String) + Sync,
 ) -> Result<Installed> {
+    install_with_progress(adb, address, source, model, catalog, log, |_| {})
+}
+
+pub(crate) fn install_with_progress(
+    adb: &Path,
+    address: Address,
+    source: Source,
+    model: Model,
+    catalog: Option<&Catalog>,
+    log: impl Fn(String) + Sync,
+    phase: impl Fn(InstallStage),
+) -> Result<Installed> {
     let serial = address.serial();
     let adb = Adb {
         executable: adb,
         serial: &serial,
     };
-    log(format!("Подключаемся к {serial}…"));
-    let connect = adb.run(None, 25, ["connect", &serial])?;
-    if !connect.is_empty() {
-        log(connect);
-    }
-    ensure!(
-        adb.on_station(15, ["get-state"])?.trim() == "device",
-        "Станция недоступна через ADB"
-    );
-    match adb.on_station(15, ["shell", PREFLIGHT])?.trim() {
-        "ROOT_REQUIRED" => {
-            bail!("Для установки на подготовленной Станции нужен ADB с правами root")
-        }
-        "UNSUPPORTED_STATION" => {
-            bail!("Ожидается подготовленная Станция Мини 3 с поддержкой /data/init.d")
-        }
-        "GOODWIN_STATION_READY" => {}
-        output => bail!("Не удалось проверить Станцию: {output}"),
-    }
+    phase(InstallStage::Connect);
+    connect(&adb, &log)?;
 
+    phase(InstallStage::Package);
     let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
-    let (source, bundled_models) = package::prepare(source, work.path(), &log)?;
+    let issue = if matches!(&source, Source::Local(_)) {
+        InstallIssue::LocalPackage
+    } else {
+        InstallIssue::Release
+    };
+    let (source, bundled_models) = package::prepare(source, work.path(), &log).context(issue)?;
     let mut model_file = None;
     let choice = if bundled_models {
-        model.bundled_arg()?
+        model.bundled_arg().context(InstallIssue::Model)?
     } else {
         let id = match &model {
             Model::Id(id) => Some(id.as_str()),
-            Model::Keep => {
-                let existing = adb.on_station(15, [
-                    "shell",
-                    "if [ -f /data/opt/etc/goodwin/config.json ]; then echo update; else echo fresh; fi",
-                ])?;
-                match existing.trim() {
-                    "fresh" => Some("goodwin-standard"),
-                    "update" => None,
-                    _ => bail!("Не удалось определить, установлен ли Goodwin на Станции"),
-                }
-            }
+            Model::Keep => (!already_installed(&adb)?).then_some("goodwin-standard"),
         };
         if let Some(id) = id {
             let payload = work.path().join("payload");
@@ -198,8 +293,7 @@ pub(crate) fn install(
             let catalog = match catalog {
                 Some(catalog) => catalog,
                 None => {
-                    latest = Catalog::latest(runtimes)
-                        .context("Не удалось загрузить каталог моделей")?;
+                    latest = Catalog::latest(runtimes).context(InstallIssue::Model)?;
                     &latest
                 }
             };
@@ -207,10 +301,11 @@ pub(crate) fn install(
                 .models
                 .iter()
                 .find(|model| model.selection.id == id)
-                .context("В каталоге нет выбранной модели активации")?;
+                .context("В каталоге нет выбранной модели активации")
+                .context(InstallIssue::Model)?;
             ensure!(
                 runtimes.contains(&model.selection.runtime()),
-                "Выбранная сборка Goodwin не поддерживает эту модель активации"
+                InstallIssue::Model
             );
             let name = match model.selection.runtime() {
                 Runtime::MicroTflite => "wake-model.tflite",
@@ -218,7 +313,7 @@ pub(crate) fn install(
             };
             let selection = catalog
                 .download(id, fs::File::create(payload.join(name))?)
-                .context("Не удалось скачать или проверить модель активации")?;
+                .context(InstallIssue::Model)?;
             serde_json::to_writer(
                 fs::File::create(payload.join("wake-model.json"))?,
                 selection,
@@ -234,6 +329,7 @@ pub(crate) fn install(
         fs::write(work.path().join(name), script.replace("\r\n", "\n"))?;
     }
 
+    phase(InstallStage::Transfer);
     // Keep the upload and extraction off the persistent volume when tmpfs has room.
     let tmp_available = adb.on_station(10, ["shell", "df -Pk /tmp"]).ok();
     let tmp_has_room = tmp_available
@@ -264,17 +360,20 @@ pub(crate) fn install(
         "Не удалось создать временную папку на Станции"
     );
 
-    let install = transfer_and_install(&adb, work.path(), &remote, choice, &log);
+    let install = transfer_and_install(&adb, work.path(), &remote, choice, &log, &phase);
     if adb.on_station(10, [
         "shell",
         &format!("rm -rf {remote}/payload; rm -f {remote}/payload.tar.gz {remote}/install-station.sh {remote}/init.sh; rmdir {remote}"),
     ]).is_err() {
         log(format!("На Станции осталась временная папка {remote}"));
     }
+    let install = install?;
     Ok(Installed {
         source,
         panel: address.panel(),
-        updated: install?,
+        updated: install.updated,
+        #[cfg(feature = "gui")]
+        version: install.version,
     })
 }
 
@@ -284,7 +383,8 @@ fn transfer_and_install(
     remote: &str,
     choice: &str,
     log: &(impl Fn(String) + Sync),
-) -> Result<bool> {
+    phase: &impl Fn(InstallStage),
+) -> Result<RemoteInstallation> {
     for name in ["payload.tar.gz", "install-station.sh", "init.sh"] {
         let local = work.join(name);
         let destination = format!("{remote}/{name}");
@@ -297,36 +397,80 @@ fn transfer_and_install(
             ],
         )?;
     }
+    phase(InstallStage::Install);
     log("Устанавливаем Goodwin и проверяем запуск…".into());
     // Legacy ADB shells can exit successfully without returning the remote status.
     let script = format!(
         "sh {remote}/install-station.sh {remote} {choice}; status=$?; printf '\\n{INSTALL_EXIT}%s\\n' \"$status\"",
     );
     let report = |line: String| {
-        if !line.starts_with(SUCCESS) && !line.starts_with(INSTALL_EXIT) {
+        if ![SUCCESS, INSTALL_EXIT, INSTALL_VERSION, INSTALL_ERROR]
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+        {
             log(line);
         }
     };
-    let result = adb.run(Some(&report), 360, ["-s", adb.serial, "shell", &script])?;
+    let result = adb
+        .run(Some(&report), 360, ["-s", adb.serial, "shell", &script])
+        .context(InstallIssue::Unconfirmed)?;
     install_result(&result)
 }
 
-fn install_result(output: &str) -> Result<bool> {
+#[derive(Debug)]
+struct RemoteInstallation {
+    updated: bool,
+    #[cfg(feature = "gui")]
+    version: Option<String>,
+}
+
+fn install_result(output: &str) -> Result<RemoteInstallation> {
     let mut lines = output.lines().map(str::trim);
     let status = lines
         .next_back()
         .and_then(|line| line.strip_prefix(INSTALL_EXIT))
         .and_then(|value| value.parse::<u8>().ok())
-        .context("ADB не вернул код завершения установки на Станции")?;
-    ensure!(
-        status == 0,
-        "Скрипт установки на Станции завершился с кодом {status}"
-    );
-    match lines.rfind(|line| line.starts_with(SUCCESS)) {
-        Some("GOODWIN_INSTALL_OK fresh") => Ok(false),
-        Some("GOODWIN_INSTALL_OK update") => Ok(true),
-        _ => bail!("Станция не подтвердила запуск Goodwin"),
+        .context("ADB не вернул код завершения установки на Станции")
+        .context(InstallIssue::Unconfirmed)?;
+    if status != 0 {
+        let error = anyhow!("Скрипт установки на Станции завершился с кодом {status}");
+        let issue = lines
+            .rev()
+            .find_map(|line| match line.strip_prefix(INSTALL_ERROR)? {
+                "model" => Some(InstallIssue::Model),
+                "locked" => Some(InstallIssue::Locked),
+                "layout" => Some(InstallIssue::Layout),
+                "rolled_back" => Some(InstallIssue::RolledBack),
+                "recovery_failed" => Some(InstallIssue::RecoveryFailed),
+                _ => None,
+            });
+        return Err(match issue {
+            Some(issue) => error.context(issue),
+            None => error,
+        });
     }
+    #[cfg(feature = "gui")]
+    let version = lines
+        .clone()
+        .find_map(|line| line.strip_prefix(INSTALL_VERSION))
+        .filter(|version| {
+            !version.is_empty()
+                && version.len() <= 128
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
+        })
+        .map(str::to_owned);
+    let updated = match lines.rfind(|line| line.starts_with(SUCCESS)) {
+        Some("GOODWIN_INSTALL_OK fresh") => false,
+        Some("GOODWIN_INSTALL_OK update") => true,
+        _ => bail!(InstallIssue::Unconfirmed),
+    };
+    Ok(RemoteInstallation {
+        updated,
+        #[cfg(feature = "gui")]
+        version,
+    })
 }
 
 struct Adb<'a> {
@@ -364,9 +508,7 @@ impl Adb<'_> {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        let mut child = command.spawn().context(
-            "ADB не найден или не запускается. Установите Android SDK Platform-Tools или укажите путь к ADB",
-        )?;
+        let mut child = command.spawn().context(InstallIssue::Adb)?;
         let stdout = child.stdout.take().context("Нет вывода ADB")?;
         let stderr = child.stderr.take().context("Нет вывода ошибок ADB")?;
         let start = Instant::now();
@@ -447,22 +589,44 @@ mod tests {
 
     #[test]
     fn installation_uses_the_remote_exit_status_on_legacy_adb() {
-        assert!(!install_result("GOODWIN_INSTALL_OK fresh\r\nGOODWIN_INSTALL_EXIT 0\r\n").unwrap());
-        assert!(install_result("GOODWIN_INSTALL_OK update\nGOODWIN_INSTALL_EXIT 0").unwrap());
+        assert!(
+            !install_result("GOODWIN_INSTALL_OK fresh\r\nGOODWIN_INSTALL_EXIT 0\r\n")
+                .unwrap()
+                .updated
+        );
+        assert!(
+            install_result("GOODWIN_INSTALL_OK update\nGOODWIN_INSTALL_EXIT 0")
+                .unwrap()
+                .updated
+        );
         let error = install_result("Could not open the upload directory.\nGOODWIN_INSTALL_EXIT 2")
             .unwrap_err();
         assert!(error.to_string().ends_with("с кодом 2"));
-        assert!(
-            install_result("")
-                .unwrap_err()
-                .to_string()
-                .contains("ADB не вернул код")
-        );
+        assert!(install_result("").unwrap_err().is::<InstallIssue>());
         assert!(
             install_result("GOODWIN_INSTALL_EXIT 0")
                 .unwrap_err()
                 .to_string()
-                .contains("Станция не подтвердила запуск")
+                .contains("Станция не подтвердила результат")
         );
+    }
+
+    #[test]
+    fn installation_retains_the_remote_recovery_status() {
+        let error = install_result("GOODWIN_INSTALL_ERROR recovery_failed\nGOODWIN_INSTALL_EXIT 1")
+            .unwrap_err();
+        assert_eq!(error.downcast_ref(), Some(&InstallIssue::RecoveryFailed));
+        let error = install_result("GOODWIN_INSTALL_ERROR rolled_back\nGOODWIN_INSTALL_EXIT 1")
+            .unwrap_err();
+        assert_eq!(error.downcast_ref(), Some(&InstallIssue::RolledBack));
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn installation_reports_the_running_version_even_for_a_local_package() {
+        let result = install_result("GOODWIN_INSTALL_VERSION 0.3.1-local+test\r\nGOODWIN_INSTALL_OK fresh\r\nGOODWIN_INSTALL_EXIT 0").unwrap();
+        assert_eq!(result.version.as_deref(), Some("0.3.1-local+test"));
+        let legacy = install_result("GOODWIN_INSTALL_OK update\nGOODWIN_INSTALL_EXIT 0").unwrap();
+        assert!(legacy.version.is_none());
     }
 }

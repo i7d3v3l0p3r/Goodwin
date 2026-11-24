@@ -13,6 +13,7 @@
 
 .actions button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .startError { margin-top: 8px; }
+.recoveryLink { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); text-underline-offset: 3px; }
 
 .details {
   margin-top: 19px;
@@ -20,7 +21,7 @@
   border-top: 1px solid var(--edge);
 }
 
-.details h4 {
+.details h3 {
   margin: 0 0 10px;
   font-size: .98rem;
 }
@@ -37,7 +38,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.report h5 { margin: 0 0 4px; font-size: .87rem; }
+.report h4 { margin: 0 0 4px; font-size: .87rem; }
 .text { min-width: 0; }
 .text p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }
 .timings, .configuration {

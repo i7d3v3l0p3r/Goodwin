@@ -197,6 +197,8 @@ async fn system_prompt(
 #[derive(Deserialize)]
 struct Chat {
     message: String,
+    #[serde(default)]
+    test: bool,
 }
 
 async fn chat(State(panel): State<Panel>, Json(chat): Json<Chat>) -> Response {
@@ -204,7 +206,12 @@ async fn chat(State(panel): State<Panel>, Json(chat): Json<Chat>) -> Response {
     if message.is_empty() || message.len() > 8_000 || message.chars().count() > 2000 {
         return problem(StatusCode::BAD_REQUEST, "invalid_message");
     }
-    let id = match panel.app.start(Source::Chat) {
+    let started = if chat.test {
+        panel.app.start_chat_test()
+    } else {
+        panel.app.start(Source::Chat)
+    };
+    let id = match started {
         Ok(id) => id,
         Err(error) => return blocked(error),
     };

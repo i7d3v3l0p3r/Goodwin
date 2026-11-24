@@ -4,6 +4,7 @@ use anyhow::Result;
 use goodwin_plugin::settings::SettingsData;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::{Failure, package, settings::valid_base_url};
 
@@ -60,6 +61,10 @@ pub(crate) struct View {
     has_key: bool,
     pub(super) speech_streaming: bool,
     revision: u64,
+    #[serde(skip)]
+    pub(super) request_configuration: [u8; 32],
+    #[serde(skip)]
+    pub(super) request_revision: u64,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +153,16 @@ impl Store {
                 has_key: !connection.key.is_empty(),
                 speech_streaming: connection.protocol.speech_streaming(),
                 revision: self.revision,
+                request_configuration: Sha256::digest(
+                    serde_json::to_vec(&(
+                        &connection.protocol,
+                        &connection.base_url,
+                        &connection.key,
+                    ))
+                    .expect("connection configuration is serializable"),
+                )
+                .into(),
+                request_revision: self.revision,
             })
             .collect()
     }

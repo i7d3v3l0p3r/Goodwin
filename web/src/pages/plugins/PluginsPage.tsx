@@ -1,5 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
-import { Icon } from "../../components/icons";
+import { Icon, PluginNavigationIcon } from "../../components/icons";
 import { PageHeader } from "../../components/PageHeader";
 import { Button, ButtonLink } from "../../components/ui-kit/Button";
 import { ConfirmDialog } from "../../components/ui-kit/ConfirmDialog";
@@ -7,6 +7,8 @@ import { EmptyState, InlineError, StatusIndicator } from "../../components/ui-ki
 import type { Plugin } from "../../helpers/api";
 import { usePanel } from "../../helpers/panel";
 import { pluginPagePath } from "../../helpers/plugins";
+import { setupPath } from "../../helpers/readiness";
+import { settingsSectionPath } from "../settings/sections";
 import { errorLabel } from "../../helpers/words";
 import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./PluginsPage.module.css";
@@ -41,9 +43,9 @@ export function PluginsPage() {
   }
 
   return <>
-    <PageHeader title={words().title} />
-    <section class="gw-page" aria-label={words().title}>
-      <Show when={allowed()} fallback={<p class={styles.note}>{words().password}</p>}>
+    <PageHeader title={panel.t().extensions} />
+    <section class="gw-page" aria-label={panel.t().extensions}>
+      <Show when={allowed()} fallback={<p class={styles.note}>{words().password} <a href={settingsSectionPath("panel")}>{panel.t().enablePassword}</a></p>}>
         <div class={styles.upload}>
           <div>
             <Button ref={node => { uploadButton = node; }} type="button" variant="primary" disabled={pending()}
@@ -56,6 +58,9 @@ export function PluginsPage() {
           </div>
           <p class={styles.note}>{words().archive}</p>
         </div>
+      </Show>
+      <Show when={panel.stageIssue("chat")?.kind === "install"}>
+        <p class={styles.note}><a href={setupPath}>{panel.t().firstRun.install}</a></p>
       </Show>
       <Show when={!removing() && panel.error()}><InlineError>{errorLabel(panel.t(), panel.error())}</InlineError></Show>
       <div role="status">
@@ -76,6 +81,15 @@ export function PluginsPage() {
                 </div>
                 <Show when={plugin().error}>
                   {code => <InlineError announce={false}>{errorLabel(panel.t(), code())}</InlineError>}
+                </Show>
+                <Show when={plugin().web && plugin().revision}>
+                  <div class="gw-row">
+                    <For each={plugin().pages.filter(page => page.navigation && pluginPagePath(plugin().id, page.path) !== landingPage(plugin()))}>{page =>
+                      <a href={pluginPagePath(plugin().id, page.path)}>
+                        <PluginNavigationIcon name={page.icon} /> {page.title[panel.language()]}
+                      </a>
+                    }</For>
+                  </div>
                 </Show>
               </div>
               <div class="gw-row">

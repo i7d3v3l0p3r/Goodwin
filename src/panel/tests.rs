@@ -230,6 +230,8 @@ async fn panel_serves_direct_navigation_to_settings() {
         "/settings/?from=bookmark",
         "/settings/activation",
         "/settings/assistant",
+        "/setup",
+        "/station",
         "/settings/diagnostics/",
         "/settings/panel",
         "/settings/update",

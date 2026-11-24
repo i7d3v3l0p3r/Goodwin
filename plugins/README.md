@@ -120,6 +120,8 @@ For a Solid page, set `web.solidRuntimeVersion` to `1` and export the page compo
 
 The component receives `pageId`, `language`, `request(path, method, body)` for your API, and `navigate(pagePath)` for declared pages as props. Use `onCleanup` to release timers and other resources when the panel unmounts the page. A prebuilt `.mjs` entry can also export `mount(container, context)` and return its own cleanup function.
 
+The panel can also supply `protectDraft(dirty)`. Register when a form becomes dirty, pass a function that returns whether its draft is unsaved, and call the returned cleanup after saving, discarding, or unmounting the draft. Check that the prop is present when supporting older panels.
+
 The panel provides `gw-button` with `variant="primary"` and `disabled`, `gw-card`, the `.gw-row` and `.gw-stack` utilities, and `--gw-color-*`, `--gw-space-*`, and `--gw-radius` CSS variables.
 
 Use `.gw-button` on a native button and set `data-variant="primary"` for the primary action or `data-variant="quiet"` for a low-emphasis action. Set `type="submit"` on the native button for forms. The `gw-button` element continues to act as a regular action button.

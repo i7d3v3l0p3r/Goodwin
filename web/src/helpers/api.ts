@@ -50,6 +50,7 @@ export interface Report {
   timings: { stage: Stage; ms: number }[];
   error: string | null;
   message_id?: number;
+  chat_test?: { model: VoiceModel; answered: boolean };
 }
 
 export interface VoiceReport extends Report {
@@ -84,8 +85,11 @@ export interface Snapshot {
   wake_model: WakeModel | null;
   active: Report | null;
   last: Report | null;
+  last_chat_test?: Report | null;
+  chat_test_current?: boolean;
   last_voice: VoiceReport | null;
   last_voice_test?: VoiceReport | null;
+  voice_test_current?: boolean;
   messages: Message[];
   plugins: Plugin[];
   chat_draft?: Message;
@@ -108,6 +112,7 @@ export interface Plugin {
   status: "starting" | "ready" | "updating" | "removing" | "error";
   error: string | null;
   revision: string | null;
+  settings_revision?: number;
   web: { entry: string; styles: string[] } | null;
   pages: PluginPage[];
   providers: Capability[];

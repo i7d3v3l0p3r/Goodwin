@@ -1,0 +1,43 @@
+.page { --gw-page-content-width: 620px; gap: 14px; }
+
+.progress, .steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.progress {
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.steps {
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: .875rem;
+}
+
+.steps li { padding: 5px 0; }
+.steps li[aria-current="step"] {
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: clamp(16px, 4vw, 26px);
+  border: 1px solid var(--edge);
+  border-radius: var(--gw-radius);
+  background: var(--paper);
+}
+
+.card h2 { font-size: 1.25rem; }
+.card p { color: var(--muted); overflow-wrap: anywhere; }
+.card a:not([data-variant]) { color: var(--accent); overflow-wrap: anywhere; text-underline-offset: 3px; }
+.card button, .card a[data-variant] { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
