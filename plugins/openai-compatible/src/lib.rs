@@ -1,3 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../../../shared/http_tls.rs"]
+mod http_tls;
 mod upstream;
 
 use serde::Deserialize;

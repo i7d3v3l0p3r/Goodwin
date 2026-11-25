@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, ensure};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -220,10 +220,9 @@ pub fn hash_password(password: &str) -> Result<String> {
         crate::panel_core::valid_password_length(password),
         "Use a password between 8 and 256 bytes"
     );
-    let salt =
-        SaltString::encode_b64(&random_bytes::<16>()?).map_err(|error| anyhow!("{error}"))?;
+    let salt = random_bytes::<16>()?;
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
         .map_err(|error| anyhow!("{error}"))
 }

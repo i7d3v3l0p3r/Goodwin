@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use wasmparser::{Encoding, Parser, Payload, TypeRef};
+use wasmparser::{Encoding, Imports, Parser, Payload, TypeRef};
 
 const PAGE_SIZE: u64 = 64 * 1024;
 const MAX_FUNCTIONS: u32 = 10_000;
@@ -34,7 +34,9 @@ pub(super) fn module(bytes: &[u8], host_services: bool, max_pages: u32) -> Resul
                 imports = section.count();
                 ensure!(imports <= MAX_FUNCTIONS, "Too many WASM imports");
                 for import in section {
-                    let import = import?;
+                    let Imports::Single(_, import) = import? else {
+                        anyhow::bail!("WASM compact imports are unsupported");
+                    };
                     ensure!(
                         import.module == "goodwin"
                             && matches!(import.ty, TypeRef::Func(_))

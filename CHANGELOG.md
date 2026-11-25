@@ -4,6 +4,7 @@
 
 ### English
 
+- Updated the Rust dependencies of Goodwin, its bundled plugins and the desktop installer.
 - Goodwin reads the current assistant configuration format and addresses named providers as `<plugin-id>:<connection-id>`. Re-enter API settings from standalone provider packages in the unified plugin and reselect any stage still using an earlier provider ID.
 - Use `goodwin wav` to process a WAV file from the command line.
 - The Station installer uses wake models from the catalog. Select a new catalog model when updating a Station that used a model bundled with an older installer or whose saved selection lacks a runtime.
@@ -26,6 +27,7 @@
 
 ### Русский
 
+- Обновлены зависимости Rust в Goodwin, комплектных плагинах и настольном установщике.
 - Goodwin читает текущий формат настроек ассистента. ID именованных подключений имеют вид `<ID плагина>:<ID подключения>`. Перенесите настройки API из отдельных плагинов в объединённый и заново выберите подключения для стадий со старыми ID.
 - Для обработки WAV из командной строки используется команда `goodwin wav`.
 - Установщик Станции использует модели активации из каталога. При обновлении Станции со встроенной моделью из старого пакета или с сохранённой моделью без указания рантайма выберите модель из каталога заново.

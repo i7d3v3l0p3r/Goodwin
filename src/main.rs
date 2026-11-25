@@ -4,10 +4,16 @@ mod app;
 mod assistant;
 #[cfg(target_os = "espidf")]
 mod builtin_assistant;
+#[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
+#[path = "../shared/checksum.rs"]
+mod checksum;
 #[cfg(not(target_os = "espidf"))]
 mod config;
 #[cfg(not(target_os = "espidf"))]
 mod core_update;
+#[cfg(not(target_os = "espidf"))]
+#[path = "../shared/http_tls.rs"]
+mod http_tls;
 #[cfg(not(target_os = "espidf"))]
 mod journal;
 mod model;

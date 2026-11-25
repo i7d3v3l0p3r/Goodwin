@@ -25,39 +25,42 @@ model-mini3 = []
 model-esp32s3-generic = []
 hotpath-alloc = ["dep:hotpath", "hotpath/hotpath-alloc"]
 wake-tflite = ["dep:sha2", "dep:url"]
-wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart"]
+wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart", "reqwest/query"]
 
 [dependencies]
 anyhow = "1"
-argon2 = "0.5"
-base64 = "0.22"
-getrandom = "0.3"
+argon2 = "0.6"
+base64 = "0.23"
+getrandom = "0.4"
 goodwin-plugin = { path = "plugins/sdk" }
 log = { version = "0.4", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tract-onnx = "0.23.10"
 
 [target.'cfg(any(target_os = "linux", target_os = "espidf"))'.dependencies]
-wasmparser = { version = "0.228", default-features = false, features = ["std"], optional = true }
+wasmparser = { version = "0.263", default-features = false, features = ["std"], optional = true }
 
 [target.'cfg(not(target_os = "espidf"))'.dependencies]
 axum = "0.8"
-blake2 = "0.10"
+blake2 = "0.11"
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false }
 hotpath = { version = "0.33", optional = true }
 livekit-wakeword = "0.2"
 prost = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
 rpassword = "7"
 rustfft = "6.4"
-sha2 = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "signal", "sync", "time"] }
 tract-onnx = "0.22"
 url = "2"
+webpki-roots = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1", features = ["fs"] }
@@ -65,14 +68,14 @@ rustix = { version = "1", features = ["fs"] }
 [target.'cfg(target_os = "espidf")'.dependencies]
 esp-idf-svc = "0.54"
 flate2 = { version = "1", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 url = { version = "2", optional = true }
 
 [build-dependencies]
 embuild = { version = "0.33", features = ["espidf"] }
 
 [target.'cfg(not(target_os = "espidf"))'.dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 
 [package.metadata.esp-idf-sys]
 esp_idf_version = "v5.5.2"

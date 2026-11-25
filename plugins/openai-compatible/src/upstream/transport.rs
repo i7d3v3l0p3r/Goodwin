@@ -22,6 +22,7 @@ mod platform {
 
     pub fn client() -> Result<Client> {
         Ok(Client::builder()
+            .tls_backend_preconfigured(crate::http_tls::client_config())
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(50))
             .redirect(Policy::none())

@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Result, anyhow, ensure};
 use argon2::{
     PasswordHash,
-    password_hash::{Output, SaltString},
+    password_hash::phc::{Output, Salt},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use esp_idf_svc::sys;
@@ -45,7 +45,7 @@ impl Auth {
 
     pub fn hash(password: &str) -> Result<String> {
         let bytes = random::<16>()?;
-        let salt = SaltString::encode_b64(&bytes).map_err(|error| anyhow!("{error}"))?;
+        let salt = Salt::new(&bytes).map_err(|error| anyhow!("{error}"))?;
         let digest = password_digest(password, &bytes, PASSWORD_ITERATIONS)?;
         Ok(format!(
             "${PASSWORD_ALGORITHM}$i={PASSWORD_ITERATIONS}${salt}${digest}"
@@ -123,24 +123,24 @@ fn password_digest(password: &str, salt: &[u8], iterations: u32) -> Result<Outpu
     Output::new(&digest).map_err(|error| anyhow!("{error}"))
 }
 
-fn verify_digest(password: &str, hash: &PasswordHash<'_>) -> Result<bool> {
-    let mut bytes = [0; 64];
-    let salt = hash.salt.ok_or_else(|| anyhow!("Missing password salt"))?;
-    let salt = salt
-        .decode_b64(&mut bytes)
-        .map_err(|error| anyhow!("{error}"))?;
+fn verify_digest(password: &str, hash: &PasswordHash) -> Result<bool> {
+    let salt = hash
+        .salt
+        .as_ref()
+        .ok_or_else(|| anyhow!("Missing password salt"))?;
     let rounds = hash
         .params
         .get_decimal("i")
         .ok_or_else(|| anyhow!("Missing password cost"))?;
     let expected = hash
         .hash
+        .as_ref()
         .ok_or_else(|| anyhow!("Missing password digest"))?;
     ensure!(
         salt.len() >= 16 && rounds >= PASSWORD_ITERATIONS && rounds <= 1_000_000,
         "Invalid password hash parameters"
     );
-    Ok(password_digest(password, salt, rounds)? == expected)
+    Ok(&password_digest(password, salt, rounds)? == expected)
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {

@@ -12,10 +12,10 @@ use anyhow::{Context, Result, bail, ensure};
 use flate2::read::GzDecoder;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{VERSION, newer, version_parts};
+use crate::checksum::Sha256Writer;
 
 const BIN: &str = "/data/opt/bin/goodwin";
 const DATA: &str = "/data/opt/etc/goodwin";
@@ -105,6 +105,7 @@ impl Job {
 
 fn client() -> Result<Client> {
     Ok(Client::builder()
+        .tls_backend_preconfigured(crate::http_tls::client_config())
         .https_only(true)
         .user_agent(concat!("Goodwin/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
@@ -247,10 +248,10 @@ fn prepare(client: &Client, version: &str, dir: &Path) -> Result<()> {
     let size = io::copy(&mut response.take(PACKAGE_LIMIT + 1), &mut archive)?;
     ensure!(size <= PACKAGE_LIMIT, "Goodwin package is too large");
     archive.rewind()?;
-    let mut digest = Sha256::new();
+    let mut digest = Sha256Writer::default();
     io::copy(&mut archive, &mut digest)?;
     ensure!(
-        hash.eq_ignore_ascii_case(&format!("{:x}", digest.finalize())),
+        hash.eq_ignore_ascii_case(&digest.finish()),
         "Goodwin package checksum mismatch"
     );
     archive.rewind()?;

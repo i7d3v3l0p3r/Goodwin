@@ -9,7 +9,8 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use reqwest::blocking::Client;
-use sha2::{Digest, Sha256};
+
+use crate::checksum::Sha256Writer;
 
 const REPO: &str = "i7d3v3l0p3r/Goodwin";
 const ARCHIVE: &str = "goodwin-mini3-aarch64.tar.gz";
@@ -69,6 +70,7 @@ pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Res
 
 fn download_release(work: &Path, log: &impl Fn(String)) -> Result<String> {
     let client = Client::builder()
+        .tls_backend_preconfigured(crate::http_tls::client_config())
         .https_only(true)
         .user_agent("GoodwinInstaller")
         .connect_timeout(Duration::from_secs(15))
@@ -219,12 +221,12 @@ fn read_checksums(path: &Path) -> Result<HashMap<String, String>> {
 }
 
 fn checksum(path: &Path) -> Result<String> {
-    let mut hash = Sha256::new();
+    let mut hash = Sha256Writer::default();
     io::copy(
         &mut File::open(path).with_context(|| format!("Не удалось открыть {}", path.display()))?,
         &mut hash,
     )?;
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hash.finish())
 }
 
 fn verify(path: &Path, name: &str, sums: &HashMap<String, String>) -> Result<()> {

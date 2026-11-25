@@ -233,11 +233,11 @@ pub(crate) fn configure(ctx: &egui::Context) {
             .expect("egui default text style")
             .size = size;
     }
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 impl eframe::App for InstallerWindow {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         self.poll_check();
         self.poll_search();
@@ -246,7 +246,10 @@ impl eframe::App for InstallerWindow {
         if busy && ctx.input(|input| input.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
-        self.render(ctx, busy);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render(ui, self.worker.is_some());
     }
 }
 
@@ -356,7 +359,7 @@ fn secondary_action(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Res
 }
 
 fn log_toggle(ui: &mut egui::Ui, open: bool) -> egui::Response {
-    let chevron = egui::Id::new("log_chevron");
+    let chevron = egui::IdSalt::new("log_chevron");
     let button = egui::Button::new((
         egui::Atom::custom(chevron, egui::Vec2::splat(12.0)),
         "Журнал установки",
@@ -388,7 +391,7 @@ fn log_toggle(ui: &mut egui::Ui, open: bool) -> egui::Response {
 }
 
 fn station_row(ui: &mut egui::Ui, station: &Station, selected: bool) -> egui::Response {
-    let marker = egui::Id::new("selection");
+    let marker = egui::IdSalt::new("selection");
     let address = station.address.to_string();
     let response = egui::Button::selectable(
         selected,
@@ -434,10 +437,10 @@ impl InstallerWindow {
         window
     }
 
-    fn render(&mut self, ctx: &egui::Context, busy: bool) {
+    fn render(&mut self, ui: &mut egui::Ui, busy: bool) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE).inner_margin(24))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 header(ui);
                 ui.add_space(10.0);
 
@@ -462,7 +465,7 @@ impl InstallerWindow {
                 }
             });
         if self.advanced_open {
-            self.advanced(ctx);
+            self.advanced(ui.ctx());
         }
     }
 
@@ -702,9 +705,9 @@ impl InstallerWindow {
     }
 
     fn advanced(&mut self, ctx: &egui::Context) {
-        let modal = egui::Modal::new(egui::Id::new("advanced"))
+        let modal = egui::Modal::new(egui::Id::unique("advanced"))
             .frame(
-                egui::Frame::popup(&ctx.style())
+                egui::Frame::popup(&ctx.global_style())
                     .fill(PAPER)
                     .corner_radius(12)
                     .inner_margin(20),
@@ -1003,6 +1006,7 @@ impl InstallerWindow {
 
     fn installation_log(&mut self, ui: &mut egui::Ui, busy: bool) {
         card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             ui.horizontal(|ui| {
                 if log_toggle(ui, self.log_open).clicked() {
                     self.log_open = !self.log_open;
@@ -1024,7 +1028,6 @@ impl InstallerWindow {
                     .min_scrolled_height(0.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
                         for line in &self.log {
                             ui.add(egui::Label::new(RichText::new(line).monospace()).wrap());
                         }
@@ -1257,7 +1260,7 @@ mod tests {
             ..Default::default()
         };
         let draw = |window: &mut InstallerWindow| {
-            ctx.run(egui::RawInput::default(), |ctx| window.render(ctx, false))
+            ctx.run_ui(egui::RawInput::default(), |ui| window.render(ui, false))
         };
         let pending = draw(&mut window);
         assert!(visible_text(&pending, "Установить Goodwin").is_none());
@@ -1288,13 +1291,13 @@ mod tests {
             ..Default::default()
         };
         let frame = |window: &mut InstallerWindow, events| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(bounds),
                     events,
                     ..Default::default()
                 },
-                |ctx| window.render(ctx, true),
+                |ui| window.render(ui, true),
             )
         };
         frame(&mut window, vec![]);
@@ -1335,6 +1338,8 @@ mod tests {
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, 240.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                     modifiers: egui::Modifiers::NONE,
                 },
             ],

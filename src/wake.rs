@@ -54,7 +54,7 @@ impl WakeModel {
     fn load_file(path: &Path, selection: Option<&Selection>) -> Result<Self> {
         let bytes =
             fs::read(path).with_context(|| format!("Read wake model {}", path.display()))?;
-        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let sha256 = crate::checksum::hex(&Sha256::digest(&bytes));
         let tflite = bytes.get(4..8) == Some(b"TFL3");
         if let Some(selection) = selection {
             ensure!(
@@ -244,7 +244,7 @@ mod tests {
             id: "goodwin-micro-int8".into(),
             wake_word: "Гудвин".into(),
             tier: "micro".into(),
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            sha256: crate::checksum::hex(&Sha256::digest(&bytes)),
             runtime: Runtime::MicroTflite,
             score_threshold: Some(0.390625),
         };

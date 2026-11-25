@@ -11,7 +11,11 @@ use anyhow::{Result, ensure};
 #[cfg(not(target_os = "espidf"))]
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "espidf", test))]
 use sha2::{Digest, Sha256};
+
+#[cfg(not(target_os = "espidf"))]
+use crate::checksum::Sha256Writer;
 
 pub(crate) const RELEASES: &str = "https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases";
 pub(crate) const CATALOG_LIMIT: u64 = 64 * 1024;
@@ -150,7 +154,7 @@ impl Model {
     fn copy_verified(&self, input: impl Read, mut output: impl Write) -> Result<()> {
         let mut input = input.take(self.size_bytes + 1);
         let mut buffer = [0; 16 * 1024];
-        let mut hash = Sha256::new();
+        let mut hash = Sha256Writer::default();
         let mut size = 0;
         loop {
             let bytes = input.read(&mut buffer)?;
@@ -159,12 +163,12 @@ impl Model {
             }
             size += bytes as u64;
             ensure!(size <= self.size_bytes, "Wake model size mismatch");
-            hash.update(&buffer[..bytes]);
+            hash.write_all(&buffer[..bytes])?;
             output.write_all(&buffer[..bytes])?;
         }
         ensure!(size == self.size_bytes, "Wake model size mismatch");
         ensure!(
-            format!("{:x}", hash.finalize()) == self.selection.sha256,
+            hash.finish() == self.selection.sha256,
             "Wake model SHA-256 mismatch"
         );
         Ok(())
@@ -194,7 +198,7 @@ impl Model {
 impl Selection {
     pub(crate) fn verify_sha256(&self, bytes: &[u8]) -> Result<()> {
         ensure!(
-            format!("{:x}", Sha256::digest(bytes)) == self.sha256,
+            crate::checksum::hex(&Sha256::digest(bytes)) == self.sha256,
             "Wake model SHA-256 mismatch"
         );
         Ok(())
@@ -268,6 +272,7 @@ impl Catalog {
 #[cfg(not(target_os = "espidf"))]
 fn get(url: &str) -> Result<Response> {
     Ok(Client::builder()
+        .tls_backend_preconfigured(crate::http_tls::client_config())
         .https_only(true)
         .user_agent("Goodwin")
         .connect_timeout(Duration::from_secs(10))
@@ -290,7 +295,7 @@ mod tests {
             "id": "egor-micro", "wake_word": "Егор", "tier": "micro",
             "filename": "egor-micro.onnx", "format": "onnx", "sample_rate_hz": 16000,
             "runtime": "livekit-v2-micro-onnx", "goodwin_compatible": true,
-            "size_bytes": 3, "sha256": format!("{:x}", Sha256::digest(b"abc"))
+            "size_bytes": 3, "sha256": crate::checksum::hex(&Sha256::digest(b"abc"))
         });
         let mut unsupported = model.clone();
         unsupported["format"] = json!("tflite");

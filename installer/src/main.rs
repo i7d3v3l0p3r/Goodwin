@@ -1,6 +1,10 @@
+#[path = "../../shared/checksum.rs"]
+mod checksum;
 mod cli;
 #[cfg(feature = "gui")]
 mod discovery;
+#[path = "../../shared/http_tls.rs"]
+mod http_tls;
 mod package;
 mod station;
 #[path = "../../shared/wake_catalog.rs"]

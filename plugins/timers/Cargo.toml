@@ -12,7 +12,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 dlmalloc = { version = "0.2.14", features = ["global"] }
-spin = { version = "0.9.9", default-features = false, features = ["spin_mutex"] }
+spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow = { version = "1", features = ["std"] }

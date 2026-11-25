@@ -192,6 +192,7 @@ impl Host {
     fn http_start(&mut self, request: HttpRequest, input: &[u8]) -> Result<Vec<u8>> {
         static CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
             Client::builder()
+                .tls_backend_preconfigured(crate::http_tls::client_config())
                 .connect_timeout(Duration::from_secs(8))
                 .redirect(Policy::none())
                 .build()
