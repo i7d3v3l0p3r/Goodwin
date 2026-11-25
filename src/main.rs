@@ -16,11 +16,15 @@ mod core_update;
 mod http_tls;
 #[cfg(not(target_os = "espidf"))]
 mod journal;
+mod journal_format;
 mod model;
 #[cfg(not(target_os = "espidf"))]
 mod panel;
 mod panel_core;
+mod password;
 mod platform;
+#[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+mod plugin_rpc;
 #[cfg(all(
     feature = "wasm-plugins",
     any(target_os = "linux", target_os = "espidf")
@@ -46,6 +50,6 @@ mod wake_tflite;
 #[cfg(not(target_os = "espidf"))]
 mod wav;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> goodwin_error::Result<()> {
     platform::run()
 }

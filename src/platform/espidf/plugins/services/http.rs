@@ -3,12 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
 use esp_idf_svc::{
     handle::RawHandle,
     http::{Method, client::EspHttpConnection},
     sys::{self, esp, esp_http_client_is_complete_data_received},
 };
+use goodwin_error::{Context, Result, ensure};
 use goodwin_plugin::{
     provider::MAX_RECORDING_BYTES,
     services::{HttpBody, HttpRequest, HttpResponse},
@@ -96,7 +96,7 @@ pub(super) fn start(
         "Invalid provider endpoint"
     );
     url.path_segments_mut()
-        .map_err(|_| anyhow::anyhow!("Invalid provider API base URL"))?
+        .map_err(|_| goodwin_error::report!("Invalid provider API base URL"))?
         .pop_if_empty()
         .extend(&request.path);
     if !request.query.is_empty() {
@@ -133,7 +133,7 @@ pub(super) fn start(
             ensure!(input.len() <= MAX_RECORDING_BYTES, "Recording is too large");
             let mut salt = [0; 8];
             getrandom::fill(&mut salt)
-                .map_err(|_| anyhow::anyhow!("Generate multipart boundary"))?;
+                .map_err(|_| goodwin_error::report!("Generate multipart boundary"))?;
             let boundary = format!("goodwin-{:016x}", u64::from_le_bytes(salt));
             for (name, value) in fields {
                 ensure!(
@@ -198,7 +198,7 @@ pub(super) fn start(
         }
         RESPONSE.with(|response| response.replace(Some(connection)));
     }
-    Ok(serde_json::to_vec(&HttpResponse {
+    Ok(goodwin_json::to_vec(&HttpResponse {
         status,
         content_type,
     })?)

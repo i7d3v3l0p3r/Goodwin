@@ -3,16 +3,15 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result as AnyResult, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use goodwin_error::{Context, Result as AnyResult, ensure};
 use goodwin_plugin::provider::{
-    CHAT_STREAM_METHOD, Capability, ChatRequest, MAX_CHAT_BYTES, MAX_SPEECH_CHUNK_BYTES,
+    CHAT_STREAM_METHOD, Capability, ChatRequest, ChatRole, MAX_CHAT_BYTES, MAX_SPEECH_CHUNK_BYTES,
     MODELS_METHOD, ModelCatalog, ModelsRequest, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
 };
 
 use super::{
-    Failure, PathBuf, PluginIdentity, Plugins, Runtime, Value, connections, random_id, services,
-    store,
+    Failure, PathBuf, PluginIdentity, Plugins, Runtime, connections, random_id, services, store,
 };
 
 impl Plugins {
@@ -100,29 +99,32 @@ impl Plugins {
         provider: &str,
         capability: Capability,
     ) -> Result<ModelCatalog, Failure> {
-        let params = serde_json::to_value(ModelsRequest { capability }).map_err(store::storage)?;
-        let value = self.provider_call(provider, capability, MODELS_METHOD, params)?;
-        serde_json::from_value(value).map_err(|_| Failure::Unavailable)
+        self.provider_call(
+            provider,
+            capability,
+            MODELS_METHOD,
+            ModelsRequest { capability },
+        )
     }
 
-    pub(in crate::platform::espidf) fn provider_call(
+    fn provider_call<R: serde::de::DeserializeOwned>(
         &self,
         provider: &str,
         capability: Capability,
         method: &str,
-        params: Value,
-    ) -> Result<Value, Failure> {
+        params: impl serde::Serialize,
+    ) -> Result<R, Failure> {
         self.invoke_provider(provider, capability, method, params, None)
     }
 
-    fn invoke_provider(
+    fn invoke_provider<R: serde::de::DeserializeOwned>(
         &self,
         provider: &str,
         capability: Capability,
         method: &str,
-        params: Value,
+        params: impl serde::Serialize,
         chunks: Option<services::StreamChunks>,
-    ) -> Result<Value, Failure> {
+    ) -> Result<R, Failure> {
         if !crate::plugins::valid_provider_id(provider) {
             return Err(Failure::NotFound);
         }
@@ -141,7 +143,13 @@ impl Plugins {
             });
             (id, connection, instance)
         };
-        let result = instance.invoke(method, params, connection.as_deref(), chunks);
+        let result = instance.invoke(
+            method,
+            params,
+            connection.as_deref(),
+            chunks,
+            goodwin_json::from_str,
+        );
         let mut runtime = self.lock();
         let entry = runtime
             .entries
@@ -215,7 +223,10 @@ pub(in crate::platform::espidf) struct Provider<'a> {
 }
 
 impl Provider<'_> {
-    pub(in crate::platform::espidf) fn transcribe(&self, wav: &[u8]) -> anyhow::Result<String> {
+    pub(in crate::platform::espidf) fn transcribe(
+        &self,
+        wav: &[u8],
+    ) -> goodwin_error::Result<String> {
         use goodwin_plugin::provider::{Transcription, TranscriptionRequest};
 
         let response: Transcription = self.call(
@@ -232,13 +243,13 @@ impl Provider<'_> {
     pub(in crate::platform::espidf) fn complete(
         &self,
         mut request: ChatRequest,
-    ) -> anyhow::Result<crate::voice_core::tools::CompletionMessage> {
+    ) -> goodwin_error::Result<crate::voice_core::tools::CompletionMessage> {
         request.selection = self.settings.selection.clone();
         let response: goodwin_plugin::provider::Completion =
             self.call(Capability::Chat, request)?;
-        anyhow::ensure!(
-            response.message.is_object(),
-            "Invalid plugin completion response"
+        goodwin_error::ensure!(
+            response.message.role == ChatRole::Assistant,
+            "Invalid plugin completion role"
         );
         Ok(crate::voice_core::tools::CompletionMessage(
             response.message,
@@ -276,7 +287,10 @@ impl Provider<'_> {
         Ok(answer.trim().to_owned())
     }
 
-    pub(in crate::platform::espidf) fn synthesize(&self, answer: &str) -> anyhow::Result<Vec<u8>> {
+    pub(in crate::platform::espidf) fn synthesize(
+        &self,
+        answer: &str,
+    ) -> goodwin_error::Result<Vec<u8>> {
         let reply: SpeechAudio = self.call(
             Capability::Speech,
             SpeechRequest {
@@ -312,22 +326,21 @@ impl Provider<'_> {
         &self,
         capability: Capability,
         method: &str,
-        request: impl serde::Serialize,
+        request: impl serde::Serialize + Send,
         wrap: fn(SyncSender<T>) -> services::StreamChunks,
         mut consume: impl FnMut(T) -> AnyResult<()>,
     ) -> AnyResult<()> {
-        let params = serde_json::to_value(request)?;
         thread::scope(|scope| {
             let (send, receive) = mpsc::sync_channel(2);
             let worker = thread::Builder::new()
                 .name("goodwin-plugin-io".into())
                 .stack_size(28 * 1024)
                 .spawn_scoped(scope, move || {
-                    self.plugin.invoke_provider(
+                    self.plugin.invoke_provider::<()>(
                         &self.settings.provider,
                         capability,
                         method,
-                        params,
+                        request,
                         Some(wrap(send)),
                     )
                 })?;
@@ -335,9 +348,9 @@ impl Provider<'_> {
             drop(receive);
             let finished = worker
                 .join()
-                .map_err(|_| anyhow::anyhow!("Plugin stream worker stopped"))?;
+                .map_err(|_| goodwin_error::report!("Plugin stream worker stopped"))?;
             result?;
-            finished.map_err(|error| anyhow::anyhow!("{}", error.code()))?;
+            finished.map_err(|error| goodwin_error::report!("{}", error.code()))?;
             Ok(())
         })
     }
@@ -346,17 +359,15 @@ impl Provider<'_> {
         &self,
         capability: Capability,
         request: impl serde::Serialize,
-    ) -> anyhow::Result<T> {
-        let reply = self
-            .plugin
+    ) -> goodwin_error::Result<T> {
+        self.plugin
             .provider_call(
                 &self.settings.provider,
                 capability,
                 capability.method(),
-                serde_json::to_value(request)?,
+                request,
             )
-            .map_err(|error| anyhow::anyhow!("{}", error.code()))?;
-        Ok(serde_json::from_value(reply)?)
+            .map_err(|error| goodwin_error::report!("{}", error.code()))
     }
 }
 

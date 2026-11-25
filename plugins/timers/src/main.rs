@@ -13,12 +13,11 @@ use alloc::vec::Vec;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{sync::Arc, thread};
 
-use anyhow::Result;
 #[cfg(not(target_arch = "wasm32"))]
-use goodwin_plugin::{Host, data_dir};
-use goodwin_plugin::{HttpRequest, HttpResponse, Plugin, ToolCall};
+use goodwin_plugin::{Host, Plugin, data_dir};
+use goodwin_plugin::{HttpRequest, HttpResponse, ToolCall};
 use serde_json::{Value, json};
-use state::{Clock, Filter, Timer, now};
+use state::{Clock, ClockError, Filter, Timer, now};
 
 struct Timers {
     #[cfg(not(target_arch = "wasm32"))]
@@ -28,7 +27,27 @@ struct Timers {
     choices: Option<(u64, Vec<u64>)>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Plugin for Timers {
+    fn registration(&self) -> Value {
+        Timers::registration(self)
+    }
+
+    fn ready(&mut self, host: Host) {
+        let clock = self.clock.clone();
+        thread::spawn(move || clock.schedule(host));
+    }
+
+    fn http(&mut self, request: HttpRequest) -> goodwin_error::Result<HttpResponse> {
+        Ok(Timers::http(self, request)?)
+    }
+
+    fn tool(&mut self, call: ToolCall) -> goodwin_error::Result<Value> {
+        Ok(Timers::tool(self, call)?)
+    }
+}
+
+impl Timers {
     fn registration(&self) -> Value {
         json!({
             "apiVersion": 1,
@@ -60,13 +79,7 @@ impl Plugin for Timers {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn ready(&mut self, host: Host) {
-        let clock = self.clock.clone();
-        thread::spawn(move || clock.schedule(host));
-    }
-
-    fn http(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+    fn http(&mut self, request: HttpRequest) -> Result<HttpResponse, ClockError> {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/timers") => Ok(HttpResponse::json(200, self.clock.list())),
             ("POST", "/timers") => match self.clock.create(&request.body)? {
@@ -90,7 +103,7 @@ impl Plugin for Timers {
         }
     }
 
-    fn tool(&mut self, call: ToolCall) -> Result<Value> {
+    fn tool(&mut self, call: ToolCall) -> Result<Value, ClockError> {
         match call.name.as_str() {
             "create" => Ok(match self.clock.create(&call.arguments)? {
                 Ok(timer) => json!({"created": timer.voice(now())}),
@@ -103,10 +116,7 @@ impl Plugin for Timers {
             _ => Ok(json!({"error": "unknown_tool"})),
         }
     }
-}
-
-impl Timers {
-    fn cancel(&mut self, call: ToolCall) -> Result<Value> {
+    fn cancel(&mut self, call: ToolCall) -> Result<Value, ClockError> {
         let args = &call.arguments;
         if let Some(option) = args.get("option") {
             if args.get("name").is_some() || args.get("seconds").is_some() {
@@ -172,7 +182,7 @@ impl Timers {
         }
     }
 
-    fn cancel_id(&self, id: u64) -> Result<Value> {
+    fn cancel_id(&self, id: u64) -> Result<Value, ClockError> {
         Ok(match self.clock.cancel(id)? {
             Some(timer) => json!({"cancelled": Timer::voice(&timer, now())}),
             None => json!({"error": "timer_not_active"}),
@@ -181,7 +191,7 @@ impl Timers {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> Result<()> {
+fn main() -> goodwin_error::Result<()> {
     let clock = Arc::new(Clock::load(data_dir()?.join("timers.json"))?);
     goodwin_plugin::run(Timers {
         clock,

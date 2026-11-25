@@ -44,7 +44,7 @@ pub(crate) fn capabilities() -> Capabilities<&'static str> {
     }
 }
 
-pub(crate) fn audio(i2s: I2S0<'static>, pins: Pins) -> anyhow::Result<Audio<'static>> {
+pub(crate) fn audio(i2s: I2S0<'static>, pins: Pins) -> goodwin_error::Result<Audio<'static>> {
     Audio::new(
         i2s,
         Wiring {

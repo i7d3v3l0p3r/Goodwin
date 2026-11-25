@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 
 use super::{Failure, package};
 

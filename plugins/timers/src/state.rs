@@ -2,7 +2,7 @@
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
 #[cfg(target_arch = "wasm32")]
 use core::cell::{Cell, RefCell};
-use core::ops::DerefMut;
+use core::{error::Error, fmt, ops::DerefMut};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
     path::PathBuf,
@@ -10,7 +10,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result};
 #[cfg(not(target_arch = "wasm32"))]
 use goodwin_plugin::{Host, read_json, save_json};
 use serde::{Deserialize, Serialize};
@@ -19,6 +18,33 @@ use serde_json::{Value, json};
 const MAX_SECONDS: u64 = 7 * 24 * 3600;
 const MAX_ACTIVE: usize = 32;
 const MAX_COMPLETED: usize = 64;
+
+#[derive(Debug)]
+pub(super) enum ClockError {
+    IdsExhausted,
+    #[cfg(not(target_arch = "wasm32"))]
+    Save(goodwin_error::Error),
+}
+
+impl fmt::Display for ClockError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IdsExhausted => formatter.write_str("Timer IDs exhausted"),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Save(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for ClockError {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::IdsExhausted => None,
+            Self::Save(error) => error.as_error().source(),
+        }
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,7 +173,7 @@ impl Clock {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load(file: PathBuf) -> Result<Self> {
+    pub fn load(file: PathBuf) -> goodwin_error::Result<Self> {
         let mut state: State = read_json(&file)?;
         if state.finish(now()) > 0 {
             save_json(&file, &state)?;
@@ -169,12 +195,11 @@ impl Clock {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn take_state(&self) -> Result<Option<Value>> {
+    pub fn take_state(&self) -> Result<Option<Value>, serde_json::Error> {
         self.dirty
             .replace(false)
             .then(|| serde_json::to_value(&*self.state_mut()))
             .transpose()
-            .map_err(Into::into)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -183,7 +208,7 @@ impl Clock {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn finish_due(&self) -> Result<usize> {
+    pub fn finish_due(&self) -> Result<usize, ClockError> {
         let mut state = self.state_mut();
         let mut next = state.clone();
         let finished = next.finish(now());
@@ -219,7 +244,7 @@ impl Clock {
             .collect()
     }
 
-    pub fn create(&self, value: &Value) -> Result<Result<Timer, &'static str>> {
+    pub fn create(&self, value: &Value) -> Result<Result<Timer, &'static str>, ClockError> {
         let Some(seconds) = valid_seconds(&value["seconds"]) else {
             return Ok(Err("invalid_timer_duration"));
         };
@@ -238,7 +263,10 @@ impl Clock {
             return Ok(Err("timer_limit"));
         }
         let mut next = state.clone();
-        next.next_id = next.next_id.checked_add(1).context("Timer IDs exhausted")?;
+        next.next_id = next
+            .next_id
+            .checked_add(1)
+            .ok_or(ClockError::IdsExhausted)?;
         let timer = Timer {
             id: next.next_id,
             name,
@@ -251,7 +279,7 @@ impl Clock {
         Ok(Ok(timer))
     }
 
-    pub fn cancel(&self, id: u64) -> Result<Option<Timer>> {
+    pub fn cancel(&self, id: u64) -> Result<Option<Timer>, ClockError> {
         let mut state = self.state_mut();
         let time = now();
         let Some(index) = state
@@ -267,9 +295,9 @@ impl Clock {
         Ok(Some(timer))
     }
 
-    fn commit(&self, state: &mut State, next: State) -> Result<()> {
+    fn commit(&self, state: &mut State, next: State) -> Result<(), ClockError> {
         #[cfg(not(target_arch = "wasm32"))]
-        save_json(&self.file, &next)?;
+        save_json(&self.file, &next).map_err(ClockError::Save)?;
         *state = next;
         #[cfg(not(target_arch = "wasm32"))]
         self.changes.notify_one();

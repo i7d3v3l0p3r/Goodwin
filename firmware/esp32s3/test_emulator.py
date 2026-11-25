@@ -32,6 +32,7 @@ PORT = 8765
 BASE_URL = f"http://192.168.4.1:{PORT}/v1"
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x6000
+PASSWORD_TIMEOUT = 150
 TRANSCRIPT = "Какая погода?"
 WAKE_TRANSCRIPT = "Гудвин, " + TRANSCRIPT
 ANSWER = "Сегодня солнечно."
@@ -411,6 +412,7 @@ class Panel:
         assert page["clips"], page
         clip = max(page["clips"], key=lambda row: row["peak"])
         assert clip["info"]["model"]["id"] == expected_model and clip["peak"] >= 0.15
+        assert clip["info"]["gainApplied"] is True
         audio = self.request(f"{route}/clips/{clip['id']}/audio")["wav"]
         with wave.open(io.BytesIO(base64.b64decode(audio))) as wav:
             assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
@@ -485,7 +487,7 @@ class Panel:
         setup = {"password": password, "confirmation": password}
         assert self.request("/api/setup", "POST", setup, 403,
                             {"Origin": "https://example.invalid"}) == {"error": "origin"}
-        self.request("/api/setup", "POST", setup, 204, timeout=100)
+        self.request("/api/setup", "POST", setup, 204, timeout=PASSWORD_TIMEOUT)
         assert self.request("/api/access")["authorized"]
 
     def wait_network(self, expected):
@@ -595,8 +597,6 @@ class Panel:
         assert resources["memory"]["used_bytes"] > 0
         self.request("/api/chat/clear", "POST", {}, 204)
         assert self.request("/api/state")["messages"] == []
-        self.request("/api/logout", "POST", {}, 204)
-        assert self.request("/api/settings/provider", status=401) == {"error": "login_required"}
 
     def print_resources(self, stage):
         resources = self.request("/api/diagnostics/resources")
@@ -608,7 +608,7 @@ class Panel:
 
     def install_firmware(self, image):
         assert self.request("/api/firmware", status=401) == {"error": "login_required"}
-        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=100)
+        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=PASSWORD_TIMEOUT)
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
         assert self.request("/api/firmware", "POST", bytes(4096), 400) == {"error": "invalid_firmware"}
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
@@ -619,7 +619,7 @@ class Panel:
         assert self.request("/api/access") == {
             "protected": True, "authorized": False, "setup_required": False
         }
-        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=100)
+        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=PASSWORD_TIMEOUT)
         assert self.wait_network("connected")["ssid"] == "myssid"
         assert self.request("/api/settings/provider") == {
             "base_url": BASE_URL, "has_key": False, "stt_model": "fixture-stt",
@@ -770,14 +770,12 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None):
                     source = ("wake_test" if args.wake_test else "wake" if args.wake_audio
                               else "manual_test" if args.manual_test else "push_to_talk")
                     panel.verify_voice(source, args.stream_speech)
-                    if args.timers_package or args.dataset_package:
-                        panel.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=100)
                     if args.dataset_package:
                         panel.stop_dataset(active_model)
                     if args.timers_package:
                         panel.exercise_timers(args.timers_package, args.timer_voice_tool)
-                    if args.timers_package or args.dataset_package:
-                        panel.request("/api/logout", "POST", {}, 204)
+                    panel.request("/api/logout", "POST", {}, 204)
+                    assert panel.request("/api/settings/provider", status=401) == {"error": "login_required"}
                     played = True
                     if args.update_image:
                         panel.install_firmware(args.update_image)

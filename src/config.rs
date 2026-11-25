@@ -5,12 +5,11 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use anyhow::{Context, Result, anyhow, ensure};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use goodwin_error::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::assistant::AssistantSettings;
+use crate::{assistant::AssistantSettings, password};
 
 pub(crate) const DEFAULT_MICROPHONE_GAIN: f32 = 4.0;
 
@@ -18,11 +17,39 @@ pub(crate) const DEFAULT_MICROPHONE_GAIN: f32 = 4.0;
 mod tests;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "snake_case", try_from = "AccessWire")]
 pub enum Access {
     Open,
     PendingPassword,
     Password { hash: String },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AccessMode {
+    Open,
+    PendingPassword,
+    Password,
+}
+
+#[derive(Deserialize)]
+struct AccessWire {
+    mode: AccessMode,
+    hash: Option<String>,
+}
+
+impl TryFrom<AccessWire> for Access {
+    type Error = &'static str;
+
+    fn try_from(wire: AccessWire) -> Result<Self, Self::Error> {
+        Ok(match wire.mode {
+            AccessMode::Open => Self::Open,
+            AccessMode::PendingPassword => Self::PendingPassword,
+            AccessMode::Password => Self::Password {
+                hash: wire.hash.ok_or("Missing password hash")?,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,9 +112,10 @@ impl Config {
 
     #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub fn load(dir: &Path) -> Result<Self> {
-        let file = fs::File::open(Self::path(dir))
-            .context("Open config.json (run goodwin setup first)")?;
-        let mut config: Self = serde_json::from_reader(file).context("Read config.json")?;
+        let bytes =
+            fs::read(Self::path(dir)).context("Open config.json (run goodwin setup first)")?;
+        let mut config: Self =
+            crate::assistant::decode_settings(&bytes).context("Read config.json")?;
         config.settings.validate()?;
         config.system_prompt = normalize_system_prompt(&config.system_prompt)?;
         Ok(config)
@@ -96,7 +124,7 @@ impl Config {
     pub fn save(&self, dir: &Path, initial: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         let mut file = tempfile::NamedTempFile::new_in(dir)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
+        goodwin_json::to_writer_pretty(&mut file, self)?;
         writeln!(file)?;
         file.as_file().sync_all()?;
         if initial {
@@ -163,7 +191,7 @@ impl ConfigStore {
         if !matches!(draft.access, Access::PendingPassword) {
             return Ok(None);
         }
-        let hash = hash_password(password)?;
+        let hash = password::hash(password)?;
         draft.access = Access::Password { hash: hash.clone() };
         draft.save(&self.dir, false)?;
         *self.current() = draft;
@@ -206,33 +234,4 @@ impl ConfigStore {
         self.changes.send_replace(());
         Ok(())
     }
-}
-
-pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
-    let mut bytes = [0; N];
-    getrandom::fill(&mut bytes).map_err(|_| anyhow!("Could not generate random bytes"))?;
-    Ok(bytes)
-}
-
-#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
-pub fn hash_password(password: &str) -> Result<String> {
-    ensure!(
-        crate::panel_core::valid_password_length(password),
-        "Use a password between 8 and 256 bytes"
-    );
-    let salt = random_bytes::<16>()?;
-    Argon2::default()
-        .hash_password_with_salt(password.as_bytes(), &salt)
-        .map(|hash| hash.to_string())
-        .map_err(|error| anyhow!("{error}"))
-}
-
-#[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
-pub fn verify_password(hash: &str, password: &str) -> bool {
-    password.len() <= 256
-        && PasswordHash::new(hash).is_ok_and(|hash| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &hash)
-                .is_ok()
-        })
 }

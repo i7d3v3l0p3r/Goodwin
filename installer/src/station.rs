@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use goodwin_error::{Context, Error, Result, bail, ensure, report};
 
 use crate::{
     package::{self, Source},
@@ -166,6 +166,41 @@ impl std::fmt::Display for InstallIssue {
 
 impl std::error::Error for InstallIssue {}
 
+#[derive(Debug)]
+struct InstallError {
+    issue: InstallIssue,
+    cause: Error,
+}
+
+impl InstallError {
+    fn new(issue: InstallIssue, cause: impl Into<Error>) -> Self {
+        Self {
+            issue,
+            cause: cause.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.issue, formatter)
+    }
+}
+
+impl core::error::Error for InstallError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(self.cause.as_error())
+    }
+}
+
+#[cfg(any(feature = "gui", test))]
+pub(crate) fn install_issue(error: &Error) -> Option<InstallIssue> {
+    error
+        .find::<InstallError>()
+        .map(|error| error.issue)
+        .or_else(|| error.find::<InstallIssue>().copied())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum InstallStage {
     #[default]
@@ -259,7 +294,8 @@ pub(crate) fn install_with_progress(
     } else {
         InstallIssue::Release
     };
-    let source = package::prepare(source, work.path(), &log).context(issue)?;
+    let source = package::prepare(source, work.path(), &log)
+        .map_err(|error| InstallError::new(issue, error))?;
     let id = match &model {
         Model::Id(id) => Some(id.as_str()),
         Model::Keep => (!already_installed(&adb)?).then_some("goodwin-standard"),
@@ -276,7 +312,8 @@ pub(crate) fn install_with_progress(
         let catalog = match catalog {
             Some(catalog) => catalog,
             None => {
-                latest = Catalog::latest(runtimes).context(InstallIssue::Model)?;
+                latest = Catalog::latest(runtimes)
+                    .map_err(|error| InstallError::new(InstallIssue::Model, error))?;
                 &latest
             }
         };
@@ -285,7 +322,7 @@ pub(crate) fn install_with_progress(
             .iter()
             .find(|model| model.selection.id == id)
             .context("В каталоге нет выбранной модели активации")
-            .context(InstallIssue::Model)?;
+            .map_err(|error| InstallError::new(InstallIssue::Model, error))?;
         ensure!(
             runtimes.contains(&model.selection.runtime),
             InstallIssue::Model
@@ -296,8 +333,8 @@ pub(crate) fn install_with_progress(
         };
         let selection = catalog
             .download(id, fs::File::create(payload.join(name))?)
-            .context(InstallIssue::Model)?;
-        serde_json::to_writer(
+            .map_err(|error| InstallError::new(InstallIssue::Model, error))?;
+        goodwin_json::to_writer(
             fs::File::create(payload.join("wake-model.json"))?,
             selection,
         )?;
@@ -394,7 +431,7 @@ fn transfer_and_install(
     };
     let result = adb
         .run(Some(&report), 360, ["-s", adb.serial, "shell", &script])
-        .context(InstallIssue::Unconfirmed)?;
+        .map_err(|error| InstallError::new(InstallIssue::Unconfirmed, error))?;
     install_result(&result)
 }
 
@@ -412,9 +449,9 @@ fn install_result(output: &str) -> Result<RemoteInstallation> {
         .and_then(|line| line.strip_prefix(INSTALL_EXIT))
         .and_then(|value| value.parse::<u8>().ok())
         .context("ADB не вернул код завершения установки на Станции")
-        .context(InstallIssue::Unconfirmed)?;
+        .map_err(|error| InstallError::new(InstallIssue::Unconfirmed, error))?;
     if status != 0 {
-        let error = anyhow!("Скрипт установки на Станции завершился с кодом {status}");
+        let error = report!("Скрипт установки на Станции завершился с кодом {status}");
         let issue = lines
             .rev()
             .find_map(|line| match line.strip_prefix(INSTALL_ERROR)? {
@@ -426,7 +463,7 @@ fn install_result(output: &str) -> Result<RemoteInstallation> {
                 _ => None,
             });
         return Err(match issue {
-            Some(issue) => error.context(issue),
+            Some(issue) => InstallError::new(issue, error).into(),
             None => error,
         });
     }
@@ -489,7 +526,9 @@ impl Adb<'_> {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        let mut child = command.spawn().context(InstallIssue::Adb)?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| InstallError::new(InstallIssue::Adb, error))?;
         let stdout = child.stdout.take().context("Нет вывода ADB")?;
         let stderr = child.stderr.take().context("Нет вывода ошибок ADB")?;
         let start = Instant::now();
@@ -507,17 +546,17 @@ impl Adb<'_> {
                         let _ = child.wait();
                         break Err(match result {
                             Err(error) => error.into(),
-                            _ => anyhow!("Станция или ADB не ответили вовремя"),
+                            _ => report!("Станция или ADB не ответили вовремя"),
                         });
                     }
                 }
             };
             let output = output
                 .join()
-                .map_err(|_| anyhow!("Не удалось прочитать вывод ADB"))??;
+                .map_err(|_| report!("Не удалось прочитать вывод ADB"))??;
             let errors = errors
                 .join()
-                .map_err(|_| anyhow!("Не удалось прочитать ошибки ADB"))??;
+                .map_err(|_| report!("Не удалось прочитать ошибки ADB"))??;
             Ok((status?, output, errors))
         })?;
         if !status.success() {
@@ -583,7 +622,10 @@ mod tests {
         let error = install_result("Could not open the upload directory.\nGOODWIN_INSTALL_EXIT 2")
             .unwrap_err();
         assert!(error.to_string().ends_with("с кодом 2"));
-        assert!(install_result("").unwrap_err().is::<InstallIssue>());
+        assert_eq!(
+            install_issue(&install_result("").unwrap_err()),
+            Some(InstallIssue::Unconfirmed)
+        );
         assert!(
             install_result("GOODWIN_INSTALL_EXIT 0")
                 .unwrap_err()
@@ -596,10 +638,10 @@ mod tests {
     fn installation_retains_the_remote_recovery_status() {
         let error = install_result("GOODWIN_INSTALL_ERROR recovery_failed\nGOODWIN_INSTALL_EXIT 1")
             .unwrap_err();
-        assert_eq!(error.downcast_ref(), Some(&InstallIssue::RecoveryFailed));
+        assert_eq!(install_issue(&error), Some(InstallIssue::RecoveryFailed));
         let error = install_result("GOODWIN_INSTALL_ERROR rolled_back\nGOODWIN_INSTALL_EXIT 1")
             .unwrap_err();
-        assert_eq!(error.downcast_ref(), Some(&InstallIssue::RolledBack));
+        assert_eq!(install_issue(&error), Some(InstallIssue::RolledBack));
     }
 
     #[cfg(feature = "gui")]

@@ -70,10 +70,10 @@ struct InstallFailure {
     issue: Option<InstallIssue>,
 }
 
-impl From<anyhow::Error> for InstallFailure {
-    fn from(error: anyhow::Error) -> Self {
+impl From<goodwin_error::Error> for InstallFailure {
+    fn from(error: goodwin_error::Error) -> Self {
         Self {
-            issue: error.downcast_ref::<InstallIssue>().copied(),
+            issue: station::install_issue(&error),
             details: format!("{error:#}"),
         }
     }
@@ -194,7 +194,7 @@ fn show_failure(ui: &mut egui::Ui, failure: &InstallFailure, hint: &str) {
 
 enum SearchEvent {
     Stations(Vec<Station>),
-    Done(anyhow::Result<()>),
+    Done(goodwin_error::Result<()>),
 }
 
 struct StationSearch {
@@ -1088,7 +1088,8 @@ impl InstallerWindow {
             Ok(Ok(updated)) => self.checked = Some(updated),
             Ok(Err(error)) => self.failure = Some(error),
             Err(TryRecvError::Disconnected) => {
-                self.failure = Some(anyhow::anyhow!("Проверка подключения прервалась.").into())
+                self.failure =
+                    Some(goodwin_error::report!("Проверка подключения прервалась.").into())
             }
             Err(TryRecvError::Empty) => return,
         }
@@ -1204,7 +1205,9 @@ impl InstallerWindow {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.worker = None;
-                    self.installation_failed(anyhow::Error::new(InstallIssue::Unconfirmed).into());
+                    self.installation_failed(
+                        goodwin_error::Error::from(InstallIssue::Unconfirmed).into(),
+                    );
                     break;
                 }
             }
@@ -1235,12 +1238,13 @@ mod tests {
 
     #[test]
     fn installer_requires_verification_or_recovery_before_retrying_uncertain_results() {
-        let failure = InstallFailure::from(anyhow::Error::new(InstallIssue::Unconfirmed));
+        let failure = InstallFailure::from(goodwin_error::Error::from(InstallIssue::Unconfirmed));
         let (_, action, retry) = failure_recovery(&failure, InstallStage::Install);
         assert!(matches!(action, Some(RecoveryAction::Recheck)));
         assert!(!retry);
 
-        let failure = InstallFailure::from(anyhow::Error::new(InstallIssue::RecoveryFailed));
+        let failure =
+            InstallFailure::from(goodwin_error::Error::from(InstallIssue::RecoveryFailed));
         let (_, action, retry) = failure_recovery(&failure, InstallStage::Install);
         assert!(action.is_none());
         assert!(!retry);

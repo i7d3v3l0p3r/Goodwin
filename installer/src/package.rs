@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail, ensure};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use goodwin_error::{Context, Result, bail, ensure};
 use reqwest::blocking::Client;
 
 use crate::checksum::Sha256Writer;

@@ -8,8 +8,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail, ensure};
 use flate2::read::GzDecoder;
+use goodwin_error::{Context, Result, bail, ensure};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -83,7 +83,7 @@ pub(super) fn read_job() -> Result<Option<Job>> {
         Err(error) => return Err(error.into()),
     };
     let mut job: Job = match File::open(JOB) {
-        Ok(file) => serde_json::from_reader(file)?,
+        Ok(file) => goodwin_json::from_reader(file)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
@@ -97,7 +97,7 @@ impl Job {
     fn save(&mut self, phase: Phase) -> Result<()> {
         self.phase = phase;
         let mut file = tempfile::NamedTempFile::new_in(OPT)?;
-        serde_json::to_writer(&mut file, self)?;
+        goodwin_json::to_writer(&mut file, self)?;
         file.persist(JOB)?;
         Ok(())
     }

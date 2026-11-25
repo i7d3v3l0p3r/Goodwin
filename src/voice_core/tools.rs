@@ -3,65 +3,48 @@ use std::{
     future::Future,
 };
 
-use anyhow::{Context, Result, ensure};
-use goodwin_plugin::provider::{ChatRequest, ToolChoice};
-use serde::Deserialize;
+use goodwin_error::{Result, ensure};
+use goodwin_plugin::provider::{
+    ChatMessage, ChatRequest, ChatRole, FunctionCall, ToolCall, ToolChoice, ToolDefinition,
+    ToolSchema,
+};
 use serde_json::{Value, json};
 
-#[derive(Deserialize)]
-pub(crate) struct ToolCall {
-    pub id: String,
-    pub function: FunctionCall,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct FunctionCall {
-    pub name: String,
-    pub arguments: String,
-}
-
-pub(crate) struct CompletionMessage(pub(crate) Value);
+pub(crate) struct CompletionMessage(pub(crate) ChatMessage);
 
 impl CompletionMessage {
     pub(crate) fn text(&self) -> Result<String> {
-        let content = self.0["content"].as_str().unwrap_or_default().trim();
+        let content = self.0.content.as_deref().unwrap_or_default().trim();
         ensure!(!content.is_empty(), "Empty provider answer");
         Ok(content.to_owned())
-    }
-
-    pub(crate) fn tool_calls(&self) -> Result<Vec<ToolCall>> {
-        match self.0.get("tool_calls") {
-            Some(calls) if !calls.is_null() => {
-                serde_json::from_value(calls.clone()).context("Invalid provider tool calls")
-            }
-            _ => Ok(Vec::new()),
-        }
     }
 }
 
 pub(crate) struct ToolConversation {
-    messages: Vec<Value>,
-    definitions: Vec<Value>,
+    messages: Vec<ChatMessage>,
+    definitions: Vec<ToolDefinition>,
 }
 
 impl ToolConversation {
     pub(crate) fn new<'a>(
         instructions: &str,
         text: &str,
-        tools: impl Iterator<Item = (&'a str, &'a str, &'a Value)>,
+        tools: impl Iterator<Item = (&'a str, &'a str, &'a ToolSchema)>,
         context: BTreeMap<String, Value>,
     ) -> Self {
-        let definitions = tools.map(|(name, description, parameters)| json!({
-            "type": "function",
-            "function": { "name": name, "description": description, "parameters": parameters }
-        })).collect();
-        let mut messages = vec![json!({"role": "system", "content": instructions})];
+        let definitions = tools
+            .map(|(name, description, parameters)| {
+                ToolDefinition::function(name.into(), description.into(), parameters.clone())
+            })
+            .collect();
+        let mut messages = vec![ChatMessage::text(ChatRole::System, instructions)];
         if !context.is_empty() {
-            messages.push(
-                json!({"role": "user", "content": json!({"pluginContext": context}).to_string()}),
-            );
+            messages.push(ChatMessage::text(
+                ChatRole::User,
+                json!({"pluginContext": context}).to_string(),
+            ));
         }
-        messages.push(json!({"role": "user", "content": text}));
+        messages.push(ChatMessage::text(ChatRole::User, text));
         Self {
             messages,
             definitions,
@@ -73,9 +56,8 @@ impl ToolConversation {
     }
 
     pub(crate) fn push_tool_result(&mut self, id: &str, result: &Value) {
-        self.messages.push(json!({
-            "role": "tool", "tool_call_id": id, "content": result.to_string()
-        }));
+        self.messages
+            .push(ChatMessage::tool_result(id.into(), result.to_string()));
     }
 
     pub(crate) fn request(&self, can_call: bool) -> ChatRequest {
@@ -99,7 +81,7 @@ pub(crate) const CONTEXT_INSTRUCTIONS: &str = "A pluginContext message contains 
 pub(crate) async fn complete<'a, Completion, ToolResult>(
     voice_instructions: &str,
     text: &str,
-    definitions: impl Iterator<Item = (&'a str, &'a str, &'a Value)>,
+    definitions: impl Iterator<Item = (&'a str, &'a str, &'a ToolSchema)>,
     context: BTreeMap<String, Value>,
     mut complete: impl FnMut(ChatRequest) -> Completion,
     mut call_tool: impl FnMut(FunctionCall) -> ToolResult,
@@ -120,7 +102,7 @@ where
     loop {
         let can_call = !clarify && seen.len() < MAX_CALLS;
         let message = complete(conversation.request(can_call)).await?;
-        let calls = message.tool_calls()?;
+        let calls = message.0.tool_calls.clone();
         if calls.is_empty() {
             return message.text();
         }
@@ -135,7 +117,7 @@ where
             );
         }
         conversation.push_completion(message);
-        for ToolCall { id, function } in calls {
+        for ToolCall { id, function, .. } in calls {
             let result = if clarify {
                 json!({"error": "clarification_required"})
             } else {

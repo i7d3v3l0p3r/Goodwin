@@ -19,6 +19,7 @@ export function createPanel() {
   const t = () => words[language()];
   const providerReadiness = createProviderReadiness(snapshot, reachable);
   const builtinProvider = () => device()?.provider_configuration === "builtin";
+  const passwordTimeout = () => builtinProvider() ? 150_000 : undefined;
   const stageIssue = (stage: Parameters<typeof providerReadiness.stageIssue>[0]) =>
     builtinProvider()
       ? snapshot()?.provider_ready ? undefined : { kind: "configure" as const, href: "/settings/assistant" }
@@ -231,9 +232,9 @@ export function createPanel() {
     microphonePending, microphoneError,
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
-      action(() => api("setup", "POST", { password, confirmation }, builtinProvider() ? 90_000 : undefined),
+      action(() => api("setup", "POST", { password, confirmation }, passwordTimeout()),
         { recheckAccess: true }),
-    login: (password: string) => action(() => api("login", "POST", { password }, builtinProvider() ? 90_000 : undefined),
+    login: (password: string) => action(() => api("login", "POST", { password }, passwordTimeout()),
       { recheckAccess: true }),
     logout: () => action(async () => {
       await api("logout", "POST", {});

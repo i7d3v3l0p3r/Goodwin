@@ -4,11 +4,18 @@
 
 ### English
 
+- Reduced the memory used to format diagnostic entries on Mini 3 and ESP32-S3 and to retain them on ESP32-S3.
+- Reduced the size of the ESP32-S3 firmware and bundled WASM provider and wake-word dataset plugins.
+- Goodwin uses a shared typed JSON codec for panel requests, saved settings, and WASM host services.
+- Provider chat messages, tool declarations and model parameters use typed JSON. The assistant settings expose named model options. Known options from saved settings are loaded and fields outside the new schema are skipped.
 - Updated the Rust dependencies of Goodwin, its bundled plugins and the desktop installer.
 - Goodwin reads the current assistant configuration format and addresses named providers as `<plugin-id>:<connection-id>`. Re-enter API settings from standalone provider packages in the unified plugin and reselect any stage still using an earlier provider ID.
 - Use `goodwin wav` to process a WAV file from the command line.
+- Mini 3 and ESP32-S3 build the WAV for speech recognition in the existing capture buffer.
+- New wake-word dataset clips include the gain used by the wake detector. The export identifies which clips have gain applied to their audio.
+- The standalone OpenRouter plugin was removed. Use the OpenRouter connection in the OpenAI-compatible plugin.
 - The Station installer uses wake models from the catalog. Select a new catalog model when updating a Station that used a model bundled with an older installer or whose saved selection lacks a runtime.
-- ESP32-S3 uses PBKDF2-SHA512 panel passwords. Test devices with an earlier Argon2 password hash require password setup again.
+- ESP32-S3 and Mini 3 use PBKDF2-HMAC-SHA256 for panel passwords. To replace an earlier password hash on Mini 3, stop Goodwin, run `goodwin set-password <data-dir>`, then restart. On ESP32-S3, provision Wi-Fi over USB again and set a new panel password.
 - Goodwin selects the platform, device model and drivers at build time. `goodwin device-capabilities` reports the Mini 3 build's activation modes, wake runtimes and speech streaming support.
 - The standalone ESP32-S3 N16R8 build supports local «Гудвин» activation, push-to-talk and an OpenAI-compatible voice pipeline with buffered and streaming playback. Its web panel configures Wi-Fi and the provider, runs chat and voice diagnostics, and installs firmware updates.
 - The ESP32-S3 panel installs WASM add-ons, including Timers, Wake-word dataset and OpenAI-compatible. Plugin packages and data persist in a separate Flash partition. The voice pipeline can select plugin providers independently for each stage.
@@ -27,11 +34,18 @@
 
 ### Русский
 
+- Снижено потребление памяти при форматировании записей журнала на Мини 3 и ESP32-S3 и при их хранении на ESP32-S3.
+- Уменьшен размер прошивки ESP32-S3 и комплектных WASM-плагинов провайдеров и датасета слова активации.
+- Goodwin использует общий типизированный JSON-кодек для запросов панели, сохранённых настроек и вызовов хоста из WASM.
+- Сообщения чата, описания инструментов и параметры моделей используют типизированный JSON. Настройки ассистента показывают отдельные поля параметров. Goodwin загружает известные поля из сохранённых настроек и пропускает поля вне новой схемы.
 - Обновлены зависимости Rust в Goodwin, комплектных плагинах и настольном установщике.
 - Goodwin читает текущий формат настроек ассистента. ID именованных подключений имеют вид `<ID плагина>:<ID подключения>`. Перенесите настройки API из отдельных плагинов в объединённый и заново выберите подключения для стадий со старыми ID.
 - Для обработки WAV из командной строки используется команда `goodwin wav`.
+- Мини 3 и ESP32-S3 собирают WAV для распознавания речи в буфере записи.
+- Новые записи датасета слова активации сохраняются с усилением детектора. В экспорт добавлена отметка о том, применено ли усиление к записи.
+- Отдельный плагин OpenRouter удалён. Используйте подключение OpenRouter в OpenAI-совместимом плагине.
 - Установщик Станции использует модели активации из каталога. При обновлении Станции со встроенной моделью из старого пакета или с сохранённой моделью без указания рантайма выберите модель из каталога заново.
-- ESP32-S3 использует PBKDF2-SHA512 для пароля панели. На тестовых устройствах с прежним хешем Argon2 потребуется заново задать пароль.
+- ESP32-S3 и Мини 3 используют PBKDF2-HMAC-SHA256 для пароля панели. Чтобы заменить прежний хеш на Мини 3, остановите Goodwin, задайте пароль командой `goodwin set-password <data-dir>` и снова запустите службу. На ESP32-S3 заново настройте Wi-Fi через USB и задайте пароль панели.
 - Платформа, модель устройства и драйверы выбираются при сборке Goodwin. Команда `goodwin device-capabilities` показывает режимы активации, рантаймы слова активации и поддержку потокового звука в сборке для Мини 3.
 - Автономная прошивка для ESP32-S3 N16R8 поддерживает локальную активацию по «Гудвин», активацию кнопкой и голосовой каскад через OpenAI-совместимый API с потоковым воспроизведением. В панели можно настроить Wi-Fi и провайдера, проверить чат и голосовой запрос и обновить прошивку.
 - В панели ESP32-S3 можно установить WASM-дополнения, включая «Таймеры», «Датасет слова активации» и OpenAI-совместимый провайдер. Пакеты и данные хранятся в отдельном разделе флеш-памяти. Провайдер плагина можно выбрать отдельно для каждой стадии голосового каскада.

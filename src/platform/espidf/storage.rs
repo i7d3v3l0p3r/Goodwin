@@ -1,5 +1,5 @@
-use anyhow::{Result, ensure};
 use esp_idf_svc::sys;
+use goodwin_error::{Result, ensure};
 
 pub(super) const MOUNT: &str = "/addons";
 const MOUNT_C: &std::ffi::CStr = c"/addons";

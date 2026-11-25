@@ -1,4 +1,8 @@
-use std::{fs, path::Path, time::SystemTime};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, SystemTime},
+};
 
 use axum::http::{StatusCode, header};
 use serde_json::json;
@@ -6,20 +10,21 @@ use tokio::task::JoinHandle;
 
 use crate::{
     app::App,
-    config::{Access, Config, DEFAULT_MICROPHONE_GAIN, Settings, hash_password},
+    config::{Access, Config, DEFAULT_MICROPHONE_GAIN, Settings},
     panel::router,
+    password,
     station::Player,
     test_support::serve,
 };
 
-use super::{Auth, SESSION_FILE};
+use super::{Auth, SESSION_FILE, session_key};
 
 const PASSWORD: &str = "correct test password";
 
 fn setup(dir: &Path) {
     let config = Config {
         access: Access::Password {
-            hash: hash_password(PASSWORD).unwrap(),
+            hash: password::hash(PASSWORD).unwrap(),
         },
         settings: Settings::default(),
         system_prompt: String::new(),
@@ -161,7 +166,7 @@ async fn first_visit_sets_one_password_and_signs_in() {
     let Access::Password { hash } = saved.access else {
         panic!("expected a password hash")
     };
-    assert!(crate::config::verify_password(&hash, password));
+    assert!(password::verify(&hash, password).unwrap());
     assert!(!saved.settings.listening);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
@@ -172,6 +177,82 @@ async fn first_visit_sets_one_password_and_signs_in() {
         state_status(&client, &panel, "").await,
         StatusCode::UNAUTHORIZED
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn legacy_password_and_session_require_a_local_password_reset() {
+    for hash in [
+        "$argon2id$v=19$m=19456,t=2,p=1$AAECAwQFBgcICQoLDA0ODw$old",
+        "$pbkdf2-sha512$i=220000$AAECAwQFBgcICQoLDA0ODw$IuRYD2bPNZecS5FyOX+tYXMm56zoVBeMs/h2WUwIk1qXPNZn8EDGKp8XX/sfBTgfckGcEqBPlFuGWKYizXGemA",
+    ] {
+        assert_password_reset_required(hash).await;
+    }
+}
+
+async fn assert_password_reset_required(legacy_hash: &str) {
+    const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config {
+        access: Access::Password {
+            hash: legacy_hash.into(),
+        },
+        settings: Settings::default(),
+        system_prompt: String::new(),
+    };
+    config.save(dir.path(), true).unwrap();
+    Auth::default()
+        .save(
+            dir.path(),
+            [(
+                session_key(legacy_hash, TOKEN),
+                SystemTime::now() + Duration::from_secs(60),
+            )]
+            .into(),
+        )
+        .unwrap();
+
+    let (panel, task) = start_panel(dir.path()).await;
+    let client = reqwest::Client::new();
+    let cookie = crate::panel_core::session_cookie(TOKEN, 60);
+    let cookie = cookie.split(';').next().unwrap();
+    assert_eq!(
+        state_status(&client, &panel, cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let rejected = client
+        .post(format!("{panel}/api/login"))
+        .json(&json!({"password": PASSWORD}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        rejected.json::<serde_json::Value>().await.unwrap(),
+        json!({"error": "password_reset_required"})
+    );
+    let setup = client
+        .post(format!("{panel}/api/setup"))
+        .json(&json!({"password": PASSWORD, "confirmation": PASSWORD}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(setup.status(), StatusCode::CONFLICT);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    config.access = Access::Password {
+        hash: password::hash(PASSWORD).unwrap(),
+    };
+    config.save(dir.path(), false).unwrap();
+    let (panel, task) = start_panel(dir.path()).await;
+    assert_eq!(
+        state_status(&client, &panel, cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let cookie = login(&client, &panel).await;
+    assert_eq!(state_status(&client, &panel, &cookie).await, StatusCode::OK);
     task.abort();
 }
 
@@ -313,7 +394,7 @@ async fn private_plugin_routes_require_a_signed_in_session() {
     task.abort();
 
     let (panel, task) = start(Access::Password {
-        hash: hash_password(PASSWORD).unwrap(),
+        hash: password::hash(PASSWORD).unwrap(),
     })
     .await;
     let client = reqwest::Client::new();
@@ -366,7 +447,7 @@ async fn changing_the_password_revokes_saved_sessions() {
 
     let mut config = Config::load(dir.path()).unwrap();
     config.access = Access::Password {
-        hash: hash_password("replacement test password").unwrap(),
+        hash: password::hash("replacement test password").unwrap(),
     };
     config.save(dir.path(), false).unwrap();
     let (panel, task) = start_panel(dir.path()).await;

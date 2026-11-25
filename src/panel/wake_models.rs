@@ -1,7 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    Json,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -15,7 +14,7 @@ use crate::{
     wake_catalog::{Catalog, valid_model_id},
 };
 
-use super::{Panel, problem};
+use super::{Json, Panel, problem};
 
 pub(super) async fn catalog() -> Response {
     match tokio::task::spawn_blocking(|| Catalog::latest(runtimes())).await {

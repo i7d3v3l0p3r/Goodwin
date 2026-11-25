@@ -113,11 +113,13 @@ impl HostServices for Host {
                     .connection
                     .as_ref()
                     .context("Select a provider connection")?;
-                Ok(serde_json::to_vec(
+                Ok(goodwin_json::to_vec(
                     &json!({"protocol": connection.protocol}),
                 )?)
             }
-            Request::Settings => Ok(serde_json::to_vec(&SettingsData::read(&self.data)?.values)?),
+            Request::Settings => Ok(goodwin_json::to_vec(
+                &SettingsData::read(&self.data)?.values,
+            )?),
             Request::HttpStart { request } => self.http_start(request, input),
             Request::HttpRead { length } => {
                 ensure!(length <= 64 * 1024, "HTTP chunk is too large");
@@ -148,7 +150,11 @@ impl HostServices for Host {
                     bail!("Unexpected speech stream chunk")
                 };
                 ensure!(input.len() <= META_LIMIT, "Invalid speech stream chunk");
-                send_chunk(chunks, serde_json::from_slice::<SpeechAudio>(input)?, self)?;
+                send_chunk(
+                    chunks,
+                    goodwin_json::from_slice::<SpeechAudio>(input)?,
+                    self,
+                )?;
                 Ok(Vec::new())
             }
             Request::List { path } => self.list(&path),
@@ -157,16 +163,7 @@ impl HostServices for Host {
                 offset,
                 length,
                 optional,
-            } => match self.read(&path, offset, length) {
-                Err(error)
-                    if optional
-                        && error.downcast_ref::<rustix::io::Errno>()
-                            == Some(&rustix::io::Errno::NOENT) =>
-                {
-                    Ok(Vec::new())
-                }
-                result => result,
-            },
+            } => self.read(&path, offset, length, optional),
             Request::Write { path, replace } => {
                 self.write(&path, input, replace)?;
                 Ok(Vec::new())
@@ -185,6 +182,31 @@ impl HostServices for Host {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug)]
+enum StorageError {
+    NoAccess,
+    InvalidPath,
+    System(rustix::io::Errno),
+}
+
+impl core::fmt::Display for StorageError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoAccess => formatter.write_str("Plugin does not declare WASM storage access"),
+            Self::InvalidPath => formatter.write_str("Invalid plugin data path"),
+            Self::System(error) => core::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl core::error::Error for StorageError {}
+
+impl From<rustix::io::Errno> for StorageError {
+    fn from(error: rustix::io::Errno) -> Self {
+        Self::System(error)
     }
 }
 
@@ -217,12 +239,12 @@ impl Host {
             "Invalid provider endpoint"
         );
         url.path_segments_mut()
-            .map_err(|_| anyhow!("Invalid provider API base URL"))?
+            .map_err(|_| report!("Invalid provider API base URL"))?
             .pop_if_empty()
             .extend(&request.path);
         let client = CLIENT
             .as_ref()
-            .map_err(|_| anyhow!("Initialize Goodwin HTTP client"))?;
+            .map_err(|_| report!("Initialize Goodwin HTTP client"))?;
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         let mut outbound = client
             .request(
@@ -306,7 +328,7 @@ impl Host {
                 self.shutdown.clone(),
             ));
         }
-        Ok(serde_json::to_vec(&head)?)
+        Ok(goodwin_json::to_vec(&head)?)
     }
 
     fn http_destination(&self) -> Result<(String, String, bool)> {
@@ -345,21 +367,13 @@ impl Host {
         Ok((base, key, config.require_key))
     }
 
-    fn parts<'a>(&self, path: &'a str) -> Result<impl DoubleEndedIterator<Item = &'a str>> {
-        ensure!(
-            crate::plugins::package::path(path) && path.split('/').count() <= 5,
-            "Invalid plugin data path"
-        );
-        Ok(path.split('/'))
-    }
-
-    fn parent<'a>(&self, path: &'a str, create: bool) -> Result<(OwnedFd, &'a str)> {
-        let root = self
-            .storage
-            .as_ref()
-            .context("Plugin does not declare WASM storage access")?;
-        let mut parts = self.parts(path)?;
-        let name = parts.next_back().context("Missing plugin data filename")?;
+    fn parent<'a>(&self, path: &'a str, create: bool) -> Result<(OwnedFd, &'a str), StorageError> {
+        let root = self.storage.as_ref().ok_or(StorageError::NoAccess)?;
+        let mut parts = path.split('/');
+        if !crate::plugins::package::path(path) || parts.clone().count() > 5 {
+            return Err(StorageError::InvalidPath);
+        }
+        let name = parts.next_back().ok_or(StorageError::InvalidPath)?;
         let mut dir = fs::openat(root, ".", DIRECTORY_FLAGS, Mode::empty())?;
         for part in parts {
             if create {
@@ -374,18 +388,14 @@ impl Host {
     }
 
     fn list(&self, path: &str) -> Result<Vec<u8>> {
-        let directory = (|| -> Result<_> {
+        let directory = (|| -> Result<_, StorageError> {
             let (parent, name) = self.parent(path, false)?;
             Ok(fs::openat(&parent, name, DIRECTORY_FLAGS, Mode::empty())?)
         })();
         let dir = match directory {
             Ok(dir) => dir,
-            Err(error)
-                if error.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT) =>
-            {
-                return Ok(b"[]".to_vec());
-            }
-            Err(error) => return Err(error),
+            Err(StorageError::System(rustix::io::Errno::NOENT)) => return Ok(b"[]".to_vec()),
+            Err(error) => return Err(error.into()),
         };
         let mut names = Vec::new();
         for entry in Dir::read_from(&dir)? {
@@ -398,7 +408,7 @@ impl Host {
                 ensure!(names.len() <= 2048, "Plugin data directory is too large");
             }
         }
-        let names = serde_json::to_vec(&names)?;
+        let names = goodwin_json::to_vec(&names)?;
         ensure!(
             names.len() <= STORAGE_LIMIT,
             "Plugin data listing is too large"
@@ -406,15 +416,24 @@ impl Host {
         Ok(names)
     }
 
-    fn read(&self, path: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+    fn read(&self, path: &str, offset: u64, length: usize, optional: bool) -> Result<Vec<u8>> {
         ensure!(length <= STORAGE_LIMIT, "Plugin file read is too large");
-        let (dir, name) = self.parent(path, false)?;
-        let fd = fs::openat(
-            &dir,
-            name,
-            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
+        let file = (|| -> Result<_, StorageError> {
+            let (dir, name) = self.parent(path, false)?;
+            Ok(fs::openat(
+                &dir,
+                name,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?)
+        })();
+        let fd = match file {
+            Ok(fd) => fd,
+            Err(StorageError::System(rustix::io::Errno::NOENT)) if optional => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let mut file = File::from(fd);
         ensure!(
             file.metadata()?.is_file(),

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, ffi::c_void, ptr::NonNull, sync::Mutex};
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 
 pub(crate) const FRAME_SAMPLES: usize = 1280;
 

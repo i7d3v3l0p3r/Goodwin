@@ -24,12 +24,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
 use esp_idf_svc::{
     hal::{delay::FreeRtos, peripherals::Peripherals, task::block_on},
     nvs::EspDefaultNvsPartition,
     sys,
 };
+use goodwin_error::Result;
 
 use crate::{
     builtin_assistant::State,
@@ -61,7 +61,7 @@ pub(crate) fn run() -> Result<()> {
 fn run_device() -> Result<()> {
     log::info!(
         "Capabilities {}",
-        serde_json::to_string(&model::capabilities())?
+        goodwin_json::to_string(&model::capabilities())?
     );
     // SAFETY: ESP-IDF initialized the external RAM before starting the Rust application.
     log::info!("PSRAM {} bytes", unsafe { sys::esp_psram_get_size() });
@@ -618,12 +618,12 @@ impl Turn for EspTurn<'_, '_> {
     }
 }
 
-fn playback_failure(error: anyhow::Error) -> Failure {
+fn playback_failure(error: goodwin_error::Error) -> Failure {
     log::warn!("Play I2S audio: {error:#}");
     Failure::Playback
 }
 
-fn provider_failure(error: anyhow::Error) -> Failure {
+fn provider_failure(error: goodwin_error::Error) -> Failure {
     log::warn!("Voice provider: {error:#}");
     Failure::ProviderFailed
 }

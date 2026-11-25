@@ -1,5 +1,4 @@
 use axum::{
-    Json,
     extract::State,
     http::HeaderMap,
     response::{IntoResponse, Response},
@@ -8,7 +7,7 @@ use serde::Serialize;
 
 use crate::journal;
 
-use super::{Panel, auth::password_rejection};
+use super::{Json, Panel, auth::password_rejection};
 
 #[cfg(target_os = "linux")]
 mod linux;

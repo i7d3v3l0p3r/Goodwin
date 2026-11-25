@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use goodwin_error::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 const STATION_SERVICE: &str = "_yandexio._tcp.local.";

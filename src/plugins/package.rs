@@ -5,8 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, ensure};
 use flate2::read::GzDecoder;
+use goodwin_error::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -141,7 +141,7 @@ impl Manifest {
             file.metadata()?.len() <= MANIFEST_LIMIT,
             "Plugin manifest is too large"
         );
-        let manifest: Self = serde_json::from_reader(file.take(MANIFEST_LIMIT))?;
+        let manifest: Self = goodwin_json::from_reader(file.take(MANIFEST_LIMIT))?;
         ensure!(
             name(&manifest.id) && manifest.title.valid(),
             "Invalid plugin identity"

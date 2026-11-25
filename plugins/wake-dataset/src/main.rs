@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use goodwin_error::{Result, ensure};
 use goodwin_plugin::{HttpRequest, HttpResponse, Plugin, wake::Observation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,7 +47,7 @@ impl Dataset {
         let settings: CaptureSettings = if bytes.is_empty() {
             Default::default()
         } else {
-            serde_json::from_slice(&bytes)?
+            goodwin_plugin::json_codec::from_slice(&bytes)?
         };
         ensure!(
             (0.0..=1.0).contains(&settings.minimum_score),
@@ -144,7 +144,11 @@ impl Dataset {
             return Ok(invalid());
         };
         let settings = CaptureSettings { minimum_score };
-        files::write(&self.settings_path, &serde_json::to_vec(&settings)?, true)?;
+        files::write(
+            &self.settings_path,
+            &goodwin_plugin::json_codec::to_vec(&settings)?,
+            true,
+        )?;
         self.settings = settings;
         Ok(HttpResponse::empty(204))
     }
@@ -341,7 +345,7 @@ mod tests {
                 .unwrap();
         }
         collector
-            .wake_event(frame(subscription, 32, 200, 0.875))
+            .wake_event(frame(subscription, 32, 20_000, 0.875))
             .unwrap();
         collector
             .wake_event(Observation {
@@ -383,6 +387,8 @@ mod tests {
         let labelled = collector.list("filter=labelled&after=0").unwrap();
         assert_eq!(labelled["clips"][0]["label"], "positive");
         assert_eq!(labelled["clips"][1]["label"], "negative");
+        assert_eq!(labelled["clips"][0]["info"]["gain"], 2.0);
+        assert_eq!(labelled["clips"][0]["info"]["gainApplied"], true);
         let [first, second] = ids[..] else {
             panic!("expected two clips")
         };
@@ -407,12 +413,16 @@ mod tests {
         assert_eq!(low.len(), 44 + 32 * frame_bytes);
         assert_eq!(high.len(), 44 + 17 * frame_bytes);
         assert_eq!(
+            &low[44..44 + frame_bytes],
+            &200_i16.to_le_bytes().repeat(1280)
+        );
+        assert_eq!(
             &low[44 + 16 * frame_bytes..],
             &high[44..44 + 16 * frame_bytes]
         );
         assert_eq!(
             &high[high.len() - frame_bytes..],
-            &200_i16.to_le_bytes().repeat(1280)
+            &i16::MAX.to_le_bytes().repeat(1280)
         );
         assert_eq!(
             request(

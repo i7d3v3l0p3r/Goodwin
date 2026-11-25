@@ -1,10 +1,10 @@
 use std::{mem::size_of, ptr};
 
-use anyhow::{Result, bail};
 use esp_idf_svc::{
     ota::{EspOta, SlotState},
     sys,
 };
+use goodwin_error::{Result, bail};
 use serde::Serialize;
 
 use crate::model::FIRMWARE_TAG;

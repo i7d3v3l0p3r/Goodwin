@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use prost::Message;
 use tokio::{io::AsyncReadExt, net::TcpStream, time::timeout};
 

@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 pub(crate) const CHAT_INSTRUCTIONS: &str =
     "You are Goodwin, a home assistant. Reply concisely in the user's language.";
 
-pub(crate) fn normalize_system_prompt(prompt: &str) -> anyhow::Result<String> {
+pub(crate) fn normalize_system_prompt(prompt: &str) -> goodwin_error::Result<String> {
     let prompt = prompt.trim().replace("\r\n", "\n").replace('\r', "\n");
-    anyhow::ensure!(
+    goodwin_error::ensure!(
         prompt.encode_utf16().count() <= 4_000,
         "System prompt exceeds 4,000 UTF-16 code units"
     );
@@ -252,4 +252,11 @@ pub(crate) const ASSETS: &[(&str, &str, &[u8])] = &[
 
 pub(crate) fn valid_password_length(password: &str) -> bool {
     (8..=256).contains(&password.len())
+}
+
+pub(crate) fn random_bytes<const N: usize>() -> goodwin_error::Result<[u8; N]> {
+    let mut bytes = [0; N];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| goodwin_error::report!("Could not generate random bytes"))?;
+    Ok(bytes)
 }

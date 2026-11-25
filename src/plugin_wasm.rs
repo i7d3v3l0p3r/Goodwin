@@ -1,6 +1,5 @@
-use anyhow::Result;
+use goodwin_error::Result;
 use goodwin_plugin::{provider::MAX_RECORDING_BYTES, services::Request};
-use serde_json::Value;
 
 mod validation;
 mod wamr;
@@ -16,4 +15,5 @@ pub(crate) trait HostServices: Send + 'static {
     fn execute(&mut self, request: Request, input: &[u8]) -> Result<Vec<u8>>;
 }
 
-pub(crate) type Reply = (Value, u32);
+#[cfg(all(test, not(target_os = "espidf")))]
+pub(crate) type Reply = (serde_json::Value, u32);

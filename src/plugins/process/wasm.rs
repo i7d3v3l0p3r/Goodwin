@@ -6,7 +6,9 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::plugin_wasm::{Guest, Reply};
+use crate::plugin_wasm::Guest;
+#[cfg(test)]
+use crate::plugin_wasm::Reply;
 
 use super::*;
 #[cfg(test)]
@@ -50,13 +52,17 @@ pub(super) async fn start(
         )
         .await
         .context("WASM module loading timed out")??;
-        let request = json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": { "apiVersion": API_VERSION, "state": state },
-        });
+        let request = plugin_rpc::Request {
+            jsonrpc: "2.0",
+            id: 0,
+            method: "initialize",
+            params: json!({ "apiVersion": API_VERSION, "state": state }),
+            now: Some(now_ms()),
+        };
         let (mut reply, _) = instance
-            .invoke(
+            .invoke::<WireReply>(
                 request,
+                None,
                 CallLimits {
                     timeout: START_TIMEOUT,
                     ..CallLimits::STANDARD
@@ -66,10 +72,10 @@ pub(super) async fn start(
             )
             .await?
             .context("WASM plugin stopped during initialization")?;
-        let effects = Effects::take(&mut reply)?;
-        let registration: Registration = serde_json::from_value(response(reply, 0)??)?;
+        let effects = Effects::take(&mut reply);
+        let registration: Registration = serde_json::from_str(decode_reply(reply, 0)??.get())?;
         registration.validate_wasm(manifest)?;
-        Ok::<_, anyhow::Error>((instance, registration, effects))
+        Ok::<_, goodwin_error::Error>((instance, registration, effects))
     };
     let (instance, registration, effects) = ready.await?;
     let mut deadline = None;
@@ -130,7 +136,8 @@ async fn serve(
             _ = stopping.changed() => return Ok(()),
             _ = wait_for_deadline(deadline) => Call {
                 method: "tick",
-                params: json!({}),
+                params: RawValue::from_string("{}".to_owned())?,
+                connection: None,
                 response: None,
                 chunks: None,
                 limits: CallLimits::STANDARD,
@@ -148,17 +155,28 @@ async fn serve(
             continue;
         }
         id += 1;
-        let request =
-            json!({ "jsonrpc": "2.0", "id": id, "method": call.method, "params": call.params });
+        let request = plugin_rpc::Request {
+            jsonrpc: "2.0",
+            id,
+            method: call.method,
+            params: call.params,
+            now: Some(now_ms()),
+        };
         let Some((mut reply, signals)) = instance
-            .invoke(request, call.limits, call.chunks, Some(stopping))
+            .invoke::<WireReply>(
+                request,
+                call.connection,
+                call.limits,
+                call.chunks,
+                Some(stopping),
+            )
             .await?
         else {
             return Ok(());
         };
-        let effects = Effects::take(&mut reply)?;
-        let subscription = reply["wakeSubscription"].as_u64();
-        let result = response(reply, id)?;
+        let effects = Effects::take(&mut reply);
+        let subscription = reply.wake_subscription;
+        let result = decode_reply(reply, id)?;
         if let (Some(state), Some(subscription)) = (wake_subscription, subscription) {
             state.store(subscription, Ordering::Release);
         }
@@ -239,18 +257,11 @@ struct Effects {
 }
 
 impl Effects {
-    fn take(reply: &mut Value) -> Result<Self> {
-        let reply = reply
-            .as_object_mut()
-            .context("Expected WASM response object")?;
-        let deadline = reply
-            .remove("wakeAt")
-            .map(serde_json::from_value)
-            .transpose()?;
-        Ok(Self {
-            deadline,
-            state: reply.remove("state"),
-        })
+    fn take(reply: &mut WireReply) -> Self {
+        Self {
+            deadline: reply.wake_at.take(),
+            state: reply.state.take(),
+        }
     }
 
     async fn apply(self, state_path: Option<&Path>, deadline: &mut Option<u64>) -> Result<()> {
@@ -260,7 +271,7 @@ impl Effects {
                 .to_owned();
             tokio::task::spawn_blocking(move || {
                 ensure!(
-                    serde_json::to_vec(&state)?.len() <= STATE_LIMIT,
+                    goodwin_json::to_vec(&state)?.len() <= STATE_LIMIT,
                     "WASM plugin state is too large"
                 );
                 goodwin_plugin::save_json(&path, &state)
@@ -310,52 +321,58 @@ impl Instance {
 
     #[cfg(test)]
     async fn call(&self, request: Value) -> Result<Reply> {
-        self.invoke(request, CallLimits::STANDARD, None, None)
-            .await?
-            .context("WASM plugin stopped")
+        self.invoke(
+            plugin_rpc::Request {
+                jsonrpc: "2.0",
+                id: request["id"].as_u64().unwrap(),
+                method: request["method"].as_str().unwrap(),
+                params: &request["params"],
+                now: Some(now_ms()),
+            },
+            None,
+            CallLimits::STANDARD,
+            None,
+            None,
+        )
+        .await?
+        .context("WASM plugin stopped")
     }
 
-    async fn invoke(
+    async fn invoke<T: DeserializeOwned + Send + 'static>(
         &self,
-        mut request: Value,
+        request: plugin_rpc::Request<'_, impl Serialize>,
+        connection: Option<Arc<str>>,
         limits: CallLimits,
         chunks: Option<StreamChunks>,
         stopping: Option<&mut watch::Receiver<bool>>,
-    ) -> Result<Option<Reply>> {
+    ) -> Result<Option<(T, u32)>> {
         let active = self.0.clone();
         let shutdown = stopping.as_deref().cloned();
         let deadline = Instant::now() + limits.timeout;
+        let id = request.id;
+        let frame = serde_json::to_vec(&request)?;
+        drop(request);
         let mut work = tokio::task::spawn_blocking(move || {
-            let connection = request
-                .get_mut("params")
-                .and_then(Value::as_object_mut)
-                .and_then(|params| params.remove("providerConnection"));
-            request["nowMs"] = now_ms().into();
-            let frame = serde_json::to_vec(&request)?;
             ensure!(
                 frame.len() <= limits.request,
                 "WASM plugin request is too large"
             );
-            let mut active = active.lock().map_err(|_| anyhow!("WASM worker failed"))?;
+            let mut active = active.lock().map_err(|_| report!("WASM worker failed"))?;
             if let Some(host) = active.guest.host_mut()
-                && host
-                    .select_connection(connection.as_ref().and_then(Value::as_str))
-                    .is_err()
+                && host.select_connection(connection.as_deref()).is_err()
             {
-                return Ok((
-                    json!({
-                        "jsonrpc": "2.0", "id": request["id"],
-                        "error": {"code": -32000, "message": "Provider connection is unavailable"},
-                    }),
-                    0,
-                ));
+                let reply = serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": {"code": -32000, "message": "Provider connection is unavailable"},
+                }))?;
+                return Ok((serde_json::from_slice(&reply)?, 0));
             }
             if let Some(host) = active.guest.host_mut() {
                 host.deadline = deadline;
                 host.chunks = chunks;
                 host.shutdown = shutdown;
             }
-            let result = active.guest.call(&frame, limits.response);
+            let result = active.guest.call_as(&frame, limits.response);
             if let Some(host) = active.guest.host_mut() {
                 host.finish();
             }
@@ -500,6 +517,47 @@ mod tests {
                 .unwrap()
                 .len(),
             96
+        );
+    }
+
+    #[tokio::test]
+    async fn wasm_timers_reject_id_exhaustion_without_changing_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.wasm");
+        fs::write(&path, TIMERS).unwrap();
+        let instance = Instance::open(path).await.unwrap();
+        let (reply, _) = instance
+            .call(json!({
+                "id": 0, "method": "initialize",
+                "params": { "state": { "next_id": u64::MAX, "timers": [] } }
+            }))
+            .await
+            .unwrap();
+        response(reply, 0).unwrap().unwrap();
+
+        let (reply, _) = instance
+            .call(json!({
+                "id": 1, "method": "tool",
+                "params": { "name": "create", "voiceTurn": 1, "arguments": { "seconds": 60 } }
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            reply["error"],
+            json!({ "code": -32000, "message": "Timer request failed" })
+        );
+        assert!(reply.get("state").is_none());
+
+        let (reply, _) = instance
+            .call(json!({
+                "id": 2, "method": "http",
+                "params": { "method": "GET", "path": "/timers", "body": null }
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            response(reply, 2).unwrap().unwrap()["body"]["timers"],
+            json!([])
         );
     }
 

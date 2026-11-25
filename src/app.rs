@@ -266,14 +266,14 @@ impl App {
             let providers = self
                 .plugins
                 .provider_revisions([(&pipeline.chat.provider, Capability::Chat)]);
-            serde_json::to_vec(&(&pipeline.chat, &request.system_prompt, providers))
+            goodwin_json::to_vec(&(&pipeline.chat, &request.system_prompt, providers))
         } else {
             let providers = self.plugins.provider_revisions([
                 (&pipeline.transcription.provider, Capability::Transcription),
                 (&pipeline.chat.provider, Capability::Chat),
                 (&pipeline.speech.provider, Capability::Speech),
             ]);
-            serde_json::to_vec(&(
+            goodwin_json::to_vec(&(
                 settings,
                 &request.system_prompt,
                 providers,
@@ -288,7 +288,7 @@ impl App {
         self.microphone_mute.subscribe()
     }
 
-    pub(crate) fn set_microphone_muted(&self, muted: bool) -> anyhow::Result<()> {
+    pub(crate) fn set_microphone_muted(&self, muted: bool) -> goodwin_error::Result<()> {
         let mut runtime = self.runtime();
         if *self.microphone_mute.borrow() == muted {
             return Ok(());

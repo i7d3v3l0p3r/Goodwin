@@ -5,15 +5,23 @@ edition = "2024"
 license = "MIT"
 
 [features]
-wasm-guest = ["anyhow/std", "serde/std", "serde_json/std"]
+default = ["plugin-api"]
+plugin-api = ["dep:goodwin-error"]
+wasm-guest = ["plugin-api", "serde/std", "serde_json/std"]
 
 [dependencies]
-anyhow = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+goodwin-json = { path = "../../shared/json" }
+
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
+serde_json = { version = "1", default-features = false, features = ["raw_value"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+goodwin-error = { path = "../../shared/error", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-anyhow = { version = "1", features = ["std"] }
+goodwin-error = { path = "../../shared/error" }
 serde = { version = "1", features = ["std"] }
 serde_json = { version = "1", features = ["std"] }
 tempfile = "3"

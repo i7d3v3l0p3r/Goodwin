@@ -3,7 +3,7 @@ import { Button } from "../../../components/ui-kit/Button";
 import { Disclosure } from "../../../components/ui-kit/Disclosure";
 import { Field } from "../../../components/ui-kit/Field";
 import { Switch } from "../../../components/ui-kit/Switch";
-import { api, type Capability, type ModelCatalog, type Plugin } from "../../../helpers/api";
+import { api, type Capability, type ModelCatalog, type ModelParameters, type Plugin } from "../../../helpers/api";
 import type { Language, Words } from "../../../helpers/words";
 import styles from "./AssistantForm.module.css";
 
@@ -13,10 +13,10 @@ export interface StageDraft {
   voice: string;
   speed?: number;
   streaming?: boolean;
-  parameters: string;
+  parameters: ModelParameters;
 }
 
-export const speechSpeed = { min: 0.5, max: 2, step: 0.05, default: 1 } as const;
+const speechSpeed = { min: 0.25, max: 4, step: 0.05, default: 1 } as const;
 
 const headings = { transcription: "transcriptionProvider", chat: "chatProvider", speech: "speechProvider" } as const;
 const manualModel = "manual";
@@ -28,7 +28,6 @@ export function PipelineStageForm(props: {
   builtin?: boolean;
   t: Words;
   language: Language;
-  invalidParameters: boolean;
   focusOnOpen: boolean;
   change: (changes: Partial<StageDraft>) => void;
 }) {
@@ -59,7 +58,6 @@ export function PipelineStageForm(props: {
   const [visited, setVisited] = createSignal(false);
   const revision = createMemo(() => visited() && current()?.model_catalog ? current()?.revision : undefined);
   let stage!: HTMLDetailsElement;
-  let parameters: HTMLDetailsElement | undefined;
 
   createEffect(() => [props.draft.provider, revision(), reloadCount()] as const, ([provider, revision]) => {
     setCatalog(undefined);
@@ -71,14 +69,6 @@ export function PipelineStageForm(props: {
       .catch(() => {})
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  });
-  createEffect(() => props.invalidParameters, invalid => {
-    if (!invalid) return;
-    stage.open = true;
-    if (parameters?.isConnected) {
-      parameters.open = true;
-      parameters.querySelector("textarea")?.focus();
-    }
   });
   createEffect(() => props.focusOnOpen, focus => {
     if (!focus) return;
@@ -92,7 +82,9 @@ export function PipelineStageForm(props: {
   const modelValue = () => manualActive() ? manualModel : props.draft.model ? `model:${props.draft.model}` : "";
   const voices = () => models().find(model => model.id === (props.draft.model || catalog()?.default))?.voices ?? [];
   const voiceList = () => `voices-${props.capability}`;
-  const edit = (field: "model" | "voice" | "parameters", value: string) => props.change({ [field]: value });
+  const edit = (field: "model" | "voice", value: string) => props.change({ [field]: value });
+  const parameter = <K extends keyof ModelParameters,>(key: K, value: ModelParameters[K]) =>
+    props.change({ parameters: { ...props.draft.parameters, [key]: value } });
   const speed = () => props.draft.speed ?? speechSpeed.default;
   const speedLabel = () => `${new Intl.NumberFormat(props.language, { maximumFractionDigits: 2 }).format(speed())}×`;
   const streamingAvailable = () => current()?.speech_streaming === true;
@@ -106,7 +98,7 @@ export function PipelineStageForm(props: {
       <Field class={styles.primaryField} label={props.t.modelProvider}>
         {control => <select {...control} value={props.draft.provider} onChange={event => {
           setManual(false);
-          props.change({ provider: event.currentTarget.value, model: "", voice: "", speed: undefined, parameters: "" });
+          props.change({ provider: event.currentTarget.value, model: "", voice: "", speed: undefined, parameters: {} });
         }}>
           <Show when={!current()}>
             <option value={props.draft.provider} selected>{providerLabel()}</option>
@@ -160,13 +152,35 @@ export function PipelineStageForm(props: {
               onInput={event => props.change({ speed: event.currentTarget.valueAsNumber })} />}
           </Field>
         </Show>
-        <Disclosure ref={node => { parameters = node; }} title={props.t.modelParameters}>
-          <Field label={`${props.t.modelParameters} · ${props.t[headings[props.capability]]}`} hideLabel
-            error={props.invalidParameters ? props.t.badModelParameters : undefined}>
-            {control => <textarea {...control} class={[control.class, styles.parametersInput]}
-              placeholder={"{ }"} value={props.draft.parameters} maxlength={2048} rows={3} spellcheck={false}
-              onInput={event => edit("parameters", event.currentTarget.value)} />}
-          </Field>
+        <Disclosure title={props.t.modelParameters}>
+          <Show when={props.capability !== "speech"}>
+            <Field label={props.t.temperature}>
+              {control => <input {...control} type="number" min="0" max="2" step="any"
+                value={props.draft.parameters.temperature ?? ""}
+                onInput={event => parameter("temperature", Number.isFinite(event.currentTarget.valueAsNumber)
+                  ? event.currentTarget.valueAsNumber : undefined)} />}
+            </Field>
+          </Show>
+          <Show when={props.capability === "chat"}>
+            <Field label={props.t.topP}>
+              {control => <input {...control} type="number" min="0" max="1" step="any"
+                value={props.draft.parameters.top_p ?? ""}
+                onInput={event => parameter("top_p", Number.isFinite(event.currentTarget.valueAsNumber)
+                  ? event.currentTarget.valueAsNumber : undefined)} />}
+            </Field>
+          </Show>
+          <Show when={props.capability === "transcription"}>
+            <Field label={props.t.transcriptionPrompt}>
+              {control => <textarea {...control} value={props.draft.parameters.prompt ?? ""} maxlength={1536} rows={2}
+                onInput={event => parameter("prompt", event.currentTarget.value || undefined)} />}
+            </Field>
+          </Show>
+          <Show when={props.capability === "speech"}>
+            <Field label={props.t.speechInstructions}>
+              {control => <textarea {...control} value={props.draft.parameters.instructions ?? ""} maxlength={1536} rows={2}
+                onInput={event => parameter("instructions", event.currentTarget.value || undefined)} />}
+            </Field>
+          </Show>
         </Disclosure>
       </Show>
       <Show when={props.capability === "speech"}>

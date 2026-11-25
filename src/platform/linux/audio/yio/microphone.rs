@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use prost::Message;
 use tokio::{
     io::AsyncWriteExt,
@@ -95,7 +95,7 @@ async fn stream(
             let request = framing.subscription().encode_to_vec();
             socket.write_u32_le(request.len() as u32).await?;
             socket.write_all(&request).await?;
-            Ok::<_, anyhow::Error>(socket)
+            Ok::<_, goodwin_error::Error>(socket)
         })
         .await
         .context("Subscribe to VQE audio timed out")?

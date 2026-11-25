@@ -8,7 +8,7 @@ use super::Capabilities;
 
 pub(crate) const PLAYBACK_DEVICE: &str = "speakers";
 
-pub(crate) fn microphone() -> anyhow::Result<Capture> {
+pub(crate) fn microphone() -> goodwin_error::Result<Capture> {
     Capture::from_env("127.0.0.1:9850")
 }
 

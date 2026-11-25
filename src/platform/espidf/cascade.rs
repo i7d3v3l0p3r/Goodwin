@@ -1,4 +1,4 @@
-use anyhow::Result;
+use goodwin_error::Result;
 
 use crate::{
     builtin_assistant::{Provider, ProviderSettings},
@@ -63,7 +63,7 @@ impl<'a> Cascade<'a> {
         };
         let plugin = self
             .plugins
-            .ok_or_else(|| anyhow::anyhow!("Plugin runtime is unavailable"))?;
+            .ok_or_else(|| goodwin_error::report!("Plugin runtime is unavailable"))?;
         Ok(Some(super::plugins::PluginProvider {
             plugin,
             settings: stage,
@@ -169,15 +169,19 @@ fn chat_request(
     message: &str,
     history: &[Message],
 ) -> goodwin_plugin::provider::ChatRequest {
-    use serde_json::json;
-    let mut messages = vec![json!({"role": "system", "content": instructions})];
-    messages.extend(
-        history
-            .iter()
-            .rev()
-            .map(|item| json!({"role": item.role, "content": item.text})),
-    );
-    messages.push(json!({"role": "user", "content": message}));
+    use goodwin_plugin::provider::{ChatMessage, ChatRole};
+    let mut messages = vec![ChatMessage::text(ChatRole::System, instructions)];
+    messages.extend(history.iter().rev().map(|item| {
+        ChatMessage::text(
+            if item.role == "assistant" {
+                ChatRole::Assistant
+            } else {
+                ChatRole::User
+            },
+            item.text.as_str(),
+        )
+    }));
+    messages.push(ChatMessage::text(ChatRole::User, message));
     goodwin_plugin::provider::ChatRequest {
         messages,
         tools: Vec::new(),

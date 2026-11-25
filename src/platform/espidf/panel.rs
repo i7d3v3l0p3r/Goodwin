@@ -4,7 +4,6 @@ use std::sync::{
     mpsc::SyncSender,
 };
 
-use anyhow::Result;
 use esp_idf_svc::{
     http::{
         Method,
@@ -13,6 +12,7 @@ use esp_idf_svc::{
     io::Write,
     sys,
 };
+use goodwin_error::Result;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 
@@ -23,6 +23,7 @@ use crate::{
         ASSETS, CONTENT_SECURITY_POLICY, Chat, INDEX, Login, PAGE_PATHS, SetupPassword, Source,
         same_origin, session_cookie, session_token, valid_password_length,
     },
+    password,
 };
 
 use super::{
@@ -62,7 +63,7 @@ pub(super) enum Command {
     #[cfg(feature = "wake-tflite")]
     UseWakeModel(
         super::wake_models::Candidate,
-        std::sync::mpsc::Sender<anyhow::Result<crate::wake_catalog::Selection>>,
+        std::sync::mpsc::Sender<goodwin_error::Result<crate::wake_catalog::Selection>>,
     ),
     Wifi(WifiCredentials),
 }
@@ -328,7 +329,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
             if data.password != data.confirmation {
                 return problem(request, 400, "password_mismatch");
             }
-            let Ok(hash) = Auth::hash(&data.password) else {
+            let Ok(hash) = password::hash(&data.password) else {
                 return problem(request, 500, "password_save_failed");
             };
             let mut credentials = panel.credentials.lock().expect("panel credentials");
@@ -349,6 +350,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
             return match credentials.0.login(&data.password) {
                 Ok(()) => create_session(request, &mut credentials.0),
                 Err("setup_required") => problem(request, 409, "setup_required"),
+                Err("password_reprovision_required") => {
+                    problem(request, 409, "password_reprovision_required")
+                }
                 Err("login_retry") => problem(request, 429, "login_retry"),
                 Err("wrong_password") => problem(request, 401, "wrong_password"),
                 Err(_) => problem(request, 500, "internal"),
@@ -462,8 +466,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
         }
         #[cfg(feature = "wasm-plugins")]
         (Method::Put, "/api/settings/assistant") => {
-            let Ok(settings) = read_json::<crate::assistant::AssistantSettings>(&mut request)
-            else {
+            let Ok(settings) = read_json_body(&mut request).and_then(|bytes| {
+                crate::assistant::decode_settings::<crate::assistant::AssistantSettings>(&bytes)
+            }) else {
                 return problem(request, 400, "invalid_settings");
             };
             if settings.validate().is_err() {
@@ -680,20 +685,24 @@ fn install_firmware(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Pa
 }
 
 fn read_json<T: DeserializeOwned>(request: &mut Request<&mut EspHttpConnection<'_>>) -> Result<T> {
+    Ok(goodwin_json::from_slice(&read_json_body(request)?)?)
+}
+
+fn read_json_body(request: &mut Request<&mut EspHttpConnection<'_>>) -> Result<Vec<u8>> {
     let content = request
         .header("Content-Type")
         .and_then(|header| header.split(';').next());
-    anyhow::ensure!(content == Some("application/json"), "Expected JSON");
+    goodwin_error::ensure!(content == Some("application/json"), "Expected JSON");
     let size: usize = request.header("Content-Length").unwrap_or("").parse()?;
-    anyhow::ensure!(size <= BODY_LIMIT, "Request is too large");
+    goodwin_error::ensure!(size <= BODY_LIMIT, "Request is too large");
     let mut bytes = vec![0; size];
     let mut offset = 0;
     while offset < size {
         let read = request.read(&mut bytes[offset..])?;
-        anyhow::ensure!(read != 0, "Incomplete request");
+        goodwin_error::ensure!(read != 0, "Incomplete request");
         offset += read;
     }
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(bytes)
 }
 
 fn create_session(request: Request<&mut EspHttpConnection<'_>>, auth: &mut Auth) -> Result<()> {
@@ -708,7 +717,7 @@ fn send_json(request: Request<&mut EspHttpConnection<'_>>, value: &impl Serializ
         request,
         200,
         "application/json",
-        &serde_json::to_vec(value)?,
+        &goodwin_json::to_vec(value)?,
         &[],
     )
 }
@@ -718,7 +727,7 @@ fn problem(request: Request<&mut EspHttpConnection<'_>>, status: u16, code: &str
         request,
         status,
         "application/json",
-        &serde_json::to_vec(&json!({"error": code}))?,
+        &goodwin_json::to_vec(&json!({"error": code}))?,
         &[],
     )
 }

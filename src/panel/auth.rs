@@ -1,13 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fs, io,
     path::Path,
     time::{Duration, Instant, SystemTime},
 };
 
-use anyhow::{Context, Result};
 use axum::{
-    Json,
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
@@ -15,17 +13,20 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use blake2::{Blake2s256, Digest};
+use goodwin_error::{Context, Result};
+use serde::Deserialize;
 use tokio::sync::watch;
 
 use crate::{
-    config::{Access, random_bytes, verify_password},
+    config::Access,
     panel_core::{
-        AccessState, CONTENT_SECURITY_POLICY, Login, SESSION_DURATION, SetupPassword, same_origin,
-        session_cookie as cookie, session_token, valid_password_length,
+        AccessState, CONTENT_SECURITY_POLICY, Login, SESSION_DURATION, SetupPassword, random_bytes,
+        same_origin, session_cookie as cookie, session_token, valid_password_length,
     },
+    password,
 };
 
-use super::{Panel, problem};
+use super::{Json, JsonDocument, Panel, problem};
 
 #[cfg(test)]
 mod tests;
@@ -34,30 +35,39 @@ const SESSION_FILE: &str = "panel-sessions.json";
 
 #[derive(Default)]
 pub(super) struct Auth {
-    sessions: HashMap<String, SystemTime>,
+    sessions: BTreeMap<String, SystemTime>,
     next_login: Option<Instant>,
     pub(super) changes: watch::Sender<()>,
 }
 
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct StoredSessions(
+    #[serde(deserialize_with = "goodwin_json::string_map::deserialize")]
+    BTreeMap<String, SystemTime>,
+);
+
 impl Auth {
     pub(super) fn load(dir: &Path) -> Self {
         let sessions = match fs::read(dir.join(SESSION_FILE)) {
-            Ok(data) => serde_json::from_slice(&data).context("Read panel sessions"),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Ok(data) => goodwin_json::from_slice::<StoredSessions>(&data)
+                .map(|sessions| sessions.0)
+                .context("Read panel sessions"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(error) => Err(error).context("Open panel sessions"),
         };
         Self {
             sessions: sessions.unwrap_or_else(|error| {
                 log::warn!("Could not restore panel sessions: {error}");
-                HashMap::new()
+                BTreeMap::new()
             }),
             ..Self::default()
         }
     }
 
-    fn save(&mut self, dir: &Path, sessions: HashMap<String, SystemTime>) -> Result<()> {
+    fn save(&mut self, dir: &Path, sessions: BTreeMap<String, SystemTime>) -> Result<()> {
         let mut file = tempfile::NamedTempFile::new_in(dir)?;
-        serde_json::to_writer(&mut file, &sessions)?;
+        goodwin_json::to_writer(&mut file, &sessions)?;
         file.as_file().sync_all()?;
         file.persist(dir.join(SESSION_FILE))?;
         self.sessions = sessions;
@@ -136,6 +146,9 @@ async fn session_expiry(
     headers: &HeaderMap,
     password_hash: &str,
 ) -> Option<SystemTime> {
+    if !password::uses_current_algorithm(password_hash) {
+        return None;
+    }
     let token = token(headers)?;
     let key = session_key(password_hash, token);
     panel
@@ -225,7 +238,7 @@ pub(super) async fn setup_password(
             .configuration()
             .set_initial_password(&setup.password)?
         else {
-            return Ok::<_, anyhow::Error>(problem(StatusCode::CONFLICT, "setup_complete"));
+            return Ok::<_, goodwin_error::Error>(problem(StatusCode::CONFLICT, "setup_complete"));
         };
         // The password is already durable, so a session failure leaves the normal sign-in flow.
         Ok(match create_session(&panel, &hash) {
@@ -249,6 +262,9 @@ pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) 
         Access::PendingPassword => return problem(StatusCode::CONFLICT, "setup_required"),
         Access::Password { hash } => hash,
     };
+    if !password::uses_current_algorithm(&hash) {
+        return problem(StatusCode::CONFLICT, "password_reset_required");
+    }
     {
         let mut auth = panel.auth.lock().await;
         let now = Instant::now();
@@ -258,7 +274,7 @@ pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) 
         auth.next_login = Some(now + Duration::from_secs(2));
     }
     let result = tokio::task::spawn_blocking(move || {
-        if !verify_password(&hash, &login.password) {
+        if !password::verify(&hash, &login.password)? {
             return Ok(None);
         }
         create_session(&panel, &hash).map(Some)
@@ -267,7 +283,14 @@ pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) 
     match result {
         Ok(Ok(Some(cookie))) => session_response(cookie),
         Ok(Ok(None)) => problem(StatusCode::UNAUTHORIZED, "wrong_password"),
-        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        Ok(Err(error)) => {
+            log::error!("Verify panel password: {error:#}");
+            problem(StatusCode::INTERNAL_SERVER_ERROR, "internal")
+        }
+        Err(error) => {
+            log::error!("Panel login task: {error}");
+            problem(StatusCode::INTERNAL_SERVER_ERROR, "internal")
+        }
     }
 }
 
@@ -298,7 +321,7 @@ fn create_session(panel: &Panel, password_hash: &str) -> Result<String> {
 pub(super) async fn logout(
     State(panel): State<Panel>,
     headers: HeaderMap,
-    Json(_): Json<serde_json::Value>,
+    _: JsonDocument,
 ) -> Response {
     if let (Some(token), Access::Password { hash }) =
         (token(&headers), panel.app.configuration().access())
@@ -311,7 +334,7 @@ pub(super) async fn logout(
                 sessions.remove(&key);
                 auth.save(&panel.app.dir, sessions)?;
             }
-            Ok::<(), anyhow::Error>(())
+            Ok::<(), goodwin_error::Error>(())
         })
         .await;
         if !matches!(result, Ok(Ok(()))) {

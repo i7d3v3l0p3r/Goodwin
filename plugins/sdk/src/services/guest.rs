@@ -1,11 +1,11 @@
 use std::{cell::RefCell, io};
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::Request;
-use crate::{Plugin, provider, wake};
+use crate::{HttpRequest, Plugin, ToolCall, provider, rpc, wake};
 
 thread_local! {
     static BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -18,7 +18,7 @@ unsafe extern "C" {
 }
 
 pub fn call(request: Request, input: &[u8], output: &mut [u8]) -> Result<usize> {
-    let meta = serde_json::to_vec(&request)?;
+    let meta = crate::json_codec::to_vec(&request)?;
     // The import borrows these buffers only for the duration of this call.
     let length = unsafe { host_call(meta.as_ptr(), meta.len(), input.as_ptr(), input.len()) };
     let length = usize::try_from(length).context("Goodwin host operation failed")?;
@@ -49,7 +49,7 @@ pub fn http_read(buffer: &mut [u8]) -> io::Result<usize> {
         &[],
         buffer,
     )
-    .map_err(io::Error::other)
+    .map_err(|error| io::Error::other(error.into_boxed()))
 }
 
 pub fn input(length: usize) -> *mut u8 {
@@ -64,28 +64,34 @@ pub fn buffer() -> *mut u8 {
 }
 
 pub fn dispatch<P: Plugin>(plugin: &mut Option<P>, length: usize, open: fn() -> Result<P>) -> i32 {
-    let request = BUFFER.with_borrow_mut(|buffer| {
-        let buffer = std::mem::take(buffer);
-        serde_json::from_slice::<Frame>(buffer.get(..length).unwrap_or_default())
-    });
+    let input = BUFFER.with_borrow_mut(std::mem::take);
+    let request = rpc::Frame::read(input.get(..length).unwrap_or_default());
     let Ok(request) = request else { return -1 };
     let id = request.id;
+    let call = Call::read(&request);
+    drop(input);
     let previous = plugin.as_ref().map_or(0, Plugin::wake_subscription);
-    let result = execute(plugin, request, open);
-    let mut reply = match result {
-        Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
+    let result = call.and_then(|call| execute(plugin, call, open));
+    let (result, error) = match result {
+        Ok(result) => (Some(result), None),
         Err(error) => {
             let mut error_reply = json!({"code":-32603, "message":"Plugin request failed"});
-            if let Some(status) = error.downcast_ref::<provider::ProviderHttpError>() {
+            if let Some(status) = error.find::<provider::ProviderHttpError>() {
                 error_reply["data"] = json!({"http_status":status.0});
             }
-            json!({"jsonrpc":"2.0", "id":id, "error":error_reply})
+            (None, Some(error_reply))
         }
     };
     let subscription = plugin.as_ref().map_or(0, Plugin::wake_subscription);
-    if subscription != previous {
-        reply["wakeSubscription"] = json!(subscription);
-    }
+    let reply = rpc::Reply {
+        jsonrpc: "2.0",
+        id,
+        result,
+        error,
+        wake_subscription: (subscription != previous).then_some(subscription),
+    };
+    // Replies can contain full buffered audio or an arbitrary plugin
+    // response. The streaming serializer handles long strings in one pass.
     let Ok(output) = serde_json::to_vec(&reply) else {
         return -1;
     };
@@ -94,21 +100,50 @@ pub fn dispatch<P: Plugin>(plugin: &mut Option<P>, length: usize, open: fn() -> 
     length
 }
 
-#[derive(serde::Deserialize)]
-struct Frame {
-    id: u64,
-    method: String,
-    params: Value,
+enum Call {
+    Initialize(rpc::Initialize),
+    Http(HttpRequest),
+    Tool(ToolCall),
+    Wake(wake::Observation),
+    Models(provider::ModelsRequest),
+    ChatStream(provider::ChatRequest),
+    SpeechStream(provider::SpeechRequest),
+    Transcribe(provider::TranscriptionRequest),
+    Chat(provider::ChatRequest),
+    Speech(provider::SpeechRequest),
+}
+
+impl Call {
+    fn read(frame: &rpc::Frame<'_>) -> Result<Self> {
+        Ok(match frame.method.as_str() {
+            "initialize" => Self::Initialize(frame.params()?),
+            "http" => Self::Http(frame.params()?),
+            "tool" => Self::Tool(frame.params()?),
+            wake::EVENT_METHOD => Self::Wake(frame.params()?),
+            provider::MODELS_METHOD => Self::Models(frame.params()?),
+            provider::CHAT_STREAM_METHOD => Self::ChatStream(frame.params()?),
+            provider::SPEECH_STREAM_METHOD => Self::SpeechStream(frame.params()?),
+            method if method == provider::Capability::Transcription.method() => {
+                Self::Transcribe(frame.params()?)
+            }
+            method if method == provider::Capability::Chat.method() => Self::Chat(frame.params()?),
+            method if method == provider::Capability::Speech.method() => {
+                Self::Speech(frame.params()?)
+            }
+            _ => goodwin_error::bail!("Unknown plugin method"),
+        })
+    }
 }
 
 fn execute<P: Plugin>(
     plugin: &mut Option<P>,
-    frame: Frame,
+    request: Call,
     open: fn() -> Result<P>,
-) -> Result<Value> {
-    if frame.method == "initialize" {
+) -> Result<rpc::Payload> {
+    use rpc::Payload;
+    if let Call::Initialize(params) = request {
         ensure!(
-            plugin.is_none() && frame.params["apiVersion"] == 1,
+            plugin.is_none() && params.api_version == 1,
             "Invalid initialize request"
         );
         let opened = open()?;
@@ -124,44 +159,39 @@ fn execute<P: Plugin>(
             registration["wakeSubscription"] = json!(opened.wake_subscription());
         }
         *plugin = Some(opened);
-        return Ok(registration);
+        return Ok(Payload::Json(registration));
     }
     let plugin = plugin.as_mut().context("Plugin is not initialized")?;
-    let params = frame.params;
-    Ok(match frame.method.as_str() {
-        "http" => serde_json::to_value(plugin.http(serde_json::from_value(params)?)?)?,
-        "tool" => plugin.tool(serde_json::from_value(params)?)?,
-        wake::EVENT_METHOD => {
-            plugin.wake_event(serde_json::from_value(params)?)?;
-            Value::Null
+    Ok(match request {
+        Call::Initialize(_) => unreachable!(),
+        Call::Http(request) => Payload::Http(plugin.http(request)?),
+        Call::Tool(request) => Payload::Json(plugin.tool(request)?),
+        Call::Wake(request) => {
+            plugin.wake_event(request)?;
+            Payload::Empty(())
         }
-        provider::MODELS_METHOD => {
-            serde_json::to_value(plugin.models(serde_json::from_value(params)?)?)?
-        }
-        provider::CHAT_STREAM_METHOD => {
-            plugin.complete_stream(serde_json::from_value(params)?, &mut |chunk| {
+        Call::Models(request) => Payload::Models(plugin.models(request)?),
+        Call::ChatStream(request) => {
+            plugin.complete_stream(request, &mut |chunk| {
                 call(Request::Chat, chunk.as_bytes(), &mut [])?;
                 Ok(())
             })?;
-            Value::Null
+            Payload::Empty(())
         }
-        provider::SPEECH_STREAM_METHOD => {
-            plugin.synthesize_stream(serde_json::from_value(params)?, &mut |chunk| {
-                call(Request::Speech, &serde_json::to_vec(&chunk)?, &mut [])?;
+        Call::SpeechStream(request) => {
+            plugin.synthesize_stream(request, &mut |chunk| {
+                call(
+                    Request::Speech,
+                    &crate::json_codec::to_vec(&chunk)?,
+                    &mut [],
+                )?;
                 Ok(())
             })?;
-            Value::Null
+            Payload::Empty(())
         }
-        method if method == provider::Capability::Transcription.method() => {
-            serde_json::to_value(plugin.transcribe(serde_json::from_value(params)?)?)?
-        }
-        method if method == provider::Capability::Chat.method() => {
-            serde_json::to_value(plugin.complete(serde_json::from_value(params)?)?)?
-        }
-        method if method == provider::Capability::Speech.method() => {
-            serde_json::to_value(plugin.synthesize(serde_json::from_value(params)?)?)?
-        }
-        _ => anyhow::bail!("Unknown plugin method"),
+        Call::Transcribe(request) => Payload::Transcription(plugin.transcribe(request)?),
+        Call::Chat(request) => Payload::Chat(plugin.complete(request)?),
+        Call::Speech(request) => Payload::Speech(plugin.synthesize(request)?),
     })
 }
 

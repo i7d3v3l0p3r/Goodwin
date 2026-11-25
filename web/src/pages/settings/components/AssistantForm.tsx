@@ -4,30 +4,25 @@ import type { Capability, PipelineStage, Snapshot, Settings } from "../../../hel
 import { protectDraft } from "../../../helpers/drafts";
 import type { Language, Words } from "../../../helpers/words";
 import { isSettingsPath } from "../sections";
-import { PipelineStageForm, speechSpeed, type StageDraft } from "./PipelineStageForm";
+import { PipelineStageForm, type StageDraft } from "./PipelineStageForm";
 import styles from "./AssistantForm.module.css";
 
 const capabilities = ["transcription", "chat", "speech"] as const;
 
-function draftStage(stage: PipelineStage, capability: Capability): StageDraft {
-  const parameters = { ...stage.selection.parameters };
-  const voice = capability === "speech" && typeof parameters.voice === "string" ? parameters.voice : "";
-  if (capability === "speech" && typeof parameters.voice === "string") delete parameters.voice;
-  const speed = capability === "speech" && typeof parameters.speed === "number"
-    && parameters.speed >= speechSpeed.min && parameters.speed <= speechSpeed.max ? parameters.speed : undefined;
-  if (speed !== undefined) delete parameters.speed;
+function draftStage(stage: PipelineStage): StageDraft {
+  const { voice = "", speed, ...parameters } = stage.selection.parameters ?? {};
   return {
     provider: stage.provider, model: stage.selection.model ?? "", voice, speed,
-    parameters: Object.keys(parameters).length ? JSON.stringify(parameters, null, 2) : "",
+    parameters,
   };
 }
 
 function draftPipeline(settings: Settings): Record<Capability, StageDraft> {
   const { pipeline } = settings.assistant;
   return {
-    transcription: draftStage(pipeline.transcription, "transcription"),
-    chat: draftStage(pipeline.chat, "chat"),
-    speech: { ...draftStage(pipeline.speech, "speech"), streaming: pipeline.speech_streaming ?? true },
+    transcription: draftStage(pipeline.transcription),
+    chat: draftStage(pipeline.chat),
+    speech: { ...draftStage(pipeline.speech), streaming: pipeline.speech_streaming ?? true },
   };
 }
 
@@ -47,26 +42,16 @@ export function AssistantForm(props: {
   const [draft, setDraft] = createSignal(savedSettings);
   const [saved, setSaved] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
-  const [invalid, setInvalid] = createSignal<Capability>();
   const dirty = createMemo(() => JSON.stringify(draft()) !== JSON.stringify(savedSettings()));
   protectDraft(dirty, isSettingsPath);
 
   async function save() {
     if (props.pending || saving() || !dirty()) return;
     setSaved(false);
-    setInvalid(undefined);
     const pipeline = { ...props.snapshot.settings.assistant.pipeline };
     for (const capability of capabilities) {
       const stage = draft()[capability];
-      let parameters: Record<string, unknown>;
-      try {
-        const value: unknown = stage.parameters.trim() ? JSON.parse(stage.parameters) : {};
-        if (!value || Array.isArray(value) || typeof value !== "object") throw new Error();
-        parameters = value as Record<string, unknown>;
-      } catch {
-        setInvalid(capability);
-        return;
-      }
+      const parameters = { ...stage.parameters };
       if (capability === "speech") {
         if (stage.voice.trim()) parameters.voice = stage.voice.trim();
         if (stage.speed !== undefined) parameters.speed = stage.speed;
@@ -94,12 +79,11 @@ export function AssistantForm(props: {
         <For each={capabilities}>{capability =>
           <PipelineStageForm capability={capability} draft={draft()[capability]} plugins={props.snapshot.plugins}
             builtin={props.builtin}
-            t={props.t} language={props.language} invalidParameters={invalid() === capability}
+            t={props.t} language={props.language}
             focusOnOpen={props.focusStage === capability}
             change={changes => {
               setDraft(previous => ({ ...previous, [capability]: { ...previous[capability], ...changes } }));
               setSaved(false);
-              if (invalid() === capability) setInvalid(undefined);
             }} />
         }</For>
       </fieldset>

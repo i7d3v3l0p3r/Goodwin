@@ -1,4 +1,4 @@
-use anyhow::Result;
+use goodwin_error::Result;
 use goodwin_openai_compatible::{Config, Protocol, Upstream};
 #[cfg(target_arch = "wasm32")]
 use goodwin_plugin::services::guest::read_settings;

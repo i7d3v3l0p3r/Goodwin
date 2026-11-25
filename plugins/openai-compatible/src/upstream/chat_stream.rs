@@ -1,10 +1,31 @@
 use std::io::{BufRead, BufReader, Read};
 
-use anyhow::{Context, Result, ensure};
-use goodwin_plugin::provider::{MAX_CHAT_BYTES, MAX_CHAT_CHUNK_BYTES};
-use serde_json::Value;
+use goodwin_error::{Context, Result, ensure};
+use goodwin_plugin::{
+    json_codec,
+    provider::{MAX_CHAT_BYTES, MAX_CHAT_CHUNK_BYTES},
+};
+use serde::{Deserialize, de::IgnoredAny};
 
 const MAX_WIRE_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct Event {
+    error: Option<IgnoredAny>,
+    choices: Option<Vec<Choice>>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    index: Option<u64>,
+    finish_reason: Option<String>,
+    delta: Option<Delta>,
+}
+
+#[derive(Deserialize)]
+struct Delta {
+    content: Option<String>,
+}
 
 pub(super) fn read(response: impl Read, emit: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
     let mut reader = BufReader::new(response.take(MAX_WIRE_BYTES + 1));
@@ -33,32 +54,32 @@ pub(super) fn read(response: impl Read, emit: &mut dyn FnMut(&str) -> Result<()>
             if data == "[DONE]" {
                 return Ok(());
             }
-            let event: Value =
-                serde_json::from_str(&data).context("Invalid provider chat event")?;
+            let event: Event =
+                json_codec::from_str(&data).context("Invalid provider chat event")?;
             data.clear();
             ensure!(
-                event["error"].is_null(),
+                event.error.is_none(),
                 "Provider chat stream returned an error"
             );
-            let Some(choice) = event["choices"].as_array().and_then(|choices| {
+            let Some(choice) = event.choices.and_then(|choices| {
                 choices
-                    .iter()
-                    .find(|choice| choice["index"].as_u64().unwrap_or(0) == 0)
+                    .into_iter()
+                    .find(|choice| choice.index.unwrap_or(0) == 0)
             }) else {
                 continue;
             };
-            let finish = choice["finish_reason"].as_str();
+            let finish = choice.finish_reason.as_deref();
             ensure!(
                 finish != Some("error"),
                 "Provider chat stream returned an error"
             );
-            if let Some(text) = choice["delta"]["content"].as_str() {
+            if let Some(text) = choice.delta.and_then(|delta| delta.content) {
                 text_bytes += text.len();
                 ensure!(
                     text_bytes <= MAX_CHAT_BYTES,
                     "Provider answer exceeds size limit"
                 );
-                emit_text(text, emit)?;
+                emit_text(&text, emit)?;
             }
             if finish.is_some() {
                 return Ok(());
@@ -114,5 +135,19 @@ mod tests {
             .is_err()
         );
         assert_eq!(text, "Partial");
+    }
+
+    #[test]
+    fn ignores_provider_metadata_and_decodes_escaped_text() {
+        let stream = br#"data: {"usage":{"tokens":[1,2]},"choices":[{"finish_reason":"stop","delta":{"content":"\u0410\ud83c\udf19","metadata":{"x":false}}}]}
+
+"#;
+        let mut text = String::new();
+        read(stream.as_slice(), &mut |chunk| {
+            text.push_str(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(text, "А🌙");
     }
 }

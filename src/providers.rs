@@ -1,12 +1,11 @@
-use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use goodwin_error::{Context, Result, ensure};
 use goodwin_plugin::provider::{
-    Capability, ChatRequest, Completion, MAX_CHAT_BYTES, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
-    MAX_SPEECH_CHUNK_BYTES, ModelSelection, SpeechAudio, SpeechRequest, Transcription,
-    TranscriptionRequest,
+    Capability, ChatMessage, ChatRequest, ChatRole, Completion, MAX_CHAT_BYTES,
+    MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MAX_SPEECH_CHUNK_BYTES, ModelSelection, SpeechAudio,
+    SpeechRequest, Transcription, TranscriptionRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::json;
 
 use crate::{
     app::Failure,
@@ -81,7 +80,7 @@ impl Provider {
         }
     }
 
-    pub(crate) fn failure(error: anyhow::Error) -> Failure {
+    pub(crate) fn failure(error: goodwin_error::Error) -> Failure {
         log::warn!("Provider request failed: {error}");
         Failure::ProviderFailed
     }
@@ -108,13 +107,18 @@ impl Provider {
         history: impl IntoIterator<Item = (&'a str, &'a str)>,
         on_chunk: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<String> {
-        let mut messages = vec![json!({"role": "system", "content": instructions})];
-        messages.extend(
-            history
-                .into_iter()
-                .map(|(role, content)| json!({"role": role, "content": content})),
-        );
-        messages.push(json!({"role": "user", "content": text}));
+        let mut messages = vec![ChatMessage::text(ChatRole::System, instructions)];
+        messages.extend(history.into_iter().map(|(role, content)| {
+            ChatMessage::text(
+                if role == "assistant" {
+                    ChatRole::Assistant
+                } else {
+                    ChatRole::User
+                },
+                content,
+            )
+        }));
+        messages.push(ChatMessage::text(ChatRole::User, text));
         let request = ChatRequest {
             messages,
             tools: Vec::new(),
@@ -148,7 +152,10 @@ impl Provider {
 
     async fn complete_request(&self, request: ChatRequest) -> Result<CompletionMessage> {
         let result: Completion = self.call(Capability::Chat, request).await?;
-        ensure!(result.message.is_object(), "Invalid completion message");
+        ensure!(
+            result.message.role == ChatRole::Assistant,
+            "Invalid completion role"
+        );
         Ok(CompletionMessage(result.message))
     }
 
@@ -182,11 +189,7 @@ impl Provider {
         capability: Capability,
         request: impl Serialize,
     ) -> Result<T> {
-        let response = self
-            .process
-            .provider(capability, serde_json::to_value(request)?)
-            .await?;
-        serde_json::from_value(response).context("Invalid provider response")
+        self.process.provider(capability, request).await
     }
 }
 

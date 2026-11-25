@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result, bail, ensure};
+use goodwin_error::{Context, Result, bail, ensure};
 use livekit_wakeword::WakeWordModel;
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -183,7 +183,7 @@ impl OnnxSummary {
             return Ok([1e-6, 6.0, 4.0]);
         };
         let params: [f32; 3] =
-            serde_json::from_str(&property.value).context("Invalid Micro log-mel metadata")?;
+            goodwin_json::from_str(&property.value).context("Invalid Micro log-mel metadata")?;
         ensure!(
             params.iter().all(|value| value.is_finite()) && params[0] > 0.0 && params[2] > 0.0,
             "Micro log-mel metadata must have a positive floor and scale"

@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use goodwin_openai_compatible::{Config, Protocol, Upstream};
-use goodwin_plugin::provider::{ChatRequest, SpeechRequest};
+use goodwin_plugin::provider::{ChatMessage, ChatRequest, ChatRole, SpeechRequest};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{
@@ -134,7 +134,7 @@ async fn chat_emits_visible_text_before_the_server_finishes_and_reports_a_stream
             .complete_stream(
                 &config,
                 ChatRequest {
-                    messages: vec![json!({"role": "user", "content": "Привет"})],
+                    messages: vec![ChatMessage::text(ChatRole::User, "Привет")],
                     tools: Vec::new(),
                     tool_choice: None,
                     max_completion_tokens: 256,
@@ -181,7 +181,7 @@ async fn chat_retries_without_streaming_when_a_compatible_server_rejects_it() {
             .complete_stream(
                 &config,
                 ChatRequest {
-                    messages: vec![json!({"role": "user", "content": "Привет"})],
+                    messages: vec![ChatMessage::text(ChatRole::User, "Привет")],
                     tools: Vec::new(),
                     tool_choice: None,
                     max_completion_tokens: 256,

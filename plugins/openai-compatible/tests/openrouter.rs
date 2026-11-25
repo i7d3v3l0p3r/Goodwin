@@ -7,7 +7,8 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use goodwin_openai_compatible::{Config, Protocol, Upstream};
 use goodwin_plugin::provider::{
-    Capability, ChatRequest, ModelSelection, SpeechRequest, ToolChoice, TranscriptionRequest,
+    Capability, ChatMessage, ChatRequest, ChatRole, ModelSelection, SpeechRequest, ToolChoice,
+    ToolDefinition, TranscriptionRequest,
 };
 use serde_json::{Value, json};
 
@@ -40,7 +41,9 @@ async fn openrouter_uses_json_transcription_and_requires_tool_parameters() {
                 assert_eq!(body["provider"], json!({"require_parameters": true}));
                 assert_eq!(body["tool_choice"], "auto");
                 assert_eq!(body["tools"][0]["function"]["name"], "fixture");
-                Json(json!({"choices": [{"message": {"role": "assistant", "content": "Готово", "reasoning_details": ["fixture"]}}]}))
+                Json(json!({"choices": [{"message": {"role": "assistant", "content": "Готово", "reasoning_details": [{
+                    "type": "reasoning.text", "text": "fixture", "signature": null, "id": "detail", "index": 0
+                }]}}]}))
             }))
             .route("/api/v1/audio/speech", post(|Json(body): Json<Value>| async move {
                 assert_eq!(body, json!({
@@ -82,20 +85,23 @@ async fn openrouter_uses_json_transcription_and_requires_tool_parameters() {
             .complete(
                 &config,
                 ChatRequest {
-                    messages: vec![json!({"role":"user","content":transcript.text})],
-                    tools: vec![json!({"type":"function","function":{"name":"fixture"}})],
+                    messages: vec![ChatMessage::text(ChatRole::User, transcript.text)],
+                    tools: vec![ToolDefinition::function("fixture".into(), "Fixture tool".into(),
+                        serde_json::from_value(json!({"type":"object","properties":{},"required":[],"additionalProperties":false})).unwrap())],
                     tool_choice: Some(ToolChoice::Auto),
                     max_completion_tokens: 256,
                     selection: selection("fixture/selected-chat", json!({"temperature":0.7})),
                 },
             )
             .unwrap();
-        assert_eq!(completion.message["reasoning_details"], json!(["fixture"]));
+        let detail = &completion.message.reasoning_details.as_ref().unwrap()[0];
+        assert_eq!(detail.text.as_ref().unwrap().as_deref(), Some("fixture"));
+        assert_eq!(detail.signature, Some(None));
         let audio = client
             .synthesize(
                 &config,
                 SpeechRequest {
-                    text: completion.message["content"].as_str().unwrap().to_owned(),
+                    text: completion.message.content.unwrap(),
                     selection: selection(
                         "fixture/selected-speech",
                         json!({"voice":"Russian","speed":1.1}),
@@ -115,6 +121,6 @@ async fn openrouter_uses_json_transcription_and_requires_tool_parameters() {
 fn selection(model: &str, parameters: Value) -> ModelSelection {
     ModelSelection {
         model: Some(model.into()),
-        parameters: parameters.as_object().unwrap().clone(),
+        parameters: serde_json::from_value(parameters).unwrap(),
     }
 }

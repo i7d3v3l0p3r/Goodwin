@@ -28,13 +28,20 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
         let last = messages.last().unwrap();
         let message = if last["role"] == "tool" {
             assert_eq!(last["tool_call_id"], "test-call");
-            assert_eq!(messages[2]["reasoning_details"], json!([{"id": "fixture"}]));
+            assert_eq!(
+                messages[2]["reasoning_details"],
+                json!([{
+                    "type": "reasoning.text", "id": "fixture", "text": "reasoning", "signature": null
+                }])
+            );
             let content: Value = serde_json::from_str(last["content"].as_str().unwrap()).unwrap();
             assert_eq!(content["error"], "clarification_required");
             assert_eq!(body["tool_choice"], "none");
             json!({"role": "assistant", "content": "Какой таймер отменить?"})
         } else if last["content"] == "Отмени таймер" {
-            json!({"role": "assistant", "content": null, "reasoning_details": [{"id": "fixture"}], "tool_calls": [{
+            json!({"role": "assistant", "content": null, "reasoning_details": [{
+                "type": "reasoning.text", "id": "fixture", "text": "reasoning", "signature": null
+            }], "tool_calls": [{
                 "id": "test-call", "type": "function",
                 "function": { "name": "probe__example", "arguments": "{\"seconds\":300}" }
             }]})

@@ -1,6 +1,7 @@
 use std::{future::Future, io};
 
-use goodwin_plugin::audio::PcmAudio;
+pub(crate) use goodwin_plugin::audio::scale_sample;
+use goodwin_plugin::audio::wav_header;
 
 mod gain;
 #[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
@@ -73,11 +74,6 @@ impl VoiceActivity {
     }
 }
 
-pub(crate) fn scale_sample(sample: i16, gain: f32) -> i16 {
-    // Float-to-integer casts saturate at the PCM limits.
-    (f32::from(sample) * gain) as i16
-}
-
 pub(crate) trait Turn {
     type Error;
     type Speech: Send;
@@ -100,10 +96,10 @@ pub(crate) trait Turn {
 
 pub(crate) async fn run<T: Turn>(
     turn: &mut T,
-    wav: Vec<u8>,
+    wav: RecordingWav,
     wake_word: Option<&str>,
 ) -> Result<(), T::Error> {
-    let text = turn.transcribe(&wav).await?;
+    let text = turn.transcribe(wav.as_bytes()).await?;
     drop(wav);
     let text = wake_word.map_or_else(|| text.trim(), |word| strip_wake_word(&text, word));
     if text.is_empty() {
@@ -114,15 +110,38 @@ pub(crate) async fn run<T: Turn>(
     turn.play(speech).await
 }
 
-pub(crate) fn recording_wav(samples: Vec<i16>) -> io::Result<Vec<u8>> {
-    let recording = PcmAudio {
-        data: samples.into_iter().flat_map(i16::to_le_bytes).collect(),
-        sample_rate: CAPTURE_HZ,
-        channels: 1,
-    };
-    let mut wav = Vec::with_capacity(recording.data.len() + 44);
-    recording.write_wav(&mut wav)?;
-    Ok(wav)
+pub(crate) struct RecordingWav(Vec<i16>);
+
+impl RecordingWav {
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: The initialized i16 buffer remains owned by self. Every
+        // initialized byte is valid as a u8 and requires no extra alignment.
+        unsafe {
+            std::slice::from_raw_parts(self.0.as_ptr().cast(), self.0.len() * size_of::<i16>())
+        }
+    }
+}
+
+pub(crate) fn recording_wav(mut samples: Vec<i16>) -> io::Result<RecordingWav> {
+    let sample_count = samples.len();
+    let header = wav_header(CAPTURE_HZ, 1, sample_count * size_of::<i16>())?;
+    let header_samples = header.len() / size_of::<i16>();
+    samples
+        .try_reserve_exact(header_samples)
+        .map_err(io::Error::other)?;
+    samples.resize(sample_count + header_samples, 0);
+    samples.copy_within(..sample_count, header_samples);
+    let (words, _) = header.as_chunks::<2>();
+    for (sample, &bytes) in samples.iter_mut().zip(words) {
+        *sample = i16::from_ne_bytes(bytes);
+    }
+    #[cfg(target_endian = "big")]
+    for sample in &mut samples[header_samples..] {
+        *sample = sample.to_le();
+    }
+    // Capture grows the buffer in chunks. Release spare capacity before STT.
+    samples.shrink_to_fit();
+    Ok(RecordingWav(samples))
 }
 
 pub(crate) fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
@@ -140,4 +159,25 @@ pub(crate) fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
         remaining = &remaining[first.len()..];
     }
     remaining.trim_start_matches(delimiter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_wav_reuses_the_capture_buffer_and_preserves_pcm() {
+        let mut samples = Vec::with_capacity(4 + 44 / size_of::<i16>());
+        samples.extend([i16::MIN, -1, 0, i16::MAX]);
+        let capture = samples.as_ptr().cast::<u8>();
+        let recording = recording_wav(samples).unwrap();
+        let wav = recording.as_bytes();
+        assert_eq!(wav.as_ptr(), capture);
+        assert_eq!(&wav[..12], b"RIFF\x2c\0\0\0WAVE");
+        assert_eq!(&wav[12..24], b"fmt \x10\0\0\0\x01\0\x01\0");
+        assert_eq!(&wav[24..28], &16_000_u32.to_le_bytes());
+        assert_eq!(&wav[28..36], b"\x00\x7d\0\0\x02\0\x10\0");
+        assert_eq!(&wav[36..44], b"data\x08\0\0\0");
+        assert_eq!(&wav[44..], &[0, 0x80, 0xff, 0xff, 0, 0, 0xff, 0x7f]);
+    }
 }

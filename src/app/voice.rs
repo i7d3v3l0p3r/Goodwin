@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use goodwin_error::{Context, Result};
 use goodwin_plugin::provider::Capability;
 
 use crate::{

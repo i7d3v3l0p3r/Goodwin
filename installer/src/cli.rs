@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use goodwin_error::{Context, Result, bail, ensure};
 
 use crate::{
     package::Source,

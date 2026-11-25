@@ -1,5 +1,4 @@
 use axum::{
-    Json,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -9,7 +8,7 @@ use serde_json::json;
 
 use crate::core_update;
 
-use super::{Panel, problem};
+use super::{Json, Panel, problem};
 
 type UpdateError = (StatusCode, &'static str);
 

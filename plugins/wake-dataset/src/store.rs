@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, ensure};
-use goodwin_plugin::{audio::PcmAudio, wake::Model};
+use goodwin_error::{Result, ensure};
+use goodwin_plugin::{audio::wav_header, wake::Model};
 use serde::{Deserialize, Serialize};
 
 use crate::files;
@@ -23,6 +23,8 @@ pub struct ClipInfo {
     pub sample_rate: u32,
     pub frame_samples: usize,
     pub gain: f32,
+    #[serde(default)]
+    pub gain_applied: bool,
     pub threshold: f32,
     pub scores: Vec<f32>,
 }
@@ -89,9 +91,9 @@ impl Store {
                 let header_end = bytes
                     .iter()
                     .position(|&byte| byte == b'\n')
-                    .ok_or_else(|| anyhow::anyhow!("Incomplete wake sample header"))?
+                    .ok_or_else(|| goodwin_error::report!("Incomplete wake sample header"))?
                     + 1;
-                let info = serde_json::from_slice(&bytes[..header_end])?;
+                let info = goodwin_plugin::json_codec::from_slice(&bytes[..header_end])?;
                 ensure!(
                     store
                         .clips
@@ -117,17 +119,15 @@ impl Store {
         );
         let id = self.last_id.saturating_add(1).max(info.captured_at_ms);
         let label = Label::Pending;
-        let mut header = serde_json::to_vec(&info)?;
-        header.push(b'\n');
-        ensure!(header.len() <= 8192, "Wake sample metadata is too large");
-        let offset = header.len() as u64;
-        PcmAudio {
-            data: pcm.to_vec(),
-            sample_rate: SAMPLE_RATE,
-            channels: 1,
-        }
-        .write_wav(&mut header)?;
-        files::write(&self.path(label, id), &header, false)?;
+        let mut clip = goodwin_plugin::json_codec::to_vec(&info)?;
+        clip.push(b'\n');
+        ensure!(clip.len() <= 8192, "Wake sample metadata is too large");
+        let offset = clip.len() as u64;
+        let header = wav_header(SAMPLE_RATE, 1, pcm.len())?;
+        clip.reserve_exact(header.len() + pcm.len());
+        clip.extend_from_slice(&header);
+        clip.extend_from_slice(pcm);
+        files::write(&self.path(label, id), &clip, false)?;
         self.clips.insert(id, make_clip(id, label, info, offset));
         self.last_id = id;
         Ok(())
@@ -179,5 +179,36 @@ fn make_clip(id: u64, label: Label, info: ClipInfo, wav_offset: u64) -> Clip {
         info,
         peak,
         wav_offset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn previously_saved_raw_clips_keep_their_audio_and_gain_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = dir.path().join("pending");
+        std::fs::create_dir(&pending).unwrap();
+        let mut clip = concat!(
+            r#"{"model":{"id":"fixture","wakeWord":"Goodwin","kind":"micro","sha256":"abc"},"#,
+            r#""capturedAtMs":10,"sampleRate":16000,"frameSamples":1280,"gain":2.0,"#,
+            r#""threshold":0.5,"scores":[0.6]}"#,
+        )
+        .as_bytes()
+        .to_vec();
+        clip.push(b'\n');
+        let pcm = 100_i16.to_le_bytes().repeat(FRAME_SAMPLES);
+        let header = wav_header(SAMPLE_RATE, 1, pcm.len()).unwrap();
+        clip.extend_from_slice(&header);
+        clip.extend_from_slice(&pcm);
+        std::fs::write(pending.join("10.clip"), clip).unwrap();
+
+        let store = Store::open(dir.path()).unwrap();
+        let clip = &store.clips[&10];
+        assert_eq!(clip.info.gain, 2.0);
+        assert!(!clip.info.gain_applied);
+        assert_eq!(&store.wav(clip).unwrap()[header.len()..], pcm);
     }
 }

@@ -1,14 +1,16 @@
 use std::{io::Read, time::Duration};
 
-use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use goodwin_plugin::provider::{
-    Capability, ChatRequest, Completion, MAX_CHAT_BYTES, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
-    MAX_SPEECH_CHUNK_BYTES, Model, ModelCatalog, ProviderHttpError, SpeechAudio, SpeechRequest,
-    Transcription, TranscriptionRequest,
+use goodwin_error::{Context, Result, ensure};
+use goodwin_plugin::{
+    json_codec,
+    provider::{
+        Capability, ChatCompletion, ChatPayload, ChatRequest, ChatRole, Completion, MAX_CHAT_BYTES,
+        MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MAX_SPEECH_CHUNK_BYTES, Model, ModelCatalog,
+        SpeechAudio, SpeechRequest, Transcription, TranscriptionRequest,
+    },
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 
 use super::Config;
 
@@ -30,11 +32,6 @@ pub struct Upstream {
 }
 
 #[derive(Deserialize)]
-struct ChatCompletion {
-    choices: Vec<Completion>,
-}
-
-#[derive(Deserialize)]
 struct UpstreamCatalog {
     data: Vec<UpstreamModel>,
 }
@@ -44,7 +41,55 @@ struct UpstreamModel {
     id: String,
     name: Option<String>,
     #[serde(default)]
-    output_modalities: Vec<Value>,
+    output_modalities: Vec<OutputModality>,
+}
+
+#[derive(Deserialize)]
+struct OutputModality {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    supported_parameters: Option<SpeechOptions>,
+}
+
+#[derive(Deserialize)]
+struct SpeechOptions {
+    response_format: Option<Options>,
+    voice: Option<Options>,
+}
+
+#[derive(Deserialize)]
+struct Options {
+    values: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct TranscriptionBody<'a> {
+    model: &'a str,
+    language: &'a str,
+    input_audio: InputAudio<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct InputAudio<'a> {
+    data: &'a str,
+    format: &'static str,
+}
+
+#[derive(Serialize)]
+struct SpeechBody<'a> {
+    model: &'a str,
+    input: &'a str,
+    response_format: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speed: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<&'a str>,
 }
 
 impl Upstream {
@@ -80,16 +125,23 @@ impl Upstream {
             "Invalid recording size"
         );
         let post = self.inference(config, &["audio", "transcriptions"])?;
+        let parameters = &request.selection.parameters;
         let post = match self.protocol {
             Protocol::OpenRouter => {
-                let mut body = request.selection.parameters;
-                body.insert("model".into(), json!(model));
-                body.insert("language".into(), json!(request.language));
-                body.insert(
-                    "input_audio".into(),
-                    json!({"data": request.wav_base64, "format": "wav"}),
-                );
-                post.json(&body)
+                let body = TranscriptionBody {
+                    model,
+                    language: &request.language,
+                    input_audio: InputAudio {
+                        data: &request.wav_base64,
+                        format: "wav",
+                    },
+                    temperature: parameters.temperature,
+                    prompt: parameters.prompt.as_deref(),
+                };
+                let capacity = request.wav_base64.len()
+                    + 6 * (model.len() + request.language.len() + body.prompt.map_or(0, str::len))
+                    + 256;
+                transport::json(post, json_codec::to_vec_with_capacity(&body, capacity)?)
             }
             Protocol::OpenAi => {
                 let wav = STANDARD.decode(request.wav_base64)?;
@@ -99,17 +151,19 @@ impl Upstream {
                     ("language".into(), request.language),
                     ("response_format".into(), "json".into()),
                 ];
-                for (name, value) in request.selection.parameters {
-                    let text = match value {
-                        Value::String(text) => text,
-                        value => value.to_string(),
-                    };
-                    fields.push((name, text));
+                if let Some(temperature) = parameters.temperature {
+                    fields.push(("temperature".into(), temperature.to_string()));
+                }
+                if let Some(prompt) = &parameters.prompt {
+                    fields.push(("prompt".into(), prompt.clone()));
                 }
                 transport::wave(post, wav, fields)?
             }
         };
-        Ok(serde_json::from_slice(&read(send(post)?, 64_000)?)?)
+        Ok(goodwin_plugin::json_codec::from_slice(&read(
+            send(post)?,
+            64_000,
+        )?)?)
     }
 
     pub fn complete(&self, config: &Config, request: ChatRequest) -> Result<Completion> {
@@ -128,11 +182,9 @@ impl Upstream {
             "Chat text streaming does not support tools"
         );
         let response = match send(self.chat_request(config, &request, true)?) {
-            Err(error)
+            Err(transport::SendError::Http(status))
                 if self.protocol == Protocol::OpenAi
-                    && error
-                        .downcast_ref::<ProviderHttpError>()
-                        .is_some_and(|status| matches!(status.0, 400 | 406 | 415 | 422 | 501)) =>
+                    && matches!(status.0, 400 | 406 | 415 | 422 | 501) =>
             {
                 return emit_completion(&self.complete(config, request)?, emit);
             }
@@ -162,23 +214,17 @@ impl Upstream {
         selection.validate()?;
         let model = selection.model.as_deref().unwrap_or(&config.chat_model);
         ensure!(!model.is_empty(), "Configure a chat model");
-        let require_parameters = self.protocol == Protocol::OpenRouter && !request.tools.is_empty();
-        let mut request = serde_json::to_value(request)?;
-        let fields = request
-            .as_object_mut()
-            .context("Expected a chat request object")?;
-        fields.remove("selection");
-        fields.extend(selection.parameters.clone());
-        request["model"] = json!(model);
-        if require_parameters {
-            request["provider"] = json!({"require_parameters": true});
-        }
+        let body = ChatPayload::new(
+            model,
+            request,
+            stream,
+            self.protocol == Protocol::OpenRouter,
+        );
         let mut post = self.inference(config, &["chat", "completions"])?;
         if stream {
-            request["stream"] = json!(true);
             post = transport::accept(post, "text/event-stream");
         }
-        Ok(post.json(&request))
+        Ok(transport::json(post, json_codec::to_vec(&body)?))
     }
 
     pub fn synthesize(&self, config: &Config, request: SpeechRequest) -> Result<SpeechAudio> {
@@ -246,14 +292,22 @@ impl Upstream {
             .as_deref()
             .unwrap_or(&config.speech_model);
         ensure!(!model.is_empty(), "Configure a speech model");
-        let mut body = request.selection.parameters;
-        if model == config.speech_model && !config.voice.is_empty() {
-            body.entry("voice").or_insert_with(|| json!(config.voice));
-        }
-        body.insert("model".into(), json!(model));
-        body.insert("input".into(), json!(request.text));
-        body.insert("response_format".into(), json!("pcm"));
-        Ok(self.inference(config, &["audio", "speech"])?.json(&body))
+        let parameters = &request.selection.parameters;
+        let body = SpeechBody {
+            model,
+            input: &request.text,
+            response_format: "pcm",
+            voice: parameters.voice.as_deref().or_else(|| {
+                (model == config.speech_model && !config.voice.is_empty())
+                    .then_some(config.voice.as_str())
+            }),
+            speed: parameters.speed,
+            instructions: parameters.instructions.as_deref(),
+        };
+        Ok(transport::json(
+            self.inference(config, &["audio", "speech"])?,
+            json_codec::to_vec(&body)?,
+        ))
     }
 
     pub fn models(&self, config: &Config, capability: Capability) -> ModelCatalog {
@@ -303,7 +357,7 @@ impl Upstream {
             };
             request = request.query(&[("endpoints", endpoint)]);
         }
-        let catalog: UpstreamCatalog = serde_json::from_slice(&read(send(request)?, 8_000_000)?)?;
+        let catalog: UpstreamCatalog = json_codec::from_slice(&read(send(request)?, 8_000_000)?)?;
         let mut ids = std::collections::HashSet::new();
         let mut bytes = 0;
         Ok(catalog
@@ -320,23 +374,24 @@ impl Upstream {
                 }
                 let speech_options = model
                     .output_modalities
-                    .iter()
-                    .find(|item| item["type"] == "speech");
-                let parameters = speech_options.and_then(|item| item.get("supported_parameters"));
+                    .into_iter()
+                    .find(|item| item.kind.as_deref() == Some("speech"));
+                let parameters = speech_options.and_then(|item| item.supported_parameters);
                 if parameters
-                    .and_then(|params| params["response_format"]["values"].as_array())
+                    .as_ref()
+                    .and_then(|params| params.response_format.as_ref())
+                    .and_then(|options| options.values.as_ref())
                     .is_some_and(|formats| !formats.iter().any(|format| format == "pcm"))
                 {
                     return None;
                 }
                 let voices = parameters
-                    .and_then(|params| params["voice"]["values"].as_array())
+                    .and_then(|params| params.voice)
+                    .and_then(|options| options.values)
                     .into_iter()
                     .flatten()
-                    .filter_map(Value::as_str)
                     .filter(|voice| voice.len() <= 100 && !voice.chars().any(char::is_control))
                     .take(100)
-                    .map(str::to_owned)
                     .collect();
                 Some(Model {
                     id: model.id,
@@ -348,7 +403,8 @@ impl Upstream {
             })
             .take(750)
             .take_while(|model| {
-                bytes += serde_json::to_vec(model).map_or(512 * 1024, |value| value.len() + 1);
+                bytes += goodwin_plugin::json_codec::to_vec(model)
+                    .map_or(512 * 1024, |value| value.len() + 1);
                 bytes < 450 * 1024
             })
             .collect())
@@ -374,20 +430,27 @@ impl Upstream {
 }
 
 fn read_completion(response: Response) -> Result<Completion> {
-    let completion: ChatCompletion = serde_json::from_slice(&read(response, MAX_CHAT_BYTES)?)?;
-    completion
+    let completion: ChatCompletion = json_codec::from_slice(&read(response, MAX_CHAT_BYTES)?)?;
+    let first = completion
         .choices
         .into_iter()
         .next()
-        .context("Server returned no completion")
+        .context("Server returned no completion")?;
+    ensure!(
+        first.message.role == ChatRole::Assistant,
+        "Invalid completion role"
+    );
+    Ok(first)
 }
 
 fn emit_completion(
     completion: &Completion,
     emit: &mut dyn FnMut(&str) -> Result<()>,
 ) -> Result<()> {
-    let text = completion.message["content"]
-        .as_str()
+    let text = completion
+        .message
+        .content
+        .as_deref()
         .context("Missing provider answer")?;
     chat_stream::emit_text(text, emit)
 }

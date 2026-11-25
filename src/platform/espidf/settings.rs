@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
+use goodwin_error::{Context, Result};
 
 use crate::builtin_assistant::{AudioSettings, ProviderSettings};
 
@@ -23,7 +23,7 @@ impl Store {
     pub(super) fn wifi(&self) -> Result<Option<WifiCredentials>> {
         let saved = self.read("wifi", &mut [0; 512])?;
         if !saved.is_empty() {
-            return serde_json::from_str::<WifiCredentials>(&saved)?
+            return goodwin_json::from_str::<WifiCredentials>(&saved)?
                 .validate()
                 .map(Some);
         }
@@ -42,7 +42,7 @@ impl Store {
 
     pub(super) fn save_wifi(&mut self, settings: &WifiCredentials) -> Result<()> {
         self.nvs
-            .set_str("wifi", &serde_json::to_string(settings)?)?;
+            .set_str("wifi", &goodwin_json::to_string(settings)?)?;
         Ok(())
     }
 
@@ -64,14 +64,14 @@ impl Store {
                 speech_streaming: false,
             }
         } else {
-            serde_json::from_str(&saved).context("Read saved provider")?
+            goodwin_json::from_str(&saved).context("Read saved provider")?
         };
         provider.validate()?;
         Ok(provider)
     }
 
     pub(super) fn save_provider(&mut self, settings: &ProviderSettings) -> Result<()> {
-        let data = serde_json::to_string(settings)?;
+        let data = goodwin_json::to_string(settings)?;
         self.nvs.set_str("provider", &data)?;
         Ok(())
     }
@@ -80,7 +80,7 @@ impl Store {
         let Some(length) = self.nvs.blob_len("system_prompt")? else {
             return Ok(String::new());
         };
-        anyhow::ensure!(length <= 12 * 1024, "System prompt is too large");
+        goodwin_error::ensure!(length <= 12 * 1024, "System prompt is too large");
         let mut bytes = vec![0; length];
         let value = self
             .nvs
@@ -103,13 +103,13 @@ impl Store {
         let Some(length) = self.nvs.blob_len("wake_model")? else {
             return Ok(None);
         };
-        anyhow::ensure!(length <= 1024, "Saved wake model metadata is too large");
+        goodwin_error::ensure!(length <= 1024, "Saved wake model metadata is too large");
         let mut bytes = vec![0; length];
         let value = self
             .nvs
             .get_blob("wake_model", &mut bytes)?
             .context("Read wake model metadata")?;
-        Ok(Some(serde_json::from_slice(value)?))
+        Ok(Some(goodwin_json::from_slice(value)?))
     }
 
     #[cfg(feature = "wake-tflite")]
@@ -118,7 +118,7 @@ impl Store {
         selection: &crate::wake_catalog::Selection,
     ) -> Result<()> {
         self.nvs
-            .set_blob("wake_model", &serde_json::to_vec(selection)?)?;
+            .set_blob("wake_model", &goodwin_json::to_vec(selection)?)?;
         Ok(())
     }
 
@@ -127,13 +127,14 @@ impl Store {
         let Some(length) = self.nvs.blob_len("assistant")? else {
             return Ok(None);
         };
-        anyhow::ensure!(length <= 8 * 1024, "Assistant settings are too large");
+        goodwin_error::ensure!(length <= 8 * 1024, "Assistant settings are too large");
         let mut bytes = vec![0; length];
         let value = self
             .nvs
             .get_blob("assistant", &mut bytes)?
             .context("Read assistant settings")?;
-        let settings: crate::assistant::AssistantSettings = serde_json::from_slice(value)?;
+        let settings: crate::assistant::AssistantSettings =
+            crate::assistant::decode_settings(value)?;
         settings.validate()?;
         Ok(Some(settings))
     }
@@ -144,7 +145,7 @@ impl Store {
         settings: &crate::assistant::AssistantSettings,
     ) -> Result<()> {
         self.nvs
-            .set_blob("assistant", &serde_json::to_vec(settings)?)?;
+            .set_blob("assistant", &goodwin_json::to_vec(settings)?)?;
         Ok(())
     }
 
@@ -153,12 +154,12 @@ impl Store {
         if saved.is_empty() {
             return Ok(AudioSettings::default());
         }
-        serde_json::from_str::<AudioSettings>(&saved)?.validate()
+        goodwin_json::from_str::<AudioSettings>(&saved)?.validate()
     }
 
     pub(super) fn save_audio(&mut self, settings: AudioSettings) -> Result<()> {
         self.nvs
-            .set_str("audio_settings", &serde_json::to_string(&settings)?)?;
+            .set_str("audio_settings", &goodwin_json::to_string(&settings)?)?;
         Ok(())
     }
 

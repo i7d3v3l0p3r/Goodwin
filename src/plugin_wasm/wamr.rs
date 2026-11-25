@@ -9,9 +9,9 @@ use std::{
 };
 
 use crate::plugin_wasm::{
-    FRAME_LIMIT, HostServices, INPUT_LIMIT, MAX_SIGNALS, META_LIMIT, MODULE_LIMIT, Reply,
+    FRAME_LIMIT, HostServices, INPUT_LIMIT, MAX_SIGNALS, META_LIMIT, MODULE_LIMIT,
 };
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 
 const PAGE: usize = 64 * 1024;
 const INSTRUCTION_LIMIT: i32 = 32_000_000;
@@ -181,13 +181,31 @@ impl<H: HostServices> Guest<H> {
         self.host.as_mut()
     }
 
-    pub(crate) fn call(&mut self, frame: &[u8], response_limit: usize) -> Result<Reply> {
-        let limit = if self.host.is_some() {
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) fn call_as<T: serde::de::DeserializeOwned>(
+        &mut self,
+        frame: &[u8],
+        response_limit: usize,
+    ) -> Result<(T, u32)> {
+        self.exchange_as(frame, response_limit, self.instruction_limit())
+    }
+
+    fn instruction_limit(&self) -> i32 {
+        if self.host.is_some() {
             HOST_INSTRUCTION_LIMIT
         } else {
             INSTRUCTION_LIMIT
-        };
-        self.exchange(frame, response_limit, limit)
+        }
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub(crate) fn call_with(
+        &mut self,
+        frame: &[u8],
+        response_limit: usize,
+        decode: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u32> {
+        self.exchange_with(frame, response_limit, self.instruction_limit(), decode)
     }
 
     #[cfg(test)]
@@ -201,12 +219,39 @@ impl<H: HostServices> Guest<H> {
         }
     }
 
+    #[cfg(all(test, not(target_os = "espidf")))]
     pub(crate) fn exchange(
         &mut self,
         frame: &[u8],
         response_limit: usize,
         limit: i32,
-    ) -> Result<Reply> {
+    ) -> Result<super::Reply> {
+        self.exchange_as(frame, response_limit, limit)
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    fn exchange_as<T: serde::de::DeserializeOwned>(
+        &mut self,
+        frame: &[u8],
+        response_limit: usize,
+        limit: i32,
+    ) -> Result<(T, u32)> {
+        let mut reply = None;
+        let signals = self.exchange_with(frame, response_limit, limit, &mut |bytes| {
+            reply = Some(serde_json::from_slice(bytes).context("Decode WASM RPC")?);
+            Ok(())
+        })?;
+        Ok((reply.context("Missing WASM RPC response")?, signals))
+    }
+
+    #[inline(never)]
+    fn exchange_with(
+        &mut self,
+        frame: &[u8],
+        response_limit: usize,
+        limit: i32,
+        decode: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<u32> {
         ensure!(
             frame.len()
                 <= if self.input.is_some() {
@@ -250,7 +295,7 @@ impl<H: HostServices> Guest<H> {
                     } else {
                         unsafe { CStr::from_ptr(error) }.to_string_lossy()
                     };
-                    anyhow::bail!("WAMR call: {description}");
+                    goodwin_error::bail!("WAMR call: {description}");
                 }
                 Ok(word)
             };
@@ -273,11 +318,12 @@ impl<H: HostServices> Guest<H> {
                 offset
             };
             let response = guest_pointer(instance, offset, length)?;
-            serde_json::from_slice(unsafe { slice::from_raw_parts(response.as_ptr(), length) })
-                .context("Decode WASM RPC")
+            // The validated guest response remains stable while it is decoded.
+            decode(unsafe { slice::from_raw_parts(response.as_ptr(), length) })
         })();
         unsafe { wasm_runtime_set_user_data(env, ptr::null_mut()) };
-        Ok((result?, state.signals))
+        result?;
+        Ok(state.signals)
     }
 }
 
@@ -334,7 +380,7 @@ extern "C" fn goodwin_wamr_host_call(
         );
         let instance = unsafe { wasm_runtime_get_module_inst(env) };
         let args = guest_pointer(instance, meta, meta_len as usize)?;
-        let request = serde_json::from_slice(unsafe {
+        let request = goodwin_json::from_slice(unsafe {
             slice::from_raw_parts(args.as_ptr(), meta_len as usize)
         })?;
         let input = guest_pointer(instance, input, input_len as usize)?;

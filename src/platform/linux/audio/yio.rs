@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, sync::Arc};
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use tokio::task::JoinHandle;
 
 use crate::app::App;

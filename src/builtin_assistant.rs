@@ -4,7 +4,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, ensure};
+use goodwin_error::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

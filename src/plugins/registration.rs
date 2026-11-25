@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 
-use anyhow::{Context, Result, ensure};
-use goodwin_plugin::provider::Capability;
+use goodwin_error::{Context, Result, ensure};
+use goodwin_plugin::provider::{Capability, ToolParameterKind, ToolSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -53,50 +53,46 @@ pub struct Page {
 pub struct Tool {
     pub name: String,
     pub description: String,
-    pub parameters: Value,
+    pub parameters: ToolSchema,
 }
 
 impl Tool {
     fn valid(&self) -> bool {
-        let Some(properties) = self.parameters["properties"].as_object() else {
-            return false;
-        };
-        let Some(required) = self.parameters["required"].as_array() else {
-            return false;
-        };
+        let properties = &self.parameters.properties;
         package::name(&self.name)
             && !self.description.trim().is_empty()
             && self.description.len() <= 1000
-            && self.parameters["type"] == "object"
-            && self.parameters["additionalProperties"] == false
+            && !self.parameters.additional_properties
             && properties.len() <= 16
-            && required
+            && self
+                .parameters
+                .required
                 .iter()
-                .all(|key| key.as_str().is_some_and(|key| properties.contains_key(key)))
-            && properties.values().all(|property| {
-                matches!(
-                    property["type"].as_str(),
-                    Some("string" | "integer" | "number" | "boolean")
-                )
-            })
+                .all(|key| properties.contains_key(key))
     }
 
     pub fn accepts(&self, args: &Value) -> bool {
         let Some(args) = args.as_object() else {
             return false;
         };
-        self.parameters["required"]
-            .as_array()
-            .unwrap()
+        self.parameters
+            .required
             .iter()
-            .all(|key| args.contains_key(key.as_str().unwrap()))
+            .all(|key| args.contains_key(key))
             && args.iter().all(|(key, value)| {
-                match self.parameters["properties"][key]["type"].as_str() {
-                    Some("string") => value.as_str().is_some_and(|value| value.len() <= 1000),
-                    Some("integer") => value.is_i64() || value.is_u64(),
-                    Some("number") => value.is_number(),
-                    Some("boolean") => value.is_boolean(),
-                    _ => false,
+                match self
+                    .parameters
+                    .properties
+                    .get(key)
+                    .map(|property| property.kind)
+                {
+                    Some(ToolParameterKind::String) => {
+                        value.as_str().is_some_and(|value| value.len() <= 1000)
+                    }
+                    Some(ToolParameterKind::Integer) => value.is_i64() || value.is_u64(),
+                    Some(ToolParameterKind::Number) => value.is_number(),
+                    Some(ToolParameterKind::Boolean) => value.is_boolean(),
+                    None => false,
                 }
             })
     }

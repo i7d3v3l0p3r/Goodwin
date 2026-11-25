@@ -12,7 +12,6 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{StreamExt, stream};
 use goodwin_plugin::{
     provider::{SpeechRequest, TranscriptionRequest},
-    settings::SettingsData,
     wake::{Frame, Model},
 };
 use tokio::sync::Notify;
@@ -72,19 +71,7 @@ fn save_connection_fixture(data: &Path, endpoint: &str, key: &str) {
 
 #[tokio::test]
 async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams() {
-    for (name, source, module) in [
-        (
-            "openai-compatible",
-            include_str!("../../../../plugins/openai-compatible/manifest.json"),
-            wasm!("openai-compatible").as_slice(),
-        ),
-        (
-            "openrouter",
-            include_str!("../../../../plugins/openrouter/manifest.json"),
-            wasm!("openrouter").as_slice(),
-        ),
-    ] {
-        let router_protocol = name == "openrouter";
+    for router_protocol in [false, true] {
         let first_chat = Arc::new(Notify::new());
         let first_speech = Arc::new(Notify::new());
         let chat = first_chat.clone();
@@ -172,31 +159,32 @@ async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams(
             .layer(DefaultBodyLimit::max(6 * 1024 * 1024));
         let (server, task) = crate::test_support::serve(router).await;
         let root = tempfile::tempdir().unwrap();
-        let mut manifest: Value = serde_json::from_str(source).unwrap();
-        if router_protocol {
-            manifest["settings"].as_array_mut().unwrap().push(json!({
-                "id":"base_url", "type":"url", "label":{"en":"URL","ru":"URL"},
-            }));
-            manifest["wasmHttp"] =
-                json!({"baseUrlSetting":"base_url","keySetting":"key","requireKey":true});
-        }
-        let manifest = install(root.path(), manifest, module);
+        let manifest = install(
+            root.path(),
+            serde_json::from_str(include_str!(
+                "../../../../plugins/openai-compatible/manifest.json"
+            ))
+            .unwrap(),
+            wasm!("openai-compatible"),
+        );
         let endpoint = format!("{server}/v1");
-        if router_protocol {
-            let mut settings = SettingsData::default();
-            settings.values.insert("base_url".into(), json!(endpoint));
-            settings.secrets.insert("key".into(), "fixture".into());
-            settings.save(root.path()).unwrap();
-        } else {
-            save_connection_fixture(root.path(), &endpoint, "fixture");
-        }
+        // Load the fixture directly so OpenRouter traffic also uses the loopback server.
+        let store: connections::Store = serde_json::from_value(json!({
+            "revision": 1,
+            "entries": {
+                "fixture": {
+                    "name": "Fixture",
+                    "protocol": if router_protocol { "openrouter" } else { "openai" },
+                    "base_url": endpoint,
+                    "key": "fixture",
+                },
+            },
+        }))
+        .unwrap();
+        store.save(root.path()).unwrap();
 
         let (process, registration) = plugin(root.path(), root.path(), &manifest).await;
-        let provider = if router_protocol {
-            process
-        } else {
-            process.for_connection("fixture", true)
-        };
+        let provider = process.for_connection("fixture", !router_protocol);
         assert!(registration.chat_streaming && registration.model_catalog);
         let timer_root = tempfile::tempdir().unwrap();
         let timer_manifest = install(
@@ -208,30 +196,20 @@ async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams(
         let mut wav = vec![0; MAX_RECORDING_BYTES];
         wav[..4].copy_from_slice(b"RIFF");
         let selection = serde_json::from_value(json!({"model":"fixture"})).unwrap();
-        let transcript = provider
+        let transcript: goodwin_plugin::provider::Transcription = provider
             .provider(
                 Capability::Transcription,
-                serde_json::to_value(TranscriptionRequest {
+                TranscriptionRequest {
                     wav_base64: STANDARD.encode(wav),
                     language: "ru".into(),
                     selection,
-                })
-                .unwrap(),
+                },
             )
             .await
             .unwrap();
-        assert_eq!(transcript["text"], "hello");
-        let models = provider
-            .call(MODELS_METHOD, json!({"capability":"chat"}))
-            .await
-            .unwrap();
-        assert!(
-            models["models"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|model| model["id"] == "fixture")
-        );
+        assert_eq!(transcript.text, "hello");
+        let models = provider.models(Capability::Chat).await.unwrap();
+        assert!(models.models.iter().any(|model| model.id == "fixture"));
         let mut chat = provider
             .stream_chat(
                 &serde_json::from_value(json!({
@@ -281,19 +259,17 @@ async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams(
                 [5, 6, 7, 8]
             );
             assert!(speech.next().await.unwrap().is_none());
-            let buffered = provider
+            let buffered: SpeechAudio = provider
                 .provider(
                     Capability::Speech,
-                    json!({
-                        "text":"hello", "selection":{"model":"fixture"},
-                    }),
+                    SpeechRequest {
+                        text: "hello".into(),
+                        selection: serde_json::from_value(json!({"model":"fixture"})).unwrap(),
+                    },
                 )
                 .await
                 .expect("WASM provider returns a maximum-length buffered PCM reply");
-            assert_eq!(
-                buffered["pcmBase64"].as_str().unwrap().len(),
-                MAX_SPEECH_BYTES.div_ceil(3) * 4
-            );
+            assert_eq!(buffered.pcm_base64.len(), MAX_SPEECH_BYTES.div_ceil(3) * 4);
         }
         provider.stop().await;
         timers.stop().await;
@@ -407,7 +383,6 @@ async fn named_connections_route_independently_and_persist_after_restart() {
     let installed = root.path().join("plugins/installed");
     let slot = installed.join("openai-compatible");
     fs::create_dir_all(slot.join("data")).unwrap();
-    fs::create_dir_all(installed.join("openrouter/data")).unwrap();
     install(
         &slot.join("package"),
         serde_json::from_str(include_str!(
@@ -416,19 +391,9 @@ async fn named_connections_route_independently_and_persist_after_restart() {
         .unwrap(),
         wasm!("openai-compatible"),
     );
-    install(
-        &installed.join("openrouter/package"),
-        serde_json::from_str(include_str!("../../../../plugins/openrouter/manifest.json")).unwrap(),
-        wasm!("openrouter"),
-    );
-
     let plugins = crate::plugins::Plugins::new(root.path(), crate::station::Player::new());
     let router_provider = crate::assistant::DEFAULT_PROVIDER;
-    plugins
-        .restore_selected(&[router_provider, "openrouter"])
-        .await;
-    assert!(plugins.settings("openrouter").await.is_ok());
-    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
+    plugins.restore_selected(&[router_provider]).await;
     assert!(
         plugins
             .provider(router_provider, Capability::Chat)
@@ -530,8 +495,7 @@ async fn named_connections_route_independently_and_persist_after_restart() {
         "second-model"
     );
     plugins.remove("openai-compatible").await.ok().unwrap();
-    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
-    assert!(plugins.settings("openrouter").await.is_ok());
+    assert!(plugins.provider(&provider, Capability::Chat).is_none());
     plugins.shutdown().await;
     task.abort();
 }
@@ -573,10 +537,10 @@ async fn wasm_dataset_captures_audio_and_reopens_saved_clips() {
                 },
                 ended_at_ms: 1000,
                 sample_rate: 16_000,
-                gain: 1.0,
+                gain: 2.0,
                 threshold: 0.4,
                 score: 0.5,
-                pcm: STANDARD.encode([0; 2560]),
+                pcm: STANDARD.encode((-20_000_i16).to_le_bytes().repeat(1280)),
             }),
         )
         .unwrap();
@@ -591,6 +555,7 @@ async fn wasm_dataset_captures_audio_and_reopens_saved_clips() {
         .await
         .unwrap();
     let id = list["body"]["clips"][0]["id"].as_u64().unwrap();
+    assert_eq!(list["body"]["clips"][0]["info"]["gainApplied"], true);
     dataset
         .call(
             "http",
@@ -618,5 +583,6 @@ async fn wasm_dataset_captures_audio_and_reopens_saved_clips() {
         .unwrap();
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(wav.len(), 44 + 2560);
+    assert_eq!(&wav[44..], &i16::MIN.to_le_bytes().repeat(1280));
     dataset.stop().await;
 }

@@ -74,7 +74,7 @@ export function createProviderReadiness(snapshot: () => Snapshot | undefined, re
     const status = settings()[plugin.id];
     if (status === undefined) return { kind: "checking", href };
     if (status === null || status.fields.some(field => {
-      if (!field.required && !(plugin.id === "openrouter" && field.id === "key" && field.type === "secret")) return false;
+      if (!field.required) return false;
       return field.type === "secret"
         ? !status.configuredSecrets.includes(field.id)
         : !Object.hasOwn(status.values, field.id);

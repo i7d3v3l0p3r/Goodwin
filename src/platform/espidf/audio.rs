@@ -1,4 +1,3 @@
-use anyhow::{Result, ensure};
 use esp_idf_svc::hal::{
     delay::{FreeRtos, TickType},
     gpio::{AnyIOPin, Input, PinDriver, Pull},
@@ -9,6 +8,7 @@ use esp_idf_svc::hal::{
         },
     },
 };
+use goodwin_error::{Result, ensure};
 
 use crate::{
     builtin_assistant::SPEECH_HZ,

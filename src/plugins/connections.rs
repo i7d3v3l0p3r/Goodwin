@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::Path};
 
-use anyhow::Result;
+use goodwin_error::Result;
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "espidf"))]
 use sha2::{Digest, Sha256};
@@ -46,6 +46,7 @@ pub(crate) struct Connection {
 #[derive(Default, Deserialize, Serialize)]
 pub(crate) struct Store {
     revision: u64,
+    #[serde(deserialize_with = "goodwin_json::string_map::deserialize")]
     entries: BTreeMap<String, Connection>,
 }
 
@@ -85,12 +86,18 @@ impl Store {
 
     #[cfg(not(target_os = "espidf"))]
     pub(crate) fn read(directory: &Path) -> Result<Self> {
-        goodwin_plugin::read_json(&directory.join(FILE))
+        match std::fs::read(directory.join(FILE)) {
+            Ok(bytes) => Ok(goodwin_json::from_slice(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     #[cfg(target_os = "espidf")]
     pub(crate) fn read(directory: &Path) -> Result<Self> {
-        crate::platform::espidf::plugins::services::read_json(&directory.join(FILE))
+        crate::platform::espidf::plugins::services::read_json_with(&directory.join(FILE), |file| {
+            Ok(goodwin_json::from_reader(file)?)
+        })
     }
 
     #[cfg(all(
@@ -124,14 +131,19 @@ impl Store {
 
     #[cfg(not(target_os = "espidf"))]
     pub(crate) fn save(&self, directory: &Path) -> Result<()> {
-        goodwin_plugin::save_json(&directory.join(FILE), self)
+        std::fs::create_dir_all(directory)?;
+        let mut pending = tempfile::NamedTempFile::new_in(directory)?;
+        goodwin_json::to_writer(&mut pending, self)?;
+        pending.as_file().sync_all()?;
+        pending.persist(directory.join(FILE))?;
+        Ok(())
     }
 
     #[cfg(target_os = "espidf")]
     pub(crate) fn save(&self, directory: &Path) -> Result<()> {
-        crate::platform::espidf::plugins::services::save_json(
+        crate::platform::espidf::plugins::services::save_json_bytes(
             &directory.join(FILE),
-            self,
+            &goodwin_json::to_vec(self)?,
             64 * 1024,
         )
     }
@@ -150,7 +162,7 @@ impl Store {
                 revision: self.revision,
                 #[cfg(not(target_os = "espidf"))]
                 request_configuration: Sha256::digest(
-                    serde_json::to_vec(&(
+                    goodwin_json::to_vec(&(
                         &connection.protocol,
                         &connection.base_url,
                         &connection.key,

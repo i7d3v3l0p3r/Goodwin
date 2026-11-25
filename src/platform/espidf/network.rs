@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{delay::FreeRtos, modem::Modem},
@@ -15,6 +14,7 @@ use esp_idf_svc::{
         EspWifi,
     },
 };
+use goodwin_error::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -90,12 +90,12 @@ impl<'d> Network<'d> {
                 .ssid
                 .as_str()
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("SSID is too long"))?,
+                .map_err(|_| goodwin_error::report!("SSID is too long"))?,
             password: credentials
                 .password
                 .as_str()
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("Wi-Fi password is too long"))?,
+                .map_err(|_| goodwin_error::report!("Wi-Fi password is too long"))?,
             auth_method,
             ..Default::default()
         }))?;
@@ -109,7 +109,7 @@ impl<'d> Network<'d> {
             None => {
                 let mut random = [0; 12];
                 getrandom::fill(&mut random)
-                    .map_err(|error| anyhow::anyhow!("Wi-Fi setup random data: {error}"))?;
+                    .map_err(|error| goodwin_error::report!("Wi-Fi setup random data: {error}"))?;
                 let id = u32::from_be_bytes(random[..4].try_into()?);
                 let password = if cfg!(feature = "esp-emulator") {
                     "goodwin-setup".to_owned()

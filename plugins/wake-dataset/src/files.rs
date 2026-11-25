@@ -6,7 +6,7 @@ mod platform {
         path::Path,
     };
 
-    use anyhow::{Context, Result};
+    use goodwin_error::{Context, Result};
 
     pub fn list(path: &Path) -> Result<Vec<String>> {
         fs::create_dir_all(path)?;
@@ -68,7 +68,7 @@ mod platform {
 mod platform {
     use std::path::Path;
 
-    use anyhow::Result;
+    use goodwin_error::Result;
     use goodwin_plugin::services::{Request, guest};
 
     pub fn list(path: &Path) -> Result<Vec<String>> {
@@ -80,7 +80,7 @@ mod platform {
             &[],
             &mut data,
         )?;
-        Ok(serde_json::from_slice(&data[..count])?)
+        Ok(goodwin_plugin::json_codec::from_slice(&data[..count])?)
     }
 
     pub fn read(path: &Path, offset: u64, length: usize, optional: bool) -> Result<Vec<u8>> {

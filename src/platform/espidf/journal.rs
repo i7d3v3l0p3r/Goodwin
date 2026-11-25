@@ -6,9 +6,10 @@ use esp_idf_svc::{
 };
 use log::{Level, Log, Metadata, Record};
 
+use crate::journal_format;
+
 const BYTES_LIMIT: usize = 24 * 1024;
 const LINE_LIMIT: usize = 200;
-const MESSAGE_LIMIT: usize = 512;
 static LOGGER: Journal = Journal {
     serial: EspLogger::new(EspIdfLogFilter::new()),
     entries: Mutex::new(Entries {
@@ -23,11 +24,11 @@ struct Journal {
 }
 
 struct Entries {
-    lines: VecDeque<String>,
+    lines: VecDeque<Box<str>>,
     bytes: usize,
 }
 
-pub(super) fn init() -> anyhow::Result<()> {
+pub(super) fn init() -> goodwin_error::Result<()> {
     log::set_logger(&LOGGER)?;
     LOGGER.serial.filter().initialize();
     Ok(())
@@ -54,22 +55,13 @@ impl Log for Journal {
         {
             return;
         }
-        let message: String = record
-            .args()
-            .to_string()
-            .chars()
-            .take(MESSAGE_LIMIT)
-            .map(|character| {
-                if character.is_control() {
-                    ' '
-                } else {
-                    character
-                }
-            })
-            .collect();
         // SAFETY: The ESP-IDF timer is initialized before the Rust application starts.
         let milliseconds = unsafe { sys::esp_timer_get_time() } / 1_000;
-        let line = format!("{milliseconds}ms {} {target} {message}\n", record.level());
+        let line = journal_format::line(
+            format_args!("{milliseconds}ms {} {target} ", record.level()),
+            *record.args(),
+        )
+        .into_boxed_str();
         let mut entries = self.entries.lock().expect("diagnostic journal");
         while entries.lines.len() >= LINE_LIMIT || entries.bytes + line.len() > BYTES_LIMIT {
             if let Some(old) = entries.lines.pop_front() {

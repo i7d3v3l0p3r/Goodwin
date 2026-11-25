@@ -1,14 +1,12 @@
 use std::{env, fs, net::SocketAddr, path::PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use goodwin_error::{Context, Result, bail, ensure};
 use goodwin_plugin::provider::{Capability, MAX_RECORDING_BYTES};
 
 use crate::{
     app::App,
-    config::{
-        Access, Config, DEFAULT_MICROPHONE_GAIN, Settings, hash_password, valid_microphone_gain,
-    },
-    journal, model, panel,
+    config::{Access, Config, DEFAULT_MICROPHONE_GAIN, Settings, valid_microphone_gain},
+    journal, model, panel, password,
     plugins::Plugins,
     station::Player,
     voice_core::VOICE_INSTRUCTIONS,
@@ -74,11 +72,11 @@ pub(crate) async fn run() -> Result<()> {
             answer_wav(dir, PathBuf::from(&args[1]), PathBuf::from(&args[2])).await
         }
         Some("device-capabilities") if args.len() == 1 => {
-            println!("{}", serde_json::to_string(&model::capabilities())?);
+            println!("{}", goodwin_json::to_string(&model::capabilities())?);
             Ok(())
         }
         Some("wake-runtimes") if args.len() == 1 => {
-            println!("{}", serde_json::to_string(wake::runtimes())?);
+            println!("{}", goodwin_json::to_string(wake::runtimes())?);
             Ok(())
         }
         Some("wake-check") if args.len() == 3 && args[1] == "--installed" => {
@@ -88,7 +86,7 @@ pub(crate) async fn run() -> Result<()> {
             let path = std::path::Path::new(&args[1]);
             let mut model = if let Some(manifest) = args.get(2) {
                 let selection: wake_catalog::Selection =
-                    serde_json::from_reader(fs::File::open(manifest)?)?;
+                    goodwin_json::from_reader(fs::File::open(manifest)?)?;
                 selection.validate()?;
                 wake::WakeModel::load_selected(path, &selection)?
             } else {
@@ -138,7 +136,7 @@ fn prompt_password() -> Result<Access> {
     let confirm = rpassword::prompt_password("Confirm password: ")?;
     ensure!(password == confirm, "Passwords do not match");
     Ok(Access::Password {
-        hash: hash_password(&password)?,
+        hash: password::hash(&password)?,
     })
 }
 
@@ -220,7 +218,7 @@ async fn answer_wav(dir: PathBuf, input: PathBuf, output: PathBuf) -> Result<()>
     let result = async {
         let resolve = |capability| {
             engine.resolve(&plugins, capability).map_err(|_| {
-                anyhow::anyhow!(
+                goodwin_error::report!(
                     "Provider {} is unavailable",
                     pipeline.get(capability).provider
                 )

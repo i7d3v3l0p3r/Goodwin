@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use goodwin_plugin::provider::ToolSchema;
 use serde_json::{Value, json};
 use tokio::{task::JoinSet, time::timeout};
 
@@ -17,10 +18,10 @@ impl VoiceTools {
         let tool = Tool {
             name: "example".into(),
             description: "Run the test tool".into(),
-            parameters: json!({
+            parameters: serde_json::from_value(json!({
                 "type": "object", "properties": {"seconds": {"type": "integer"}, "name": {"type": "string"}},
                 "required": [], "additionalProperties": false,
-            }),
+            })).unwrap(),
         };
         let tools = BTreeMap::from([("probe__example".into(), (Process::mock(handler), tool))]);
         Self {
@@ -35,7 +36,7 @@ impl VoiceTools {
         let tool = Tool {
             name: "list".into(),
             description: "List test timers".into(),
-            parameters: json!({"type": "object", "properties": {}, "required": [], "additionalProperties": false}),
+            parameters: serde_json::from_value(json!({"type": "object", "properties": {}, "required": [], "additionalProperties": false})).unwrap(),
         };
         let name = "probe__list".to_owned();
         self.tools
@@ -44,7 +45,7 @@ impl VoiceTools {
         self
     }
 
-    pub(crate) fn definitions(&self) -> impl ExactSizeIterator<Item = (&str, &str, &Value)> {
+    pub(crate) fn definitions(&self) -> impl ExactSizeIterator<Item = (&str, &str, &ToolSchema)> {
         self.tools
             .iter()
             .map(|(name, (_, tool))| (name.as_str(), tool.description.as_str(), &tool.parameters))

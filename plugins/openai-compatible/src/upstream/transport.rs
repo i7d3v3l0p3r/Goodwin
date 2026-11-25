@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use core::{error::Error, fmt};
+use goodwin_error::{Context, Result};
 use goodwin_plugin::provider::ProviderHttpError;
 
 use crate::Config;
@@ -9,11 +10,35 @@ pub(super) enum Method {
     Post,
 }
 
+#[derive(Debug)]
+pub enum SendError {
+    Http(ProviderHttpError),
+    Request(goodwin_error::Error),
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(_) => formatter.write_str("Upstream HTTP request failed"),
+            Self::Request(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for SendError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Http(error) => Some(error),
+            Self::Request(error) => error.as_error().source(),
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod platform {
     use std::time::Duration;
 
-    use anyhow::ensure;
+    use goodwin_error::ensure;
     use reqwest::{Url, blocking::multipart, header, redirect::Policy};
 
     use super::*;
@@ -48,7 +73,7 @@ mod platform {
             "Enter an HTTP(S) API base URL without credentials, query or fragment"
         );
         url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("Invalid API base URL"))?
+            .map_err(|_| goodwin_error::report!("Invalid API base URL"))?
             .pop_if_empty()
             .extend(endpoint);
         let request = client.request(
@@ -73,6 +98,12 @@ mod platform {
         request.header(header::ACCEPT, accept)
     }
 
+    pub fn json(request: RequestBuilder, body: Vec<u8>) -> RequestBuilder {
+        request
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+    }
+
     pub fn wave(
         request: RequestBuilder,
         wav: Vec<u8>,
@@ -92,10 +123,14 @@ mod platform {
         ))
     }
 
-    pub fn send(request: RequestBuilder) -> Result<Response> {
-        let response = request.send().map_err(reqwest::Error::without_url)?;
+    pub fn send(request: RequestBuilder) -> Result<Response, SendError> {
+        let response = request
+            .send()
+            .map_err(|error| SendError::Request(error.without_url().into()))?;
         if !response.status().is_success() {
-            return Err(ProviderHttpError(response.status().as_u16()).into());
+            return Err(SendError::Http(ProviderHttpError(
+                response.status().as_u16(),
+            )));
         }
         Ok(response)
     }
@@ -113,7 +148,6 @@ mod platform {
     use std::{io, time::Duration};
 
     use goodwin_plugin::services::{HttpBody, HttpRequest, HttpResponse, Request, guest};
-    use serde::Serialize;
 
     use super::*;
 
@@ -122,7 +156,7 @@ mod platform {
 
     pub struct RequestBuilder {
         request: HttpRequest,
-        body: Result<Vec<u8>, serde_json::Error>,
+        body: Vec<u8>,
     }
 
     impl RequestBuilder {
@@ -137,12 +171,6 @@ mod platform {
                     .iter()
                     .map(|(key, value)| (key.to_string(), value.to_string())),
             );
-            self
-        }
-
-        pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Self {
-            self.request.body = HttpBody::Json;
-            self.body = serde_json::to_vec(value);
             self
         }
     }
@@ -180,12 +208,18 @@ mod platform {
                 timeout_ms: 50_000,
                 body: HttpBody::Empty,
             },
-            body: Ok(Vec::new()),
+            body: Vec::new(),
         })
     }
 
     pub fn accept(mut request: RequestBuilder, accept: &'static str) -> RequestBuilder {
         request.request.accept = Some(accept.to_owned());
+        request
+    }
+
+    pub fn json(mut request: RequestBuilder, body: Vec<u8>) -> RequestBuilder {
+        request.request.body = HttpBody::Json;
+        request.body = body;
         request
     }
 
@@ -195,23 +229,25 @@ mod platform {
         fields: Vec<(String, String)>,
     ) -> Result<RequestBuilder> {
         request.request.body = HttpBody::Wave { fields };
-        request.body = Ok(wav);
+        request.body = wav;
         Ok(request)
     }
 
-    pub fn send(request: RequestBuilder) -> Result<Response> {
+    pub fn send(request: RequestBuilder) -> Result<Response, SendError> {
         let mut head = [0; 4096];
         let length = guest::call(
             Request::HttpStart {
                 request: request.request,
             },
-            &request.body?,
+            &request.body,
             &mut head,
         )
-        .context("Goodwin provider HTTP request failed")?;
-        let head: HttpResponse = serde_json::from_slice(&head[..length])?;
+        .context("Goodwin provider HTTP request failed")
+        .map_err(SendError::Request)?;
+        let head: HttpResponse = goodwin_plugin::json_codec::from_slice(&head[..length])
+            .map_err(|error| SendError::Request(error.into()))?;
         if !(200..300).contains(&head.status) {
-            return Err(ProviderHttpError(head.status).into());
+            return Err(SendError::Http(ProviderHttpError(head.status)));
         }
         Ok(Response(head))
     }

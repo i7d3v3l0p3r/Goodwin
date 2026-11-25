@@ -13,17 +13,25 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
+#[cfg(any(not(target_arch = "wasm32"), feature = "plugin-api"))]
+pub use goodwin_error as error;
+#[cfg(any(not(target_arch = "wasm32"), feature = "plugin-api"))]
+use goodwin_error::Result;
 #[cfg(not(target_arch = "wasm32"))]
-use anyhow::{Context, ensure};
+use goodwin_error::{Context, ensure};
 #[cfg(not(target_arch = "wasm32"))]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(any(not(target_arch = "wasm32"), feature = "plugin-api"))]
+use serde_json::json;
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-guest"))]
 pub mod audio;
+pub use goodwin_json as json_codec;
 pub mod provider;
+#[doc(hidden)]
+pub mod rpc;
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-guest"))]
 pub mod services;
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,11 +42,13 @@ pub mod wake;
 use provider::{
     Capability, MODELS_METHOD, ProviderHttpError, SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD,
 };
+#[cfg(any(not(target_arch = "wasm32"), feature = "plugin-api"))]
 use provider::{
     ChatRequest, Completion, ModelCatalog, ModelsRequest, SpeechAudio, SpeechRequest,
     Transcription, TranscriptionRequest,
 };
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "plugin-api"))]
 pub trait Plugin {
     fn registration(&self) -> Value;
 
@@ -54,7 +64,7 @@ pub trait Plugin {
     }
 
     fn wake_event(&mut self, _event: wake::Observation) -> Result<()> {
-        anyhow::bail!("Wake events are unavailable")
+        goodwin_error::bail!("Wake events are unavailable")
     }
 
     fn wake_subscription(&self) -> u64 {
@@ -66,11 +76,11 @@ pub trait Plugin {
     }
 
     fn transcribe(&mut self, _request: TranscriptionRequest) -> Result<Transcription> {
-        anyhow::bail!("Transcription is unavailable")
+        goodwin_error::bail!("Transcription is unavailable")
     }
 
     fn complete(&mut self, _request: ChatRequest) -> Result<Completion> {
-        anyhow::bail!("Chat completion is unavailable")
+        goodwin_error::bail!("Chat completion is unavailable")
     }
 
     fn supports_chat_streaming(&self) -> bool {
@@ -82,11 +92,11 @@ pub trait Plugin {
         _request: ChatRequest,
         _emit: &mut dyn FnMut(&str) -> Result<()>,
     ) -> Result<()> {
-        anyhow::bail!("Chat streaming is unavailable")
+        goodwin_error::bail!("Chat streaming is unavailable")
     }
 
     fn synthesize(&mut self, _request: SpeechRequest) -> Result<SpeechAudio> {
-        anyhow::bail!("Speech synthesis is unavailable")
+        goodwin_error::bail!("Speech synthesis is unavailable")
     }
 
     fn supports_speech_streaming(&self) -> bool {
@@ -98,11 +108,11 @@ pub trait Plugin {
         _request: SpeechRequest,
         _emit: &mut dyn FnMut(SpeechAudio) -> Result<()>,
     ) -> Result<()> {
-        anyhow::bail!("Speech streaming is unavailable")
+        goodwin_error::bail!("Speech streaming is unavailable")
     }
 
     fn models(&mut self, _request: ModelsRequest) -> Result<ModelCatalog> {
-        anyhow::bail!("The model catalog is unavailable")
+        goodwin_error::bail!("The model catalog is unavailable")
     }
 }
 
@@ -146,7 +156,7 @@ pub struct ToolCall {
 pub struct Host(Arc<Mutex<Output>>);
 
 #[cfg(not(target_arch = "wasm32"))]
-type SendFrame = dyn FnMut(&Value) -> Result<()> + Send;
+type SendFrame = dyn FnMut(&[u8]) -> Result<()> + Send;
 
 #[cfg(not(target_arch = "wasm32"))]
 struct Output {
@@ -167,7 +177,7 @@ impl Host {
 
     fn confirm_ready(&self, reply: &Value) -> Result<()> {
         let mut output = self.0.lock().expect("plugin output");
-        (output.send)(reply)?;
+        output.send(reply)?;
         for _ in 0..output.pending_signals.take().expect("startup signals") {
             output.send_timer_signal()?;
         }
@@ -177,18 +187,14 @@ impl Host {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Output {
-    fn send_timer_signal(&mut self) -> Result<()> {
-        (self.send)(&json!({"jsonrpc": "2.0", "method": "play_timer_signal"}))
+    fn send(&mut self, frame: &impl Serialize) -> Result<()> {
+        let frame = serde_json::to_vec(frame)?;
+        (self.send)(&frame)
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Deserialize)]
-struct Request {
-    jsonrpc: String,
-    id: u64,
-    method: String,
-    params: Value,
+    fn send_timer_signal(&mut self) -> Result<()> {
+        self.send(&json!({"jsonrpc": "2.0", "method": "play_timer_signal"}))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -200,15 +206,17 @@ pub fn run(plugin: impl Plugin) -> Result<()> {
 fn run_protocol(
     mut plugin: impl Plugin,
     input: impl BufRead,
-    send: impl FnMut(&Value) -> Result<()> + Send + 'static,
+    send: impl FnMut(&[u8]) -> Result<()> + Send + 'static,
 ) -> Result<()> {
+    use rpc::Payload;
     let mut input = input.lines();
     let line = input
         .next()
         .context("Expected the Goodwin initialize request")??;
-    let init: Request = serde_json::from_str(&line)?;
+    let init = rpc::Frame::read(line.as_bytes())?;
+    let params: rpc::Initialize = init.params()?;
     ensure!(
-        init.jsonrpc == "2.0" && init.method == "initialize" && init.params["apiVersion"] == 1,
+        init.method == "initialize" && params.api_version == 1,
         "Unsupported Goodwin protocol"
     );
     let host = Host(Arc::new(Mutex::new(Output {
@@ -216,10 +224,9 @@ fn run_protocol(
         pending_signals: Some(0),
     })));
     plugin.ready(host.clone());
-    let speech_streaming =
-        init.params["speechStreaming"] == true && plugin.supports_speech_streaming();
-    let chat_streaming = init.params["chatStreaming"] == true && plugin.supports_chat_streaming();
-    let wake_events = init.params["wakeEvents"] == true && plugin.supports_wake_events();
+    let speech_streaming = params.speech_streaming && plugin.supports_speech_streaming();
+    let chat_streaming = params.chat_streaming && plugin.supports_chat_streaming();
+    let wake_events = params.wake_events && plugin.supports_wake_events();
     let mut registration = plugin.registration();
     if speech_streaming {
         registration["speechStreaming"] = json!(true);
@@ -234,88 +241,109 @@ fn run_protocol(
     host.confirm_ready(&json!({"jsonrpc": "2.0", "id": init.id, "result": registration}))?;
 
     for line in input {
-        let request: Request = serde_json::from_str(&line?)?;
-        ensure!(request.jsonrpc == "2.0", "Unexpected RPC version");
+        let line = line?;
+        let request = rpc::Frame::read(line.as_bytes())?;
         let previous_subscription = wake_events.then(|| plugin.wake_subscription());
         let result = match request.method.as_str() {
-            "http" => serde_json::from_value(request.params)
-                .map_err(Into::into)
-                .and_then(|request| plugin.http(request))
-                .and_then(|reply| serde_json::to_value(reply).map_err(Into::into)),
-            "tool" => serde_json::from_value(request.params)
-                .map_err(Into::into)
-                .and_then(|call| plugin.tool(call)),
+            "http" => dispatch(&request, |request| plugin.http(request).map(Payload::Http)),
+            "tool" => request
+                .params()
+                .map_err(goodwin_error::Error::from)
+                .and_then(|call| plugin.tool(call).map(Payload::Json)),
             method if method == Capability::Transcription.method() => {
-                dispatch(request.params, |request| plugin.transcribe(request))
-            }
-            method if method == Capability::Chat.method() => {
-                dispatch(request.params, |request| plugin.complete(request))
-            }
-            provider::CHAT_STREAM_METHOD if chat_streaming => dispatch(request.params, |chat| {
-                plugin.complete_stream(chat, &mut |text| {
-                    ensure!(
-                        !text.is_empty() && text.len() <= provider::MAX_CHAT_CHUNK_BYTES,
-                        "Invalid chat chunk length"
-                    );
-                    (host.0.lock().expect("plugin output").send)(&json!({
-                        "jsonrpc": "2.0", "method": provider::CHAT_CHUNK_NOTIFICATION,
-                        "params": {"requestId": request.id, "text": text}
-                    }))
+                dispatch(&request, |request| {
+                    plugin.transcribe(request).map(Payload::Transcription)
                 })
-            }),
-            method if method == Capability::Speech.method() => {
-                dispatch(request.params, |request| plugin.synthesize(request))
             }
-            SPEECH_STREAM_METHOD if speech_streaming => dispatch(request.params, |speech| {
-                plugin.synthesize_stream(speech, &mut |audio| {
-                    (host.0.lock().expect("plugin output").send)(&json!({
-                        "jsonrpc": "2.0", "method": SPEECH_CHUNK_NOTIFICATION,
-                        "params": {"requestId": request.id, "audio": audio}
-                    }))
-                })
+            method if method == Capability::Chat.method() => dispatch(&request, |request| {
+                plugin.complete(request).map(Payload::Chat)
             }),
-            MODELS_METHOD => dispatch(request.params, |request| plugin.models(request)),
-            wake::EVENT_METHOD if wake_events => {
-                dispatch(request.params, |event| plugin.wake_event(event))
-            }
-            _ => Err(anyhow::anyhow!("Unknown RPC method")),
+            provider::CHAT_STREAM_METHOD if chat_streaming => dispatch(&request, |chat| {
+                plugin
+                    .complete_stream(chat, &mut |text| {
+                        ensure!(
+                            !text.is_empty() && text.len() <= provider::MAX_CHAT_CHUNK_BYTES,
+                            "Invalid chat chunk length"
+                        );
+                        host.0
+                            .lock()
+                            .expect("plugin output")
+                            .send(&rpc::Notification {
+                                jsonrpc: "2.0",
+                                method: provider::CHAT_CHUNK_NOTIFICATION,
+                                params: rpc::ChatChunk {
+                                    request_id: request.id,
+                                    text,
+                                },
+                            })
+                    })
+                    .map(Payload::Empty)
+            }),
+            method if method == Capability::Speech.method() => dispatch(&request, |request| {
+                plugin.synthesize(request).map(Payload::Speech)
+            }),
+            SPEECH_STREAM_METHOD if speech_streaming => dispatch(&request, |speech| {
+                plugin
+                    .synthesize_stream(speech, &mut |audio| {
+                        host.0
+                            .lock()
+                            .expect("plugin output")
+                            .send(&rpc::Notification {
+                                jsonrpc: "2.0",
+                                method: SPEECH_CHUNK_NOTIFICATION,
+                                params: rpc::SpeechChunk {
+                                    request_id: request.id,
+                                    audio,
+                                },
+                            })
+                    })
+                    .map(Payload::Empty)
+            }),
+            MODELS_METHOD => dispatch(&request, |request| {
+                plugin.models(request).map(Payload::Models)
+            }),
+            wake::EVENT_METHOD if wake_events => dispatch(&request, |event| {
+                plugin.wake_event(event).map(Payload::Empty)
+            }),
+            _ => Err(goodwin_error::report!("Unknown RPC method")),
         };
-        let mut response = match result {
-            Ok(result) => json!({"jsonrpc": "2.0", "id": request.id, "result": result}),
+        let (result, error) = match result {
+            Ok(result) => (Some(result), None),
             Err(error) => {
                 eprintln!("Plugin request: {error:#}");
                 let mut reply = json!({"code": -32603, "message": "Plugin request failed"});
-                if let Some(status) = error.downcast_ref::<ProviderHttpError>() {
+                if let Some(status) = error.find::<ProviderHttpError>() {
                     reply["data"] = json!({"http_status": status.0});
                 }
-                json!({"jsonrpc": "2.0", "id": request.id, "error": reply})
+                (None, Some(reply))
             }
         };
-        if let Some(previous) = previous_subscription {
-            let subscription = plugin.wake_subscription();
-            if subscription != previous {
-                response["wakeSubscription"] = json!(subscription);
-            }
-        }
-        (host.0.lock().expect("plugin output").send)(&response)?;
+        let wake_subscription = previous_subscription
+            .map(|previous| (previous, plugin.wake_subscription()))
+            .and_then(|(previous, current)| (previous != current).then_some(current));
+        host.0.lock().expect("plugin output").send(&rpc::Reply {
+            jsonrpc: "2.0",
+            id: request.id,
+            result,
+            error,
+            wake_subscription,
+        })?;
     }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn dispatch<T: DeserializeOwned, U: Serialize>(
-    params: Value,
-    handler: impl FnOnce(T) -> Result<U>,
-) -> Result<Value> {
-    Ok(serde_json::to_value(handler(serde_json::from_value(
-        params,
-    )?)?)?)
+fn dispatch<T: DeserializeOwned>(
+    frame: &rpc::Frame<'_>,
+    handler: impl FnOnce(T) -> Result<rpc::Payload>,
+) -> Result<rpc::Payload> {
+    handler(frame.params()?)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn send(message: &Value) -> Result<()> {
+fn send(message: &[u8]) -> Result<()> {
     let mut output = io::stdout().lock();
-    serde_json::to_writer(&mut output, message)?;
+    output.write_all(message)?;
     writeln!(output)?;
     output.flush()?;
     Ok(())
@@ -354,6 +382,16 @@ pub fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    fn run_protocol(
+        plugin: impl Plugin,
+        input: impl BufRead,
+        mut send: impl FnMut(&Value) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        super::run_protocol(plugin, input, move |frame| {
+            send(&serde_json::from_slice(frame)?)
+        })
+    }
 
     const INITIALIZE: &[u8] =
         br#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"apiVersion":1}}"#;
@@ -450,7 +488,8 @@ mod tests {
         }
 
         fn synthesize(&mut self, _request: SpeechRequest) -> Result<SpeechAudio> {
-            Err(anyhow::Error::new(ProviderHttpError(429)).context("Upstream request failed"))
+            Err(goodwin_error::Error::from(ProviderHttpError(429))
+                .context("Upstream request failed"))
         }
 
         fn synthesize_stream(

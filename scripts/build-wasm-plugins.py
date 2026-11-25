@@ -22,14 +22,14 @@ def main():
     for plugin, stack, memory in (
         ("timers", 64 * 1024, 512 * 1024),
         ("openai-compatible", 256 * 1024, 64 * 1024 * 1024),
-        ("openrouter", 256 * 1024, 64 * 1024 * 1024),
         ("wake-dataset", 256 * 1024, 8 * 1024 * 1024),
     ):
         subprocess.run(
             ["cargo", "rustc", "--locked", "-p", f"goodwin-{plugin}", "--bin", f"goodwin-{plugin}",
              "--release", "--target", "wasm32-unknown-unknown",
              "--config", 'profile.release.lto="fat"', "--config", "profile.release.codegen-units=1",
-             "--jobs", str(args.jobs), "--", "-C", "opt-level=z", "-C", "strip=symbols",
+             "--config", 'profile.release.opt-level="z"',
+             "--jobs", str(args.jobs), "--", "-C", "strip=symbols",
              "-C", f"link-arg=-zstack-size={stack}", "-C", f"link-arg=--max-memory={memory}"],
             cwd=ROOT,
             check=True,

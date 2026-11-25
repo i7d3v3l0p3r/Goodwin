@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, bail};
+use goodwin_error::{Context, Result, bail};
 
 use crate::{
     voice_core::{CAPTURE_HZ, PRE_ROLL, scale_sample},
@@ -208,7 +208,7 @@ impl Detector {
                         end,
                         samples,
                     })
-                    .map_err(|_| anyhow::anyhow!("Wake inference task is unavailable"))?;
+                    .map_err(|_| goodwin_error::report!("Wake inference task is unavailable"))?;
                 self.next = end;
                 self.busy = true;
             }

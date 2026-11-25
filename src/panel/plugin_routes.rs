@@ -1,5 +1,5 @@
 use axum::{
-    Json,
+    Json as AxumJson,
     body::{Bytes, to_bytes},
     extract::{Path, Request, State},
     http::{StatusCode, header},
@@ -13,7 +13,7 @@ use crate::{
     plugins::{ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure, package::asset_mime},
 };
 
-use super::{Panel, problem};
+use super::{Json, Panel, problem};
 
 pub(super) async fn plugin_catalog(State(panel): State<Panel>) -> impl IntoResponse {
     Json(panel.app.plugins.catalog())
@@ -79,7 +79,7 @@ pub(super) async fn plugin_settings(
 pub(super) async fn update_plugin_settings(
     State(panel): State<Panel>,
     Path(id): Path<String>,
-    Json(fields): Json<Map<String, Value>>,
+    AxumJson(fields): AxumJson<Map<String, Value>>,
 ) -> Response {
     let plugins = panel.app.plugins.clone();
     match tokio::spawn(async move { plugins.update_settings(&id, fields).await }).await {

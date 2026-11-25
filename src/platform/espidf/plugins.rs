@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use goodwin_plugin::{
     HttpRequest,
     settings::SettingsData,
@@ -411,7 +411,9 @@ impl Plugins {
 }
 
 impl VoiceTools<'_> {
-    pub(super) fn definitions(&self) -> impl ExactSizeIterator<Item = (&str, &str, &Value)> {
+    pub(super) fn definitions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &str, &goodwin_plugin::provider::ToolSchema)> {
         self.tools.iter().map(|(name, (_, _, tool))| {
             (name.as_str(), tool.description.as_str(), &tool.parameters)
         })
@@ -585,7 +587,9 @@ impl Entry {
             return Err(Failure::Busy);
         }
         let instance = self.active.as_mut().ok_or(Failure::Unavailable)?;
-        match instance.invoke(method, params, None, None) {
+        match instance.invoke(method, params, None, None, |value| {
+            serde_json::from_str(value)
+        }) {
             Ok(Some(result)) => Ok(result),
             Ok(None) => Err(Failure::Unavailable),
             Err(error) => {
@@ -644,6 +648,7 @@ impl Instance {
                 }),
                 None,
                 None,
+                |value| serde_json::from_str(value),
             )?
             .context("WASM plugin initialization failed")?;
         instance.registration = Arc::new(serde_json::from_value(registration)?);
@@ -669,18 +674,45 @@ impl Instance {
         }
     }
 
-    fn invoke(
+    fn invoke<R, E>(
         &mut self,
         method: &str,
-        params: Value,
+        params: impl serde::Serialize,
         connection: Option<&str>,
         chunks: Option<services::StreamChunks>,
-    ) -> Result<Option<(Value, u32)>> {
+        decode: impl FnOnce(&str) -> std::result::Result<R, E>,
+    ) -> Result<Option<(R, u32)>>
+    where
+        E: Into<goodwin_error::Error>,
+    {
         let id = self.next_id;
         self.next_id = id.wrapping_add(1);
-        let frame = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0", "id": id, "method": method, "params": params, "nowMs": now_ms(),
-        }))?;
+        let frame = serde_json::to_vec(&crate::plugin_rpc::Request {
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+            now: Some(now_ms()),
+        })?;
+        let mut reply = None;
+        let mut decode = Some(decode);
+        let signals = self.exchange(id, method, &frame, connection, chunks, &mut |value| {
+            reply =
+                Some(decode.take().context("Repeated WASM result")?(value).map_err(Into::into)?);
+            Ok(())
+        })?;
+        Ok(reply.zip(signals))
+    }
+
+    fn exchange(
+        &mut self,
+        id: u64,
+        method: &str,
+        frame: &[u8],
+        connection: Option<&str>,
+        chunks: Option<services::StreamChunks>,
+        decode: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<Option<u32>> {
         let timeout = if method.starts_with("provider.") {
             Duration::from_secs(60)
         } else {
@@ -701,33 +733,47 @@ impl Instance {
             "provider.models" | "provider.complete" => 256 * 1024,
             _ => FRAME_LIMIT,
         };
-        let result = super::memory::external(|| self.guest.call(&frame, response_limit));
+        let mut metadata = None;
+        let result = super::memory::external(|| {
+            self.guest.call_with(frame, response_limit, &mut |bytes| {
+                let reply: crate::plugin_rpc::Response<&serde_json::value::RawValue> =
+                    serde_json::from_slice(bytes).context("Decode WASM RPC")?;
+                ensure!(
+                    reply.jsonrpc == "2.0" && reply.id == id,
+                    "Invalid WASM RPC response"
+                );
+                let rejected = reply.error.is_some();
+                if !rejected {
+                    decode(reply.result.context("Missing WASM result")?.get())?;
+                }
+                metadata = Some((
+                    reply.wake_subscription,
+                    rejected,
+                    reply.state,
+                    reply.wake_at,
+                ));
+                Ok(())
+            })
+        });
         drop(scope);
         if let Some(host) = self.guest.host_mut() {
             host.finish();
         }
-        let (mut reply, signals) = result?;
-        let reply = reply
-            .as_object_mut()
-            .context("Expected WASM response object")?;
-        ensure!(
-            reply.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
-                && reply.get("id").and_then(Value::as_u64) == Some(id),
-            "Invalid WASM RPC response"
-        );
+        let signals = result?;
+        let (subscription, rejected, state, wake_at) =
+            metadata.context("Missing WASM RPC response")?;
         if self.registration.wake_events
-            && let Some(token) = reply.get("wakeSubscription").and_then(Value::as_u64)
+            && let Some(token) = subscription
         {
             self.wake_subscription = token;
         }
-        if reply.contains_key("error") {
+        if rejected {
             if method == "tick" {
                 self.deadline = Some(now_ms().saturating_add(1_000));
             }
             return Ok(None);
         }
-        let result = reply.remove("result").context("Missing WASM result")?;
-        if let Some(state) = reply.remove("state") {
+        if let Some(state) = state {
             services::save_json(
                 self.state
                     .as_deref()
@@ -736,12 +782,12 @@ impl Instance {
                 STATE_LIMIT,
             )?;
         }
-        if let Some(next) = reply.remove("wakeAt") {
-            self.deadline = serde_json::from_value(next)?;
+        if let Some(next) = wake_at {
+            self.deadline = next;
         } else if method == "tick" {
             self.deadline = None;
         }
-        Ok(Some((result, signals)))
+        Ok(Some(signals))
     }
 }
 
@@ -754,6 +800,7 @@ fn now_ms() -> u64 {
 
 fn random_id() -> Result<String> {
     let mut bytes = [0; 8];
-    getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("Generate plugin identifier"))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|_| goodwin_error::report!("Generate plugin identifier"))?;
     Ok(format!("{:016x}", u64::from_le_bytes(bytes)))
 }

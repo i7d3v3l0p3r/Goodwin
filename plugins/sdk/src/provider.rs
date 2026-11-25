@@ -1,8 +1,15 @@
 #[cfg(all(target_arch = "wasm32", not(feature = "wasm-guest")))]
 use alloc::{string::String, vec::Vec};
-use anyhow::{Result, ensure};
+use core::fmt;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+mod chat;
+mod parameters;
+
+pub use chat::{
+    ChatCompletion, ChatMessage, ChatPayload, ChatRole, FunctionCall, ReasoningDetail, ToolCall,
+    ToolDefinition, ToolKind, ToolParameterKind, ToolProperty, ToolSchema, ToolSchemaKind,
+};
+pub use parameters::ModelParameters;
 
 pub const MAX_RECORDING_BYTES: usize = 4_000_000;
 pub const MAX_SPEECH_BYTES: usize = 8_000_000;
@@ -27,6 +34,26 @@ impl core::fmt::Display for ProviderHttpError {
 
 impl core::error::Error for ProviderHttpError {}
 
+#[derive(Debug)]
+pub enum ModelSelectionError {
+    InvalidId,
+    ParametersTooLarge,
+    InvalidParameters,
+}
+
+impl fmt::Display for ModelSelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidId => "Invalid model ID",
+            Self::ParametersTooLarge => "Model parameters are too large",
+            Self::InvalidParameters => "Invalid model parameters",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl core::error::Error for ModelSelectionError {}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -50,8 +77,8 @@ impl Capability {
 pub struct ModelSelection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(skip_serializing_if = "Map::is_empty")]
-    pub parameters: Map<String, Value>,
+    #[serde(skip_serializing_if = "ModelParameters::is_empty")]
+    pub parameters: ModelParameters,
 }
 
 impl ModelSelection {
@@ -59,45 +86,13 @@ impl ModelSelection {
         self.model.is_none() && self.parameters.is_empty()
     }
 
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.model.as_ref().is_none_or(|id| !id.is_empty()
-                && id.trim() == id
-                && id.len() <= 256
-                && !id.chars().any(char::is_control)),
-            "Invalid model ID"
-        );
-        ensure!(
-            self.parameters.len() <= 20 && serde_json::to_vec(&self.parameters)?.len() <= 2048,
-            "Model parameters are too large"
-        );
-        for key in self.parameters.keys() {
-            ensure!(
-                !key.is_empty()
-                    && key.len() <= 64
-                    && key
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                    && !matches!(
-                        key.as_str(),
-                        "model"
-                            | "input"
-                            | "input_audio"
-                            | "file"
-                            | "messages"
-                            | "tools"
-                            | "tool_choice"
-                            | "provider"
-                            | "response_format"
-                            | "stream"
-                            | "stream_format"
-                            | "max_completion_tokens"
-                            | "language"
-                    ),
-                "Model parameter is reserved or invalid"
-            );
+    pub fn validate(&self) -> Result<(), ModelSelectionError> {
+        if self.model.as_ref().is_some_and(|id| {
+            id.is_empty() || id.trim() != id || id.len() > 256 || id.chars().any(char::is_control)
+        }) {
+            return Err(ModelSelectionError::InvalidId);
         }
-        Ok(())
+        self.parameters.validate()
     }
 }
 
@@ -137,9 +132,9 @@ pub struct Transcription {
 
 #[derive(Deserialize, Serialize)]
 pub struct ChatRequest {
-    pub messages: Vec<Value>,
+    pub messages: Vec<ChatMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<Value>,
+    pub tools: Vec<ToolDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
     pub max_completion_tokens: u32,
@@ -156,7 +151,7 @@ pub enum ToolChoice {
 
 #[derive(Deserialize, Serialize)]
 pub struct Completion {
-    pub message: Value,
+    pub message: ChatMessage,
 }
 
 #[derive(Deserialize, Serialize)]

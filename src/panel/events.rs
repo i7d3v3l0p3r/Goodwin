@@ -123,5 +123,6 @@ async fn wait_for_expiry(expires: Option<SystemTime>) {
 }
 
 fn json_event(name: &'static str, data: impl Serialize) -> Result<Event, axum::Error> {
-    Event::default().event(name).json_data(data)
+    let json = goodwin_json::to_string(&data).map_err(axum::Error::new)?;
+    Ok(Event::default().event(name).data(json))
 }

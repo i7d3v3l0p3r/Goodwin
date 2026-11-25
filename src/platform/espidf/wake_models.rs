@@ -5,10 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
 use esp_idf_svc::{
     handle::RawHandle, http::Method, sys::esp_http_client_is_complete_data_received,
 };
+use goodwin_error::{Context, Result, ensure};
 use url::Url;
 
 use crate::{
@@ -246,5 +246,5 @@ fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
         );
         return Ok(body);
     }
-    anyhow::bail!("Too many wake model redirects")
+    goodwin_error::bail!("Too many wake model redirects")
 }

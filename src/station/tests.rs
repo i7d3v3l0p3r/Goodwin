@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use goodwin_plugin::provider::ModelSelection;
+use goodwin_plugin::provider::{ModelParameters, ModelSelection};
 use prost::Message;
 use serde_json::{Value, json};
 use tokio::{
@@ -44,10 +44,11 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
                         chat: stage("fixture/chat", Default::default()),
                         speech: stage(
                             "fixture/tts",
-                            json!({"voice":"Russian","speed":1.1})
-                                .as_object()
-                                .unwrap()
-                                .clone(),
+                            ModelParameters {
+                                voice: Some("Russian".into()),
+                                speed: Some(1.1),
+                                ..Default::default()
+                            },
                         ),
                     },
                     ..AssistantSettings::default()
@@ -261,7 +262,7 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
             let text = messages.last().unwrap()["content"].as_str().unwrap();
             if text == "Fail the provider" {
                 assert_eq!(messages[2]["content"], "Четыре");
-                anyhow::bail!("Fixture provider failure");
+                goodwin_error::bail!("Fixture provider failure");
             }
             assert_eq!(messages[0]["role"], "system");
             if text == "Что ты умеешь?" {

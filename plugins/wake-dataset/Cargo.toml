@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-anyhow = "1"
+goodwin-error = { path = "../../shared/error" }
 base64 = "0.23"
 goodwin-plugin = { path = "../sdk" }
 serde = { version = "1", features = ["derive"] }

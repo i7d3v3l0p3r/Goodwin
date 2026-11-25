@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use goodwin_error::{Context, Result, bail, ensure};
 use goodwin_plugin::{
     provider::{MAX_CHAT_CHUNK_BYTES, SpeechAudio},
     services::Request,
@@ -148,14 +148,14 @@ impl HostServices for Host {
                     .connection
                     .as_ref()
                     .context("Select a provider connection")?;
-                Ok(serde_json::to_vec(
+                Ok(goodwin_json::to_vec(
                     &serde_json::json!({"protocol": connection.protocol}),
                 )?)
             }
             Request::Settings => {
                 let settings: SettingsData =
                     read_json(&self.data.join(goodwin_plugin::settings::SETTINGS_FILE))?;
-                Ok(serde_json::to_vec(&settings.values)?)
+                Ok(goodwin_json::to_vec(&settings.values)?)
             }
             Request::HttpStart { request } => {
                 let (base, key, require_key) = self.destination()?;
@@ -188,7 +188,7 @@ impl HostServices for Host {
                     "Invalid speech chunk"
                 );
                 sender
-                    .send(serde_json::from_slice::<SpeechAudio>(input)?)
+                    .send(goodwin_json::from_slice::<SpeechAudio>(input)?)
                     .context("Speech stream closed")?;
                 Ok(Vec::new())
             }
@@ -210,7 +210,7 @@ impl HostServices for Host {
                         ensure!(names.len() <= 2048, "Plugin data directory is too large");
                     }
                 }
-                let listing = serde_json::to_vec(&names)?;
+                let listing = goodwin_json::to_vec(&names)?;
                 ensure!(
                     listing.len() <= STORAGE_LIMIT,
                     "Plugin listing is too large"
@@ -268,6 +268,13 @@ impl HostServices for Host {
 }
 
 pub(crate) fn read_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    read_json_with(path, |file| Ok(serde_json::from_reader(file)?))
+}
+
+pub(crate) fn read_json_with<T: Default>(
+    path: &Path,
+    decode: impl FnOnce(File) -> Result<T>,
+) -> Result<T> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -284,13 +291,16 @@ pub(crate) fn read_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T>
         file.metadata()?.len() <= STORAGE_LIMIT as u64,
         "Plugin JSON file is too large"
     );
-    Ok(serde_json::from_reader(file)?)
+    decode(file)
 }
 
 pub(crate) fn save_json(path: &Path, value: &impl Serialize, limit: usize) -> Result<()> {
-    let bytes = serde_json::to_vec(value)?;
+    save_json_bytes(path, &goodwin_json::to_vec(value)?, limit)
+}
+
+pub(crate) fn save_json_bytes(path: &Path, bytes: &[u8], limit: usize) -> Result<()> {
     ensure!(bytes.len() <= limit, "Plugin JSON file is too large");
-    replace_file(path, &bytes)
+    replace_file(path, bytes)
 }
 
 fn sidecar(path: &Path, suffix: &str) -> Result<PathBuf> {

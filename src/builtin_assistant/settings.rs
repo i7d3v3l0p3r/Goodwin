@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use goodwin_error::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Deserialize, Serialize)]

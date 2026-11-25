@@ -1,4 +1,3 @@
-use anyhow::{Result, ensure};
 use esp_idf_svc::{
     handle::RawHandle,
     http::{
@@ -7,6 +6,7 @@ use esp_idf_svc::{
     },
     sys::{esp_crt_bundle_attach, esp_http_client_is_complete_data_received},
 };
+use goodwin_error::{Result, ensure};
 use std::time::{Duration, Instant};
 
 use crate::builtin_assistant::HttpTransport;

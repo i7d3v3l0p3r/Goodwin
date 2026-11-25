@@ -5,7 +5,7 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use tempfile::NamedTempFile;
 use tokio::sync::{Notify, oneshot};
 
@@ -35,10 +35,10 @@ pub(crate) struct PendingModel {
 
 pub(crate) enum InstallError {
     Busy,
-    Unavailable(anyhow::Error),
+    Unavailable(goodwin_error::Error),
     CatalogChanged,
     Unknown,
-    Failed(anyhow::Error),
+    Failed(goodwin_error::Error),
 }
 
 impl WakeModels {
@@ -138,7 +138,7 @@ impl WakeModels {
         let previous = self.selected();
         let target = model_path(&self.dir, selected);
         let mut manifest = NamedTempFile::new_in(&self.dir)?;
-        serde_json::to_writer(manifest.as_file_mut(), selected)?;
+        goodwin_json::to_writer(manifest.as_file_mut(), selected)?;
         manifest.as_file().sync_all()?;
         model_file.as_file().sync_all()?;
         model_file.persist(&target)?;
@@ -196,7 +196,7 @@ fn read_selection(dir: &Path) -> Result<Option<Selection>> {
         Err(error) => return Err(error.into()),
     };
     let selection: Selection =
-        serde_json::from_reader(file.take(4096)).context("Read wake model manifest")?;
+        goodwin_json::from_reader(file.take(4096)).context("Read wake model manifest")?;
     selection.validate()?;
     Ok(Some(selection))
 }

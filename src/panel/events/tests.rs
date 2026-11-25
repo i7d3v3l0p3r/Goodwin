@@ -224,7 +224,7 @@ async fn reconnecting_during_chat_resumes_deltas_and_keeps_an_interrupted_reply(
             json!({"id": draft["id"], "text": ", мир"})
         );
     }
-    send.send(Err(anyhow::anyhow!("upstream disconnected")))
+    send.send(Err(goodwin_error::report!("upstream disconnected")))
         .await
         .unwrap();
     for reader in [&mut first, &mut second] {

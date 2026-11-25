@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use goodwin_error::{Context, Result, bail, ensure, report};
 use goodwin_plugin::{
     provider::{
         CHAT_CHUNK_NOTIFICATION, CHAT_STREAM_METHOD, Capability, ChatRequest, MAX_CHAT_CHUNK_BYTES,
@@ -17,8 +17,11 @@ use goodwin_plugin::{
     },
     wake::{EVENT_METHOD, Event, Observation},
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{
+    Value, json,
+    value::{RawValue, to_raw_value},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout, Command},
@@ -27,6 +30,7 @@ use tokio::{
 };
 
 use super::package::{API_VERSION, Manifest};
+use crate::plugin_rpc;
 
 pub(crate) use super::registration::{Page, Registration, Tool};
 
@@ -44,13 +48,16 @@ pub struct Process {
     chat_streaming: bool,
     speech_streaming: bool,
     wake_subscription: Option<Arc<AtomicU64>>,
+    #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
     provider_connection: Option<Arc<str>>,
 }
 
 struct Call {
     method: &'static str,
-    params: Value,
-    response: Option<oneshot::Sender<Result<Value>>>,
+    params: Box<RawValue>,
+    #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+    connection: Option<Arc<str>>,
+    response: Option<oneshot::Sender<Result<Box<RawValue>>>>,
     chunks: Option<StreamChunks>,
     limits: CallLimits,
 }
@@ -64,7 +71,7 @@ pub(crate) type SpeechReplies = StreamReplies<SpeechAudio>;
 
 pub(crate) struct StreamReplies<T> {
     chunks: mpsc::Receiver<T>,
-    result: Option<oneshot::Receiver<Result<Value>>>,
+    result: Option<oneshot::Receiver<Result<Box<RawValue>>>>,
 }
 
 impl<T> StreamReplies<T> {
@@ -74,7 +81,7 @@ impl<T> StreamReplies<T> {
         }
         if let Some(result) = self.result.take() {
             let result = result.await.context("Plugin process stopped")??;
-            ensure!(result.is_null(), "Unexpected provider stream result");
+            ensure!(result.get() == "null", "Unexpected provider stream result");
         }
         Ok(None)
     }
@@ -125,12 +132,12 @@ impl Process {
                 panic!("Expected a chat stream")
             };
             let result = tokio::select! {
-                _ = stopping.changed() => Err(anyhow!("Stopped")),
+                _ = stopping.changed() => Err(report!("Stopped")),
                 result = async {
                     while let Some(chunk) = input.recv().await {
                         chunks.send(chunk?).await?;
                     }
-                    Ok(Value::Null)
+                    Ok(to_raw_value(&())?)
                 } => result,
             };
             complete(call.response, result);
@@ -141,6 +148,7 @@ impl Process {
             chat_streaming: true,
             speech_streaming: false,
             wake_subscription: None,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
             provider_connection: None,
         }
     }
@@ -163,10 +171,11 @@ impl Process {
                     _ = stopping.changed() => break,
                     call = incoming.recv() => {
                         let Some(call) = call else { break; };
-                        let result = handler(call.method, call.params);
-                        if let Some(response) = call.response {
-                            let _ = response.send(result);
-                        }
+                        let result = serde_json::from_str(call.params.get())
+                            .map_err(goodwin_error::Error::from)
+                            .and_then(|params| handler(call.method, params))
+                            .and_then(|value| Ok(to_raw_value(&value)?));
+                        complete(call.response, result);
                     }
                 }
             }
@@ -177,6 +186,7 @@ impl Process {
             chat_streaming: false,
             speech_streaming: false,
             wake_subscription: None,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
             provider_connection: None,
         }
     }
@@ -224,9 +234,9 @@ impl Process {
             });
             write(&mut input, &initialize, FRAME_LIMIT).await?;
             let ready: Registration =
-                serde_json::from_value(response(output.read(FRAME_LIMIT).await?, 0)??)?;
+                serde_json::from_str(decode_reply(output.read(FRAME_LIMIT).await?, 0)??.get())?;
             ready.validate(manifest)?;
-            Ok::<_, anyhow::Error>(ready)
+            Ok::<_, goodwin_error::Error>(ready)
         };
         let registration = match timeout(START_TIMEOUT, ready)
             .await
@@ -271,6 +281,7 @@ impl Process {
                 chat_streaming: registration.chat_streaming,
                 speech_streaming,
                 wake_subscription,
+                #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
                 provider_connection: None,
             },
             registration,
@@ -289,10 +300,12 @@ impl Process {
     pub(super) fn observe_wake(&self, subscription: u64, event: &Event) -> Result<()> {
         self.enqueue(Call {
             method: EVENT_METHOD,
-            params: serde_json::to_value(Observation {
+            params: to_raw_value(&Observation {
                 subscription,
                 event,
             })?,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            connection: None,
             response: None,
             chunks: None,
             limits: CallLimits::STANDARD,
@@ -309,17 +322,29 @@ impl Process {
     }
 
     pub async fn call(&self, method: &'static str, params: Value) -> Result<Value> {
-        self.call_with_limits(method, params, CallLimits::STANDARD)
-            .await
+        let payload = to_raw_value(&params)?;
+        drop(params);
+        let reply = self
+            .call_with_limits(method, payload, CallLimits::STANDARD)
+            .await?;
+        Ok(serde_json::from_str(reply.get())?)
     }
 
-    pub async fn provider(&self, capability: Capability, params: Value) -> Result<Value> {
-        self.call_with_limits(
-            capability.method(),
-            params,
-            CallLimits::provider(capability),
-        )
-        .await
+    pub async fn provider<T: DeserializeOwned>(
+        &self,
+        capability: Capability,
+        params: impl Serialize,
+    ) -> Result<T> {
+        let payload = to_raw_value(&params)?;
+        drop(params);
+        let reply = self
+            .call_with_limits(
+                capability.method(),
+                payload,
+                CallLimits::provider(capability),
+            )
+            .await?;
+        Ok(goodwin_json::from_str(reply.get())?)
     }
 
     pub(crate) fn stream_chat(
@@ -333,7 +358,9 @@ impl Process {
         let (response, result) = oneshot::channel();
         self.enqueue(Call {
             method: CHAT_STREAM_METHOD,
-            params: serde_json::to_value(request)?,
+            params: to_raw_value(request)?,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            connection: self.provider_connection.clone(),
             response: Some(response),
             chunks: Some(StreamChunks::Chat(sender)),
             limits: CallLimits {
@@ -356,7 +383,9 @@ impl Process {
         let (response, result) = oneshot::channel();
         self.enqueue(Call {
             method: SPEECH_STREAM_METHOD,
-            params: serde_json::to_value(request)?,
+            params: to_raw_value(&request)?,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            connection: self.provider_connection.clone(),
             response: Some(response),
             chunks: Some(StreamChunks::Speech(sender)),
             limits: CallLimits {
@@ -374,7 +403,7 @@ impl Process {
         let reply = self
             .call_with_limits(
                 MODELS_METHOD,
-                serde_json::to_value(ModelsRequest { capability })?,
+                to_raw_value(&ModelsRequest { capability })?,
                 CallLimits {
                     request: FRAME_LIMIT,
                     response: 512 * 1024,
@@ -382,19 +411,21 @@ impl Process {
                 },
             )
             .await?;
-        Ok(serde_json::from_value(reply)?)
+        Ok(goodwin_json::from_str(reply.get())?)
     }
 
     async fn call_with_limits(
         &self,
         method: &'static str,
-        params: Value,
+        params: Box<RawValue>,
         limits: CallLimits,
-    ) -> Result<Value> {
+    ) -> Result<Box<RawValue>> {
         let (response, result) = oneshot::channel();
         self.enqueue(Call {
             method,
             params,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            connection: self.provider_connection.clone(),
             response: Some(response),
             chunks: None,
             limits,
@@ -407,22 +438,21 @@ impl Process {
 
     pub(super) fn for_connection(&self, id: &str, speech_streaming: bool) -> Self {
         let mut process = self.clone();
-        process.provider_connection = Some(Arc::from(id));
+        #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+        {
+            process.provider_connection = Some(Arc::from(id));
+        }
+        #[cfg(not(all(feature = "wasm-plugins", target_os = "linux")))]
+        let _ = id;
         process.speech_streaming &= speech_streaming;
         process
     }
 
-    fn enqueue(&self, mut call: Call) -> Result<()> {
+    fn enqueue(&self, call: Call) -> Result<()> {
         ensure!(self.running(), "Plugin process is unavailable");
-        if let Some(id) = &self.provider_connection {
-            call.params
-                .as_object_mut()
-                .context("Expected provider request object")?
-                .insert("providerConnection".into(), Value::String(id.to_string()));
-        }
         self.requests
             .try_send(call)
-            .map_err(|_| anyhow!("Plugin process is busy or unavailable"))
+            .map_err(|_| report!("Plugin process is busy or unavailable"))
     }
 }
 
@@ -441,7 +471,9 @@ async fn run(
                 let Some(call) = call else { return Ok(()); };
                 if call.response.as_ref().is_some_and(oneshot::Sender::is_closed) { continue; }
                 id += 1;
-                let message = json!({ "jsonrpc": "2.0", "id": id, "method": call.method, "params": call.params });
+                let message = plugin_rpc::Request {
+                    jsonrpc: "2.0", id, method: call.method, params: &call.params, now: None,
+                };
                 let request = match encode(&message, call.limits.request) {
                     Ok(request) => request,
                     Err(error) => {
@@ -461,7 +493,10 @@ async fn run(
     }
 }
 
-fn complete(response: Option<oneshot::Sender<Result<Value>>>, result: Result<Value>) {
+fn complete(
+    response: Option<oneshot::Sender<Result<Box<RawValue>>>>,
+    result: Result<Box<RawValue>>,
+) {
     if let Some(response) = response {
         let _ = response.send(result);
     } else if let Err(error) = result {
@@ -477,7 +512,7 @@ async fn exchange(
     id: u64,
     call: &Call,
     request: &[u8],
-) -> Result<Result<Value>> {
+) -> Result<Result<Box<RawValue>>> {
     timeout(call.limits.timeout, input.write_all(request))
         .await
         .context("Write plugin request timed out")??;
@@ -485,39 +520,47 @@ async fn exchange(
         let message = timeout(call.limits.timeout, output.read(call.limits.response))
             .await
             .context("Read plugin response timed out")??;
-        if message.get("id").is_some() {
-            let subscription = message["wakeSubscription"].as_u64();
-            let result = response(message, id)?;
+        if message.id.is_some() {
+            let subscription = message.wake_subscription;
+            let result = decode_reply(message, id)?;
             if let (Some(state), Some(subscription)) = (wake_subscription, subscription) {
                 state.store(subscription, Ordering::Release);
             }
             return Ok(result);
         }
-        match (&call.chunks, message["method"].as_str()) {
+        match (&call.chunks, message.method.as_deref()) {
             (Some(StreamChunks::Speech(chunks)), Some(SPEECH_CHUNK_NOTIFICATION)) => {
-                let SpeechChunk { request_id, audio } =
-                    serde_json::from_value(message["params"].clone())
-                        .context("Invalid plugin speech chunk")?;
+                let SpeechChunk { request_id, audio } = serde_json::from_str(
+                    message
+                        .params
+                        .as_deref()
+                        .context("Missing plugin speech parameters")?
+                        .get(),
+                )
+                .context("Invalid plugin speech chunk")?;
                 ensure!(
-                    message["jsonrpc"] == "2.0" && request_id == id,
+                    message.jsonrpc == "2.0" && request_id == id,
                     "Unexpected speech chunk"
                 );
                 // Keep draining RPC frames if the player has already stopped.
                 let _ = chunks.send(audio).await;
             }
             (Some(StreamChunks::Chat(chunks)), Some(CHAT_CHUNK_NOTIFICATION)) => {
-                let params = &message["params"];
-                let text = params["text"]
-                    .as_str()
-                    .context("Missing plugin chat text")?;
+                let ChatChunk { request_id, text } = serde_json::from_str(
+                    message
+                        .params
+                        .as_deref()
+                        .context("Missing plugin chat parameters")?
+                        .get(),
+                )?;
                 ensure!(
-                    message["jsonrpc"] == "2.0"
-                        && params["requestId"].as_u64() == Some(id)
+                    message.jsonrpc == "2.0"
+                        && request_id == id
                         && !text.is_empty()
                         && text.len() <= MAX_CHAT_CHUNK_BYTES,
                     "Invalid plugin chat chunk"
                 );
-                let _ = chunks.send(text.to_owned()).await;
+                let _ = chunks.send(text).await;
             }
             _ => notify(message, sound)?,
         }
@@ -531,33 +574,47 @@ struct SpeechChunk {
     audio: SpeechAudio,
 }
 
-fn response(mut message: Value, id: u64) -> Result<Result<Value>> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatChunk {
+    request_id: u64,
+    text: String,
+}
+
+type WireReply = plugin_rpc::Response<Box<RawValue>>;
+
+fn decode_reply(message: WireReply, id: u64) -> Result<Result<Box<RawValue>>> {
     ensure!(
-        message["jsonrpc"] == "2.0" && message["id"] == id,
+        message.jsonrpc == "2.0" && message.id == Some(id),
         "Unexpected plugin RPC response"
     );
-    if let Some(result) = message
-        .as_object_mut()
-        .and_then(|value| value.remove("result"))
-    {
+    if let Some(result) = message.result {
         return Ok(Ok(result));
     }
-    let error = &message["error"];
-    let code = error["code"].as_i64().context("Invalid plugin RPC error")?;
-    let status = error["data"]["http_status"]
-        .as_u64()
+    let error = message.error.context("Invalid plugin RPC error")?;
+    let code = error.code;
+    let status = error
+        .data
+        .get("http_status")
+        .and_then(Value::as_u64)
         .filter(|status| (100..=599).contains(status));
     Ok(Err(match status {
-        Some(status) => anyhow!("Provider returned HTTP {status}"),
-        None => anyhow!("Plugin rejected the request (RPC code {code})"),
+        Some(status) => report!("Provider returned HTTP {status}"),
+        None => report!("Plugin rejected the request (RPC code {code})"),
     }))
 }
 
-fn notify(message: Value, sound: &mpsc::Sender<()>) -> Result<()> {
+#[cfg(test)]
+fn response(message: Value, id: u64) -> Result<Result<Value>> {
+    let message = serde_json::from_slice(&serde_json::to_vec(&message)?)?;
+    Ok(decode_reply(message, id)?.and_then(|value| Ok(serde_json::from_str(value.get())?)))
+}
+
+fn notify(message: WireReply, sound: &mpsc::Sender<()>) -> Result<()> {
     ensure!(
-        message["jsonrpc"] == "2.0"
-            && message.get("id").is_none()
-            && message["method"] == "play_timer_signal",
+        message.jsonrpc == "2.0"
+            && message.id.is_none()
+            && message.method.as_deref() == Some("play_timer_signal"),
         "Unexpected plugin notification"
     );
     if sound.try_send(()).is_err() {
@@ -566,7 +623,7 @@ fn notify(message: Value, sound: &mpsc::Sender<()>) -> Result<()> {
     Ok(())
 }
 
-fn encode(message: &Value, limit: usize) -> Result<Vec<u8>> {
+fn encode(message: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(message)?;
     ensure!(bytes.len() < limit, "Plugin request is too large");
     bytes.push(b'\n');
@@ -583,7 +640,7 @@ struct Frames {
 }
 
 impl Frames {
-    async fn read(&mut self, limit: usize) -> Result<Value> {
+    async fn read(&mut self, limit: usize) -> Result<WireReply> {
         loop {
             let buffer = self.reader.fill_buf().await?;
             if buffer.is_empty() {

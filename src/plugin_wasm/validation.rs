@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use wasmparser::{Encoding, Imports, Parser, Payload, TypeRef};
 
 const PAGE_SIZE: u64 = 64 * 1024;
@@ -35,7 +35,7 @@ pub(super) fn module(bytes: &[u8], host_services: bool, max_pages: u32) -> Resul
                 ensure!(imports <= MAX_FUNCTIONS, "Too many WASM imports");
                 for import in section {
                     let Imports::Single(_, import) = import? else {
-                        anyhow::bail!("WASM compact imports are unsupported");
+                        goodwin_error::bail!("WASM compact imports are unsupported");
                     };
                     ensure!(
                         import.module == "goodwin"
@@ -99,7 +99,7 @@ pub(super) fn module(bytes: &[u8], host_services: bool, max_pages: u32) -> Resul
                 }
             }
             Payload::StartSection { .. } => {
-                anyhow::bail!("WASM plugins cannot contain a start function");
+                goodwin_error::bail!("WASM plugins cannot contain a start function");
             }
             Payload::ElementSection(section) => ensure!(
                 section.count() <= MAX_SEGMENTS,

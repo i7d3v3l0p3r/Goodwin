@@ -100,7 +100,7 @@ Declare a `providers` array in the initialize result with any of `transcription`
 
 Advertise `modelCatalog: true` and implement `provider.models` to accept model selections. The catalog request is `{capability}` and returns `{models, default, available}`. Each model has an `id`, an optional `name`, and optional `voices`. When an upstream catalog is absent or temporarily unreachable, set `available` to false. The panel still accepts a model ID manually.
 
-On inference calls, the optional `selection` object carries a model ID and provider-specific `parameters`, such as `{"model":"vendor/speech","parameters":{"voice":"Russian"}}`. The plugin supplies its default model when the selection omits the ID. Wire fields such as `model`, `messages`, `input_audio`, `response_format` and `stream` are reserved and cannot be overridden through `parameters`.
+On inference calls, the optional `selection` object carries a model ID and typed `parameters`, such as `{"model":"vendor/speech","parameters":{"voice":"Russian"}}`. The plugin supplies its default model when the selection omits the ID. The supported options are `temperature` and `prompt` for transcription, `temperature` and `top_p` for chat, and `voice`, `speed`, and `instructions` for speech.
 
 Use the types in `goodwin_plugin::provider` and implement the corresponding SDK trait methods. The host sends each synthesis request as one text string. PCM may use 8–96 kHz and one or two channels. WAV input is capped at 4,000,000 bytes, PCM at 8,000,000 bytes, and chat RPC frames at 512 KiB. Provider calls have a 60-second execution deadline. Each plugin process handles requests serially.
 

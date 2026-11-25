@@ -110,6 +110,9 @@ ignored `provisioning.csv` and fill in the credentials. Keep the CSV and
 generated image local. Flashing this NVS image also replaces the saved panel
 password, provider and microphone settings.
 
+After upgrading a board with an Argon2 or PBKDF2-SHA512 panel password, use
+this USB provisioning procedure and then set a new panel password.
+
 ```sh
 python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py" generate \
   firmware/esp32s3/provisioning.csv target/esp32s3/goodwin-nvs.bin 0x6000

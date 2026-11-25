@@ -6,8 +6,8 @@ use std::{
 };
 
 #[cfg(not(target_os = "espidf"))]
-use anyhow::Context;
-use anyhow::{Result, ensure};
+use goodwin_error::Context;
+use goodwin_error::{Result, ensure};
 #[cfg(not(target_os = "espidf"))]
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
@@ -121,13 +121,48 @@ pub(crate) fn valid_model_id(id: &str) -> bool {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(from = "ModelWire")]
 pub(crate) struct Model {
-    #[serde(flatten)]
     pub selection: Selection,
     filename: String,
     format: String,
     sample_rate_hz: u32,
     size_bytes: u64,
+}
+
+#[derive(Deserialize)]
+struct ModelWire {
+    id: String,
+    wake_word: String,
+    tier: String,
+    sha256: String,
+    runtime: Runtime,
+    #[serde(default)]
+    #[cfg_attr(target_os = "espidf", serde(deserialize_with = "threshold_from_json"))]
+    score_threshold: Option<f32>,
+    filename: String,
+    format: String,
+    sample_rate_hz: u32,
+    size_bytes: u64,
+}
+
+impl From<ModelWire> for Model {
+    fn from(wire: ModelWire) -> Self {
+        Self {
+            selection: Selection {
+                id: wire.id,
+                wake_word: wire.wake_word,
+                tier: wire.tier,
+                sha256: wire.sha256,
+                runtime: wire.runtime,
+                score_threshold: wire.score_threshold,
+            },
+            filename: wire.filename,
+            format: wire.format,
+            sample_rate_hz: wire.sample_rate_hz,
+            size_bytes: wire.size_bytes,
+        }
+    }
 }
 
 impl Model {
@@ -229,7 +264,7 @@ impl Catalog {
     }
 
     pub(crate) fn parse(metadata: &[u8], runtimes: &[Runtime]) -> Result<Self> {
-        let mut catalog: Self = serde_json::from_slice(metadata)?;
+        let mut catalog: Self = goodwin_json::from_slice(metadata)?;
         ensure!(
             catalog.schema_version == 1,
             "Unsupported wake model catalog version"

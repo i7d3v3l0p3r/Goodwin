@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use goodwin_error::Result;
 use serde::Serialize;
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -67,7 +67,7 @@ pub(crate) fn latest() -> Result<String> {
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-    anyhow::bail!("Core updates are unavailable on this platform")
+    goodwin_error::bail!("Core updates are unavailable on this platform")
 }
 
 pub(crate) async fn start(version: String) -> Result<bool> {
@@ -79,7 +79,7 @@ pub(crate) async fn start(version: String) -> Result<bool> {
     #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
     {
         let _ = version;
-        anyhow::bail!("Core updates are unavailable on this platform")
+        goodwin_error::bail!("Core updates are unavailable on this platform")
     }
 }
 

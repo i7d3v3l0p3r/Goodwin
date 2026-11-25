@@ -2,6 +2,7 @@ mod assets;
 mod auth;
 mod diagnostics;
 mod events;
+mod json_body;
 mod plugin_routes;
 mod updates;
 mod wake_models;
@@ -11,15 +12,15 @@ mod tests;
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use axum::{
-    Json, Router,
+    Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
     routing::{any, delete, get, post, put},
 };
+use goodwin_error::Context;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -35,6 +36,7 @@ use auth::{
     Auth, access, login, logout, require_owner, require_password_owner, require_same_origin,
     response_headers, setup_password,
 };
+use json_body::{Json, JsonDocument};
 use plugin_routes::{
     plugin_asset, plugin_catalog, plugin_http, plugin_models, plugin_settings,
     provider_connections, remove_plugin, remove_provider_connection, save_provider_connection,
@@ -219,7 +221,7 @@ async fn chat(State(panel): State<Panel>, Json(chat): Json<Chat>) -> Response {
     StatusCode::ACCEPTED.into_response()
 }
 
-async fn clear(State(panel): State<Panel>, Json(_): Json<serde_json::Value>) -> Response {
+async fn clear(State(panel): State<Panel>, _: JsonDocument) -> Response {
     match panel.app.clear_chat() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => blocked(error),

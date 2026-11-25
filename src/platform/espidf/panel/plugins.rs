@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
-use anyhow::{Result, ensure};
 use esp_idf_svc::{http::Method, io::Write};
+use goodwin_error::{Result, ensure};
 use goodwin_plugin::HttpRequest;
 use serde_json::{Value, json};
 
@@ -163,7 +163,7 @@ pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Re
                             request,
                             response.status,
                             "application/json",
-                            &serde_json::to_vec(&body)?,
+                            &goodwin_json::to_vec(&body)?,
                             &[],
                         )
                     } else {

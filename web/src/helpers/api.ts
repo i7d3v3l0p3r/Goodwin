@@ -29,7 +29,16 @@ export type WifiStatus = { status: "connecting" } | {
 };
 export interface ModelSelection {
   model?: string;
-  parameters?: Record<string, unknown>;
+  parameters?: ModelParameters;
+}
+
+export interface ModelParameters {
+  temperature?: number;
+  top_p?: number;
+  prompt?: string;
+  voice?: string;
+  speed?: number;
+  instructions?: string;
 }
 
 export interface PipelineStage {

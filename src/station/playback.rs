@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use tokio::{io::AsyncWriteExt, time::timeout};
 
 use crate::{
@@ -125,7 +125,9 @@ impl Player {
             streamed?;
             let status = status.context("Wait for aplay").map_err(playback_failure)?;
             if !status.success() {
-                return Err(playback_failure(anyhow::anyhow!("aplay failed: {status}")));
+                return Err(playback_failure(goodwin_error::report!(
+                    "aplay failed: {status}"
+                )));
             }
             Ok(())
         })
@@ -135,7 +137,7 @@ impl Player {
     }
 }
 
-pub(crate) fn playback_failure(error: anyhow::Error) -> Failure {
+pub(crate) fn playback_failure(error: goodwin_error::Error) -> Failure {
     log::warn!("Speech playback: {error:#}");
     Failure::Playback
 }

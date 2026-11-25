@@ -127,6 +127,54 @@ fn configuration_requires_settings_in_the_current_format() {
 }
 
 #[test]
+fn supported_provider_parameters_and_escaped_prompts_survive_a_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = r#"{
+        "access":{"mode":"open"},
+        "settings":{
+            "assistant":{"pipeline":{"speech":{"selection":{"parameters":{
+                "voice":"\ud83c\udf19", "speed":0.875, "vendor_option":{"enabled":true}
+            }}}}},
+            "sensitivity":0.5,
+            "listening":true,
+            "microphone_muted":false
+        },
+        "system_prompt":"\u0410\ud83c\udf19"
+    }"#;
+    fs::write(Config::path(dir.path()), source).unwrap();
+    let config = Config::load(dir.path()).unwrap();
+    assert_eq!(config.system_prompt, "А🌙");
+    let expected = config
+        .settings
+        .assistant
+        .pipeline
+        .speech
+        .selection
+        .parameters
+        .clone();
+    assert_eq!(expected.voice.as_deref(), Some("🌙"));
+    assert_eq!(expected.speed, Some(0.875));
+    config.save(dir.path(), false).unwrap();
+    assert!(
+        !fs::read_to_string(Config::path(dir.path()))
+            .unwrap()
+            .contains("vendor_option")
+    );
+    let saved = Config::load(dir.path()).unwrap();
+    assert_eq!(saved.system_prompt, config.system_prompt);
+    assert_eq!(
+        saved
+            .settings
+            .assistant
+            .pipeline
+            .speech
+            .selection
+            .parameters,
+        expected
+    );
+}
+
+#[test]
 fn microphone_gains_reject_nonfinite_or_out_of_range_values_independently() {
     for invalid in [0.0, 65.0, f32::NAN, f32::INFINITY] {
         let mut settings = Settings {

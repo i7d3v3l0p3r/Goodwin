@@ -1,6 +1,9 @@
-use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use goodwin_plugin::wake::{Event, Frame, Model};
+use goodwin_error::{Result, ensure};
+use goodwin_plugin::{
+    audio::scale_sample,
+    wake::{Event, Frame, Model},
+};
 
 use crate::store::{ClipInfo, FRAME_SAMPLES, LIMIT, SAMPLE_RATE, Store, WINDOW_FRAMES};
 
@@ -37,7 +40,7 @@ impl Collector {
                 return Ok(());
             }
         };
-        let pcm = STANDARD.decode(&frame.pcm)?;
+        let mut pcm = STANDARD.decode(&frame.pcm)?;
         ensure!(
             frame.sample_rate == SAMPLE_RATE && pcm.len() == FRAME_BYTES,
             "Unsupported wake audio format"
@@ -51,6 +54,12 @@ impl Collector {
         }
         if store.clips.len() >= LIMIT {
             return Ok(());
+        }
+        if frame.gain != 1.0 {
+            for bytes in pcm.as_chunks_mut::<2>().0 {
+                let sample = i16::from_le_bytes(*bytes);
+                *bytes = scale_sample(sample, frame.gain).to_le_bytes();
+            }
         }
         let window = self.0.get_or_insert_with(|| Window {
             stream: frame.stream,
@@ -112,6 +121,7 @@ impl Window {
                 sample_rate: SAMPLE_RATE,
                 frame_samples: FRAME_SAMPLES,
                 gain: self.gain,
+                gain_applied: true,
                 threshold: self.threshold,
                 scores: self.scores.clone(),
             },

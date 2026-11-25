@@ -8,10 +8,11 @@ use std::{
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::journal_format;
+
 pub(crate) const TAIL_BYTES: usize = 64 * 1024;
 const TAIL_LINES: usize = 200;
 const FILE_LIMIT: u64 = 256 * 1024;
-const ENTRY_CHAR_LIMIT: usize = 512;
 const FILE_NAME: &str = "goodwin.log";
 static FILE_ACCESS: Mutex<()> = Mutex::new(());
 
@@ -46,17 +47,9 @@ impl Log for Journal {
         let timestamp = OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_default();
-        let message: String = record
-            .args()
-            .to_string()
-            .chars()
-            .take(ENTRY_CHAR_LIMIT)
-            .map(|char| if char.is_control() { ' ' } else { char })
-            .collect();
-        let line = format!(
-            "{timestamp} {} {} {message}\n",
-            record.level(),
-            record.target()
+        let line = journal_format::line(
+            format_args!("{timestamp} {} {} ", record.level(), record.target()),
+            *record.args(),
         );
         let _ = io::stderr().write_all(line.as_bytes());
         if let Err(error) = append(&self.path, &line) {

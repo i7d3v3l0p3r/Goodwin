@@ -56,6 +56,7 @@ interface Clip {
     sampleRate: number;
     frameSamples: number;
     gain: number;
+    gainApplied: boolean;
     threshold: number;
     scores: number[];
   };

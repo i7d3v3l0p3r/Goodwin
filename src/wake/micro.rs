@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
+use goodwin_error::{Context, Result, ensure};
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 use tract_onnx::prelude::{
     DatumType, Framework, InferenceModelExt, IntoTValue, IntoTensor, Tensor, TypedModel,
@@ -63,7 +63,7 @@ impl MicroModel {
         for (index, name) in state_names.iter().enumerate() {
             let input = graph.input_fact(index + 1)?;
             let Some([1, length]) = input.shape.as_concrete() else {
-                anyhow::bail!("Invalid Micro state input {name}");
+                goodwin_error::bail!("Invalid Micro state input {name}");
             };
             ensure!(
                 input.datum_type == DatumType::F32 && *length > 0,
@@ -99,7 +99,7 @@ impl MicroModel {
         let mut outputs = self.plan.run(inputs)?.into_iter();
         let score = outputs.next().context("Micro score missing")?;
         let &[score] = score.as_slice::<f32>()? else {
-            anyhow::bail!("Micro model returned more or fewer than one score");
+            goodwin_error::bail!("Micro model returned more or fewer than one score");
         };
         ensure!(score.is_finite(), "Micro model returned an invalid score");
         self.state.extend(outputs.map(IntoTensor::into_tensor));

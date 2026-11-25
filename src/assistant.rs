@@ -1,11 +1,22 @@
-use anyhow::{Result, ensure};
+use goodwin_error::{Result, ensure};
 use goodwin_plugin::provider::{Capability, ModelSelection};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[cfg(not(target_os = "espidf"))]
 use crate::{app::Failure, plugins::Plugins, providers::Provider};
 
 pub(crate) const DEFAULT_PROVIDER: &str = "openai-compatible:openrouter";
+
+pub(crate) fn decode_settings<T: DeserializeOwned>(input: &[u8]) -> Result<T> {
+    match goodwin_json::from_slice(input) {
+        Ok(value) => Ok(value),
+        Err(error) if error.has_generic_message() => match serde_json::from_slice::<T>(input) {
+            Err(detail) => Err(detail.into()),
+            Ok(_) => Err(error.into()),
+        },
+        Err(error) => Err(error.into()),
+    }
+}
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

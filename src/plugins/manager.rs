@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
-use anyhow::{Context, Result};
+use goodwin_error::{Context, Result};
 use goodwin_plugin::{
     HttpRequest,
     provider::{Capability, ModelCatalog},
@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::{
-    config::random_bytes,
+    panel_core::random_bytes,
     station::{Player, timer_signal},
 };
 
@@ -486,7 +486,7 @@ impl Plugins {
             copy_data(&source, &destination).context("Copy plugin data for update")
         })
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(goodwin_error::Error::from)
         .and_then(|result| result)
         .and_then(|()| fs::rename(&previous, &backup).context("Save the previous plugin package"));
         if let Err(error) = prepared {
@@ -596,7 +596,9 @@ impl Manager {
             let id = manifest.id.clone();
             let directory = slot.join("data");
             tokio::task::spawn_blocking(move || {
-                Ok::<_, anyhow::Error>(connections::Store::initialize(&id, &directory)?.view(&id))
+                Ok::<_, goodwin_error::Error>(
+                    connections::Store::initialize(&id, &directory)?.view(&id),
+                )
             })
             .await??
         } else {

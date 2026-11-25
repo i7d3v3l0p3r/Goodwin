@@ -1,6 +1,5 @@
-use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
-use serde_json::json;
+use goodwin_error::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
 
 use crate::panel_core::Message;
 
@@ -38,7 +37,8 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
 
     pub(crate) fn transcribe(&self, wav: &[u8]) -> Result<String> {
         let mut random = [0_u8; 8];
-        getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("Generate recording boundary"))?;
+        getrandom::fill(&mut random)
+            .map_err(|_| goodwin_error::report!("Generate recording boundary"))?;
         let boundary = format!("goodwin-{:016x}", u64::from_le_bytes(random));
         let model = &self.settings.stt_model;
         let content_type = format!("multipart/form-data; boundary={boundary}");
@@ -58,7 +58,7 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         struct Response {
             text: String,
         }
-        Ok(serde_json::from_slice::<Response>(&reply)?.text)
+        Ok(goodwin_json::from_slice::<Response>(&reply)?.text)
     }
 
     pub(crate) fn reply(&self, user: &str, instructions: &str) -> Result<String> {
@@ -70,19 +70,32 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         &self,
         request: goodwin_plugin::provider::ChatRequest,
     ) -> Result<crate::voice_core::tools::CompletionMessage> {
-        let mut body = serde_json::to_value(request)?;
-        body["model"] = json!(self.settings.chat_model);
-        let body = serde_json::to_vec(&body)?;
+        use goodwin_plugin::provider::{ChatCompletion, ChatPayload, ChatRole};
+
+        let body = goodwin_json::to_vec(&ChatPayload::new(
+            &self.settings.chat_model,
+            &request,
+            false,
+            false,
+        ))?;
         let reply = self.response(
             "/chat/completions",
             "application/json",
             &[&body],
             JSON_LIMIT,
         )?;
-        let reply: serde_json::Value = serde_json::from_slice(&reply)?;
-        let message = &reply["choices"][0]["message"];
-        ensure!(message.is_object(), "Chat returned no message");
-        Ok(crate::voice_core::tools::CompletionMessage(message.clone()))
+        let completion = goodwin_json::from_slice::<ChatCompletion>(&reply)?
+            .choices
+            .into_iter()
+            .next()
+            .context("Chat returned no message")?;
+        ensure!(
+            completion.message.role == ChatRole::Assistant,
+            "Invalid completion role"
+        );
+        Ok(crate::voice_core::tools::CompletionMessage(
+            completion.message,
+        ))
     }
 
     pub(crate) fn chat(
@@ -95,17 +108,33 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
     }
 
     fn complete(&self, user: &str, instructions: &str, history: &[Message]) -> Result<String> {
-        let mut messages = vec![json!({"role": "system", "content": instructions})];
-        messages.extend(history.iter().rev().map(|message| {
-            json!({
-                "role": message.role, "content": message.text,
-            })
+        #[derive(Serialize)]
+        struct ChatMessage<'a> {
+            role: &'static str,
+            content: &'a str,
+        }
+        #[derive(Serialize)]
+        struct ChatInput<'a> {
+            model: &'a str,
+            messages: Vec<ChatMessage<'a>>,
+        }
+        let mut messages = Vec::with_capacity(history.len() + 2);
+        messages.push(ChatMessage {
+            role: "system",
+            content: instructions,
+        });
+        messages.extend(history.iter().rev().map(|message| ChatMessage {
+            role: message.role,
+            content: &message.text,
         }));
-        messages.push(json!({"role": "user", "content": user}));
-        let body = serde_json::to_vec(&json!({
-            "model": self.settings.chat_model,
-            "messages": messages,
-        }))?;
+        messages.push(ChatMessage {
+            role: "user",
+            content: user,
+        });
+        let body = goodwin_json::to_vec(&ChatInput {
+            model: &self.settings.chat_model,
+            messages,
+        })?;
         let reply = self.response(
             "/chat/completions",
             "application/json",
@@ -124,7 +153,7 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         struct Response {
             choices: Vec<Choice>,
         }
-        let answer = serde_json::from_slice::<Response>(&reply)?
+        let answer = goodwin_json::from_slice::<Response>(&reply)?
             .choices
             .into_iter()
             .next()
@@ -150,12 +179,19 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         answer: &str,
         mut consume: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<()> {
-        let body = serde_json::to_vec(&json!({
-            "model": self.settings.tts_model,
-            "input": answer,
-            "voice": self.settings.voice,
-            "response_format": "pcm",
-        }))?;
+        #[derive(Serialize)]
+        struct SpeechInput<'a> {
+            model: &'a str,
+            input: &'a str,
+            voice: &'a str,
+            response_format: &'static str,
+        }
+        let body = goodwin_json::to_vec(&SpeechInput {
+            model: &self.settings.tts_model,
+            input: answer,
+            voice: &self.settings.voice,
+            response_format: "pcm",
+        })?;
         self.post(
             "/audio/speech",
             "application/json",

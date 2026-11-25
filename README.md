@@ -139,6 +139,8 @@ Sign in to the panel and use **Plugins → Upload package** to install a trusted
 
 If you previously set up open access, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Your saved settings and API key are retained.
 
+After upgrading a Mini 3 with an Argon2 or PBKDF2-SHA512 panel password, use the same command to set a password before signing in. Managed installations use `/data/opt/etc/goodwin` as the data directory.
+
 The Windows Station build produces `target/plugins/timers-wasm32.tar.gz` and `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. Updating an existing Timers installation with the WASM package retains its saved timers. For voice commands, select an answer model that supports tool calling. Panel timers and their sounds run locally.
 
 Upload `wake-dataset-wasm32.tar.gz` to collect and label Station recordings for wake-word training. Open **Wake-word dataset** in the password-protected panel and start collection. Listen to recordings, mark whether the wake word is present, and choose **Download labelled dataset**. See the [dataset plugin guide](plugins/wake-dataset/) for the audio format and metadata.

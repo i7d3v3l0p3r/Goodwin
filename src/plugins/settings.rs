@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use anyhow::{Result, ensure};
+use goodwin_error::{Result, ensure};
 use goodwin_plugin::settings::SettingsData;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
