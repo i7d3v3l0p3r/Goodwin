@@ -24,7 +24,7 @@ upload_parent=$(cd "${upload%/*}" && pwd -P) || fail 'Could not resolve the uplo
 upload_root=$(cd "$upload" && pwd -P) || fail 'Could not open the upload directory.'
 # Some firmware mounts the persistent data partition at /bkupgrade/data.
 [ "$upload_root" = "$upload_parent/${upload##*/}" ] || fail 'The upload directory is outside its expected parent.'
-case "$choice" in keep|standard|micro|catalog|core) ;; *) fail 'Invalid installation option.' ;; esac
+case "$choice" in keep|catalog|core) ;; *) fail 'Invalid installation option.' ;; esac
 [ "$(id -u)" = 0 ] || fail 'Goodwin installation requires root.'
 
 bin=/data/opt/bin/goodwin
@@ -37,7 +37,6 @@ mode=fresh
 changed=0
 start_attempted=0
 was_running=0
-replace_models=0
 
 exists() {
     [ -e "$1" ] || [ -L "$1" ]
@@ -58,17 +57,6 @@ rollback() {
             mv -f "$stage/old-bin" "$bin" || return 1
         fi
         if exists "$stage/old-hook"; then mv -f "$stage/old-hook" "$hook" || return 1; fi
-        if exists "$stage/old-models"; then
-            if exists "$data/models"; then mv "$data/models" "$stage/failed-models" || return 1; fi
-            mv "$stage/old-models" "$data/models" || return 1
-        elif [ "$replace_models" = 1 ] && ! exists "$stage/new-models"; then
-            mv "$data/models" "$stage/failed-models" || return 1
-        fi
-        if exists "$stage/old-model"; then
-            mv -f "$stage/old-model" "$data/model" || return 1
-        elif { [ "$choice" = standard ] || [ "$choice" = micro ]; } && ! exists "$stage/new-model"; then
-            rm -f "$data/model" || return 1
-        fi
         if [ "$choice" = catalog ]; then
             if ! exists "$stage/new-catalog-models"; then
                 mv "$data/wake-models" "$stage/new-catalog-models" || return 1
@@ -134,7 +122,6 @@ fi
 if exists "$bin" || exists "$data" || exists "$hook"; then
     if [ ! -f "$bin" ] || [ ! -f "$data/config.json" ] || [ ! -x "$hook" ] ||
         [ -L "$bin" ] || [ -L "$data" ] || [ -L "$hook" ] ||
-        [ -L "$data/models" ] || [ -L "$data/model" ] ||
         [ -L "$data/wake-models" ] || [ -L "$data/wake-model.json" ]; then
         printf '%s\n' 'GOODWIN_INSTALL_ERROR layout'
         echo 'The existing installation does not match the Goodwin service layout.' >&2
@@ -149,72 +136,33 @@ if [ "$choice" = core ]; then
 elif [ "$choice" = catalog ]; then
     echo 'Checking the downloaded wake model…'
     extension=onnx
-    if [ -f "$payload/wake-model.tflite" ]; then
-        extension=tflite
-        "$stage/new-bin" wake-check "$payload/wake-model.tflite" "$payload/wake-model.json" ||
-            fail_model 'The selected Goodwin build could not load the INT8 wake model.'
-    else
-        "$stage/new-bin" wake-check "$payload/wake-model.onnx" ||
-            fail_model 'The selected Goodwin build could not load the ONNX wake model.'
-    fi
-    hash=$(sha256sum "$payload/wake-model.$extension")
+    if [ -f "$payload/wake-model.tflite" ]; then extension=tflite; fi
+    model_file=$payload/wake-model.$extension
+    "$stage/new-bin" wake-check "$model_file" "$payload/wake-model.json" ||
+        fail_model 'The selected Goodwin build could not load the downloaded wake model.'
+    hash=$(sha256sum "$model_file")
     mkdir "$stage/new-catalog-models"
-    mv "$payload/wake-model.$extension" "$stage/new-catalog-models/${hash%% *}.$extension"
+    mv "$model_file" "$stage/new-catalog-models/${hash%% *}.$extension"
     mv "$payload/wake-model.json" "$stage/new-catalog-selection"
-elif [ -d "$payload/models" ]; then
-    model=standard
-    if [ "$choice" != keep ]; then
-        model=$choice
-    elif [ "$mode" = update ] && exists "$data/model"; then
-        read -r model < "$data/model"
-    fi
-    case "$model" in standard|micro) ;; *) fail 'Invalid bundled model selection.' ;; esac
-    echo "Checking the $model wake model…"
-    "$stage/new-bin" wake-check "$payload/models/$model.onnx" ||
-        fail_model 'The selected Goodwin build could not load the bundled wake model.'
-    printf '%s\n' "$model" > "$stage/new-model"
-elif [ "$choice" != keep ] || [ "$mode" = fresh ]; then
+elif [ "$mode" = fresh ]; then
     fail_model 'The selected wake model is missing from the installation payload.'
 fi
 
-if [ "$mode" = update ] && [ "$choice" != catalog ] &&
-    [ -f "$data/wake-model.json" ] &&
-    grep -q '"runtime"[[:space:]]*:[[:space:]]*"livekit-v2-micro-tflite"' "$data/wake-model.json"; then
+if [ "$mode" = update ] && [ "$choice" != catalog ] && [ -f "$data/wake-model.json" ]; then
     "$stage/new-bin" wake-check --installed "$data" ||
-        fail_model 'The selected Goodwin build could not load the installed INT8 wake model.'
+        fail_model 'The selected Goodwin build could not use the installed wake model.'
 fi
 
 if [ "$mode" = fresh ]; then
     mkdir -p /data/opt/bin /data/opt/etc /data/init.d
     "$stage/new-bin" setup "$stage/new-data"
-    if [ "$choice" = catalog ]; then
-        mv "$stage/new-catalog-models" "$stage/new-data/wake-models"
-        mv "$stage/new-catalog-selection" "$stage/new-data/wake-model.json"
-    else
-        mv "$payload/models" "$stage/new-data/models"
-        mv "$stage/new-model" "$stage/new-data/model"
-    fi
+    mv "$stage/new-catalog-models" "$stage/new-data/wake-models"
+    mv "$stage/new-catalog-selection" "$stage/new-data/wake-model.json"
     changed=1
     mv "$stage/new-bin" "$bin"
     mv "$stage/new-data" "$data"
     mv "$stage/new-hook" "$hook"
 else
-    if [ -d "$payload/models" ]; then
-        for name in standard.onnx micro.onnx LICENSE NOTICE; do
-            if ! cmp -s "$payload/models/$name" "$data/models/$name"; then
-                replace_models=1
-                break
-            fi
-        done
-    fi
-    if [ "$replace_models" = 1 ]; then
-        mkdir "$stage/new-models"
-        if [ -d "$data/models" ]; then cp -pR "$data/models/." "$stage/new-models/"; fi
-        for name in standard.onnx micro.onnx LICENSE NOTICE; do
-            rm -f "$stage/new-models/$name"
-            mv "$payload/models/$name" "$stage/new-models/$name"
-        done
-    fi
     if "$hook" status; then was_running=1; fi
     if ! "$hook" stop; then
         [ "$was_running" = 1 ] || fail 'Could not stop Goodwin.'
@@ -238,18 +186,11 @@ else
         mv "$hook" "$stage/old-hook"
         mv "$stage/new-hook" "$hook"
     fi
-    if [ "$replace_models" = 1 ]; then
-        if exists "$data/models"; then mv "$data/models" "$stage/old-models"; fi
-        mv "$stage/new-models" "$data/models"
-    fi
     if [ "$choice" = catalog ]; then
         if exists "$data/wake-models"; then mv "$data/wake-models" "$stage/old-catalog-models"; fi
         if exists "$data/wake-model.json"; then mv "$data/wake-model.json" "$stage/old-catalog-selection"; fi
         mv "$stage/new-catalog-models" "$data/wake-models"
         mv "$stage/new-catalog-selection" "$data/wake-model.json"
-    elif [ "$choice" != keep ] && [ "$choice" != core ]; then
-        if exists "$data/model"; then mv "$data/model" "$stage/old-model"; fi
-        mv "$stage/new-model" "$data/model"
     fi
 fi
 

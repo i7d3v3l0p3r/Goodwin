@@ -2,9 +2,10 @@ use anyhow::{Result, ensure};
 use goodwin_plugin::provider::{Capability, ModelSelection};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_os = "espidf"))]
 use crate::{app::Failure, plugins::Plugins, providers::Provider};
 
-const DEFAULT_PROVIDER: &str = "openrouter";
+pub(crate) const DEFAULT_PROVIDER: &str = "openai-compatible:openrouter";
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +68,7 @@ impl PipelineSettings {
 }
 
 impl AssistantSettings {
+    #[cfg(not(target_os = "espidf"))]
     pub fn resolve(&self, plugins: &Plugins, capability: Capability) -> Result<Provider, Failure> {
         match self.engine {
             Engine::Pipeline => plugins.resolve_provider(self.pipeline.get(capability), capability),

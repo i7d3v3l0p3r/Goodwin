@@ -18,6 +18,7 @@ use goodwin_plugin::{
 use tokio::sync::Notify;
 
 use super::*;
+use crate::plugins::connections;
 
 macro_rules! wasm {
     ($name:literal) => {
@@ -52,6 +53,21 @@ async fn plugin(root: &Path, data: &Path, manifest: &Manifest) -> (Process, Regi
     Process::start(root, data, manifest, sound, changes)
         .await
         .unwrap()
+}
+
+fn save_connection_fixture(data: &Path, endpoint: &str, key: &str) {
+    let mut store = connections::Store::default();
+    store
+        .update(
+            serde_json::from_value(json!({
+                "name": "Fixture", "protocol": "openai", "baseUrl": endpoint, "key": key,
+            }))
+            .unwrap(),
+            || Ok("fixture".into()),
+        )
+        .ok()
+        .unwrap();
+    store.save(data).unwrap();
 }
 
 #[tokio::test]
@@ -165,23 +181,21 @@ async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams(
                 json!({"baseUrlSetting":"base_url","keySetting":"key","requireKey":true});
         }
         let manifest = install(root.path(), manifest, module);
-        let mut settings = SettingsData::default();
-        settings
-            .values
-            .insert("base_url".into(), json!(format!("{server}/v1")));
-        settings.secrets.insert("key".into(), "fixture".into());
-        settings.save(root.path()).unwrap();
-        let (provider, registration) = plugin(root.path(), root.path(), &manifest).await;
-        let provider = if router_protocol {
-            provider
+        let endpoint = format!("{server}/v1");
+        if router_protocol {
+            let mut settings = SettingsData::default();
+            settings.values.insert("base_url".into(), json!(endpoint));
+            settings.secrets.insert("key".into(), "fixture".into());
+            settings.save(root.path()).unwrap();
         } else {
-            crate::plugins::connections::Store::load_or_migrate(
-                name,
-                root.path(),
-                &root.path().join("legacy-router"),
-            )
-            .unwrap();
-            provider.for_connection("default", true)
+            save_connection_fixture(root.path(), &endpoint, "fixture");
+        }
+
+        let (process, registration) = plugin(root.path(), root.path(), &manifest).await;
+        let provider = if router_protocol {
+            process
+        } else {
+            process.for_connection("fixture", true)
         };
         assert!(registration.chat_streaming && registration.model_catalog);
         let timer_root = tempfile::tempdir().unwrap();
@@ -337,19 +351,9 @@ async fn stopping_wasm_plugin_cancels_http_header_and_body_waits() {
             .unwrap(),
             wasm!("openai-compatible"),
         );
-        let mut settings = SettingsData::default();
-        settings
-            .values
-            .insert("base_url".into(), json!(format!("{address}/v1")));
-        settings.save(root.path()).unwrap();
-        crate::plugins::connections::Store::load_or_migrate(
-            &manifest.id,
-            root.path(),
-            &root.path().join("legacy-router"),
-        )
-        .unwrap();
+        save_connection_fixture(root.path(), &format!("{address}/v1"), "");
         let (process, _) = plugin(root.path(), root.path(), &manifest).await;
-        let provider = process.for_connection("default", true);
+        let provider = process.for_connection("fixture", true);
         let mut chat = provider
             .stream_chat(
                 &serde_json::from_value(json!({
@@ -382,7 +386,7 @@ async fn stopping_wasm_plugin_cancels_http_header_and_body_waits() {
 }
 
 #[tokio::test]
-async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
+async fn named_connections_route_independently_and_persist_after_restart() {
     let router = Router::new()
         .route(
             "/first/models",
@@ -402,18 +406,8 @@ async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
     let root = tempfile::tempdir().unwrap();
     let installed = root.path().join("plugins/installed");
     let slot = installed.join("openai-compatible");
-    let data = slot.join("data");
-    let old_router = installed.join("openrouter/data");
-    fs::create_dir_all(&data).unwrap();
-    fs::create_dir_all(&old_router).unwrap();
-    let mut old = SettingsData::default();
-    old.values
-        .insert("base_url".into(), json!(format!("{server}/first")));
-    old.secrets.insert("key".into(), "first-key".into());
-    old.save(&data).unwrap();
-    let mut old = SettingsData::default();
-    old.secrets.insert("key".into(), "router-key".into());
-    old.save(&old_router).unwrap();
+    fs::create_dir_all(slot.join("data")).unwrap();
+    fs::create_dir_all(installed.join("openrouter/data")).unwrap();
     install(
         &slot.join("package"),
         serde_json::from_str(include_str!(
@@ -429,48 +423,38 @@ async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
     );
 
     let plugins = crate::plugins::Plugins::new(root.path(), crate::station::Player::new());
-    plugins.restore_selected(&["openrouter"]).await;
+    let router_provider = crate::assistant::DEFAULT_PROVIDER;
+    plugins
+        .restore_selected(&[router_provider, "openrouter"])
+        .await;
     assert!(plugins.settings("openrouter").await.is_ok());
     assert!(plugins.provider("openrouter", Capability::Chat).is_some());
-    plugins.restore_selected(&["openai-compatible"]).await;
-    assert!(plugins.settings("openrouter").await.is_err());
     assert!(
         plugins
-            .update_settings(
-                "openrouter",
-                serde_json::from_value(json!({"key":"obsolete-key"})).unwrap(),
-            )
-            .await
-            .is_err()
+            .provider(router_provider, Capability::Chat)
+            .is_some()
     );
-    let legacy = serde_json::to_value(plugins.catalog())
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["id"] == "openrouter")
-        .unwrap()
-        .clone();
-    assert_eq!(legacy["settings_redirect"], "openai-compatible");
-    assert_eq!(legacy["providers"], json!([]));
     assert!(
         plugins
             .provider("openai-compatible", Capability::Chat)
-            .is_some()
+            .is_none()
     );
-    assert!(plugins.provider("openrouter", Capability::Chat).is_some());
-    let old =
+
+    let connections =
         serde_json::to_value(plugins.connections("openai-compatible").await.ok().unwrap()).unwrap();
-    let router = old
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["providerId"] == "openrouter")
-        .unwrap();
+    let [router] = connections.as_array().unwrap().as_slice() else {
+        panic!("Expected the initial OpenRouter connection");
+    };
+    assert_eq!(router["providerId"], router_provider);
     assert_eq!(router["protocol"], "openrouter");
-    assert_eq!(router["hasKey"], true);
+    assert_eq!(router["hasKey"], false);
     assert_eq!(router["speechStreaming"], false);
     assert!(router.get("key").is_none());
+
+    let (first_id, _) = plugins.save_connection("openai-compatible", serde_json::from_value(json!({
+        "name":"First server", "protocol":"openai", "baseUrl":format!("{server}/first"), "key":"first-key",
+    })).unwrap()).await.ok().unwrap();
+    let first_provider = format!("openai-compatible:{first_id}");
     let (id, views) = plugins.save_connection("openai-compatible", serde_json::from_value(json!({
         "name":"Second server", "protocol":"openai", "baseUrl":format!("{server}/second"), "key":"second-key",
     })).unwrap()).await.ok().unwrap();
@@ -481,7 +465,7 @@ async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
             .any(|connection| connection.provider_id == provider)
     );
     let first = plugins
-        .models("openai-compatible", Capability::Chat)
+        .models(&first_provider, Capability::Chat)
         .await
         .ok()
         .unwrap();
@@ -500,13 +484,17 @@ async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
             .unwrap()
             .contains("Renamed server")
     );
-    let (stale, _) = plugins.provider("openrouter", Capability::Chat).unwrap();
+    let (stale, _) = plugins.provider(router_provider, Capability::Chat).unwrap();
     plugins
         .remove_connection("openai-compatible", "openrouter".into())
         .await
         .ok()
         .unwrap();
-    assert!(plugins.provider("openrouter", Capability::Chat).is_none());
+    assert!(
+        plugins
+            .provider(router_provider, Capability::Chat)
+            .is_none()
+    );
     let error = stale
         .models(Capability::Chat)
         .await
@@ -526,7 +514,11 @@ async fn unified_provider_keeps_legacy_bindings_and_routes_named_connections() {
     );
     plugins.shutdown().await;
     plugins.restore().await;
-    assert!(plugins.provider("openrouter", Capability::Chat).is_none());
+    assert!(
+        plugins
+            .provider(router_provider, Capability::Chat)
+            .is_none()
+    );
     assert_eq!(
         plugins
             .models(&provider, Capability::Chat)

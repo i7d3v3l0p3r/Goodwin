@@ -80,7 +80,7 @@ async fn explicit_chat_tests_keep_the_model_used_when_the_request_started() {
     let dir = tempfile::tempdir().unwrap();
     let app = test_app(dir.path());
     app.plugins.mock_provider(
-        "openrouter",
+        crate::assistant::DEFAULT_PROVIDER,
         crate::plugins::Process::mock_rpc(|method, body| {
             assert_eq!(method, "provider.complete");
             let messages = body["messages"].as_array().unwrap();

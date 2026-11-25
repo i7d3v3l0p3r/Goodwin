@@ -12,7 +12,9 @@ use url::Url;
 
 use super::settings::{self, Field};
 
+#[cfg(not(target_os = "espidf"))]
 pub const ARCHIVE_LIMIT: usize = 16 * 1024 * 1024;
+#[cfg(not(target_os = "espidf"))]
 const EXPANDED_LIMIT: u64 = 48 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 32 * 1024;
 pub const API_VERSION: u32 = 1;
@@ -41,33 +43,33 @@ pub struct Manifest {
     api_version: u32,
     target: String,
     pub executable: String,
-    pub(super) wasm_state_file: Option<String>,
-    pub(super) wasm_http: Option<WasmHttp>,
+    pub(crate) wasm_state_file: Option<String>,
+    pub(crate) wasm_http: Option<WasmHttp>,
     #[serde(default)]
-    pub(super) provider_connections: bool,
+    pub(crate) provider_connections: bool,
     #[serde(default)]
     #[cfg_attr(
         not(all(feature = "wasm-plugins", target_os = "linux")),
         allow(dead_code)
     )]
-    pub(super) wasm_storage: bool,
+    pub(crate) wasm_storage: bool,
     pub web: Option<Web>,
     #[serde(default)]
-    pub(super) settings: Vec<Field>,
+    pub(crate) settings: Vec<Field>,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WasmHttp {
-    pub(super) base_url: Option<String>,
-    pub(super) base_url_setting: Option<String>,
-    pub(super) key_setting: String,
+pub(crate) struct WasmHttp {
+    pub(crate) base_url: Option<String>,
+    pub(crate) base_url_setting: Option<String>,
+    pub(crate) key_setting: String,
     #[serde(default)]
     #[cfg_attr(
         not(all(feature = "wasm-plugins", target_os = "linux")),
         allow(dead_code)
     )]
-    pub(super) require_key: bool,
+    pub(crate) require_key: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -129,7 +131,7 @@ pub fn path(value: &str) -> bool {
 }
 
 impl Manifest {
-    pub(super) fn is_wasm(&self) -> bool {
+    pub(crate) fn is_wasm(&self) -> bool {
         self.target == "wasm32"
     }
 
@@ -180,10 +182,11 @@ impl Manifest {
                 );
             }
         }
-        let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let native_target = !cfg!(target_os = "espidf")
+            && manifest.target == format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         ensure!(
-            manifest.is_wasm() || manifest.target == target,
-            "Plugin requires {} but this host is {target}",
+            manifest.is_wasm() || native_target,
+            "Plugin target {} is unsupported on this build",
             manifest.target
         );
         ensure!(
@@ -225,7 +228,7 @@ impl Manifest {
     }
 
     pub fn prepare_executable(&self, _root: &Path) -> Result<()> {
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "espidf")))]
         {
             use std::os::unix::fs::PermissionsExt;
             if !self.is_wasm() {
@@ -243,24 +246,135 @@ pub fn web_file(root: &Path, relative: &str) -> Option<PathBuf> {
     if !relative.starts_with("ui/") || !path(relative) {
         return None;
     }
-    let root = root.canonicalize().ok()?;
-    let file = root.join(relative).canonicalize().ok()?;
-    (file.starts_with(root.join("ui")) && file.is_file()).then_some(file)
+    // The ESP plugin volume has no links. FAT VFS does not implement realpath.
+    #[cfg(target_os = "espidf")]
+    {
+        let file = root.join(relative);
+        file.is_file().then_some(file)
+    }
+    #[cfg(not(target_os = "espidf"))]
+    {
+        let root = root.canonicalize().ok()?;
+        let file = root.join(relative).canonicalize().ok()?;
+        (file.starts_with(root.join("ui")) && file.is_file()).then_some(file)
+    }
 }
 
+pub(crate) fn asset_mime(path: &str) -> Option<&'static str> {
+    Some(match path.rsplit_once('.')?.1 {
+        "mjs" | "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "png" => "image/png",
+        "jpeg" | "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "woff2" => "font/woff2",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn extract(bytes: &[u8], root: &Path) -> Result<Manifest> {
     let mut archive = tar::Archive::new(GzDecoder::new(bytes).take(EXPANDED_LIMIT + 1024 * 1024));
-    fs::create_dir(root)?;
-    let mut seen = HashSet::new();
-    let mut total = 0;
+    let mut files = ArchiveFiles::new(root, EXPANDED_LIMIT)?;
     for entry in archive.entries()?.raw(true) {
         let mut entry = entry?;
-        let relative = entry.path_bytes();
+        let relative = entry.path_bytes().into_owned();
         let relative = std::str::from_utf8(&relative).context("Invalid plugin path encoding")?;
         ensure!(
-            entry.header().entry_type().is_file() && path(relative),
-            "Archive entries must be regular files with portable relative paths"
+            entry.header().entry_type().is_file(),
+            "Archive entries must be regular files"
         );
+        files.write(relative, entry.size(), &mut entry)?;
+    }
+    // Read the gzip trailer too, so a damaged upload cannot be accepted after the tar end marker.
+    let mut stream = archive.into_inner();
+    io::copy(&mut stream, &mut io::sink())?;
+    ensure!(stream.limit() > 0, "Expanded plugin archive is too large");
+    files.finish()
+}
+
+#[cfg(target_os = "espidf")]
+pub(crate) fn extract_reader(reader: impl Read, root: &Path, limit: u64) -> Result<Manifest> {
+    use std::io::BufReader;
+
+    const BLOCK: usize = 512;
+    // The package builder writes POSIX ustar with regular files and no extension entries.
+    let mut stream = BufReader::new(GzDecoder::new(reader).take(limit + 1024 * 1024));
+    let mut files = ArchiveFiles::new(root, limit)?;
+    let mut header = [0; BLOCK];
+    loop {
+        stream.read_exact(&mut header)?;
+        if header.iter().all(|byte| *byte == 0) {
+            stream.read_exact(&mut header)?;
+            ensure!(
+                header.iter().all(|byte| *byte == 0),
+                "Invalid tar terminator"
+            );
+            io::copy(&mut stream, &mut io::sink())?;
+            ensure!(
+                stream.get_ref().limit() > 0,
+                "Expanded plugin archive is too large"
+            );
+            return files.finish();
+        }
+        ensure!(
+            &header[257..263] == b"ustar\0" && matches!(header[156], b'0' | 0),
+            "Expected a regular ustar file"
+        );
+        let checksum: u64 = header
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| u64::from(if (148..156).contains(&i) { b' ' } else { *byte }))
+            .sum();
+        ensure!(
+            checksum == tar_number(&header[148..156])?,
+            "Invalid tar header checksum"
+        );
+        let name = tar_field(&header[..100])?;
+        let prefix = tar_field(&header[345..500])?;
+        let name = if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let size = tar_number(&header[124..136])?;
+        files.write(&name, size, (&mut stream).take(size))?;
+        let padding = ((BLOCK as u64 - size % BLOCK as u64) % BLOCK as u64) as usize;
+        stream.read_exact(&mut header[..padding])?;
+    }
+}
+
+#[cfg(target_os = "espidf")]
+fn tar_field(bytes: &[u8]) -> Result<&str> {
+    Ok(std::str::from_utf8(
+        bytes.split(|byte| *byte == 0).next().unwrap_or_default(),
+    )?)
+}
+
+#[cfg(target_os = "espidf")]
+fn tar_number(bytes: &[u8]) -> Result<u64> {
+    Ok(u64::from_str_radix(tar_field(bytes)?.trim_ascii(), 8)?)
+}
+
+struct ArchiveFiles<'a> {
+    root: &'a Path,
+    remaining: u64,
+    seen: HashSet<String>,
+}
+
+impl<'a> ArchiveFiles<'a> {
+    fn new(root: &'a Path, remaining: u64) -> Result<Self> {
+        fs::create_dir(root)?;
+        Ok(Self {
+            root,
+            remaining,
+            seen: HashSet::new(),
+        })
+    }
+
+    fn write(&mut self, relative: &str, size: u64, mut entry: impl Read) -> Result<()> {
+        ensure!(path(relative), "Invalid plugin archive path");
         ensure!(
             relative == "manifest.json"
                 || relative.starts_with("bin/")
@@ -268,31 +382,30 @@ pub fn extract(bytes: &[u8], root: &Path) -> Result<Manifest> {
             "Unexpected plugin package path"
         );
         ensure!(
-            seen.len() < 256 && seen.insert(relative.to_owned()),
+            self.seen.len() < 256 && self.seen.insert(relative.to_owned()),
             "Too many or repeated archive entries"
         );
-        total += entry.size().min(EXPANDED_LIMIT + 1);
-        ensure!(
-            total <= EXPANDED_LIMIT,
-            "Expanded plugin package is too large"
-        );
-        let output = root.join(relative);
+        self.remaining = self
+            .remaining
+            .checked_sub(size)
+            .context("Expanded plugin package is too large")?;
+        let output = self.root.join(relative);
         fs::create_dir_all(output.parent().expect("relative archive path"))?;
         let mut file = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(output)?;
         ensure!(
-            io::copy(&mut entry, &mut file)? == entry.size(),
+            io::copy(&mut entry, &mut file)? == size,
             "Incomplete archive entry"
         );
         file.sync_all()?;
+        Ok(())
     }
-    // Read the gzip trailer too, so a damaged upload cannot be accepted after the tar end marker.
-    let mut stream = archive.into_inner();
-    io::copy(&mut stream, &mut io::sink())?;
-    ensure!(stream.limit() > 0, "Expanded plugin archive is too large");
-    let manifest = Manifest::read(root)?;
-    manifest.prepare_executable(root)?;
-    Ok(manifest)
+
+    fn finish(self) -> Result<Manifest> {
+        let manifest = Manifest::read(self.root)?;
+        manifest.prepare_executable(self.root)?;
+        Ok(manifest)
+    }
 }

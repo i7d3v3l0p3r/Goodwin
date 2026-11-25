@@ -8,24 +8,18 @@ use goodwin_plugin::wake::{Event, Frame, Model};
 
 use crate::{
     app::{ActiveTurn, App, Failure, Source, Stage},
+    voice_core::{PRE_ROLL, RecordingGain, VoiceActivity, scale_sample},
     wake::{FRAME_SAMPLES as WAKE_SAMPLES, SAMPLE_RATE as RATE, WakeModel},
     wake_catalog::Selection,
 };
 
-use super::gain::{RecordingGain, scale_sample};
-
 #[cfg(test)]
 mod tests;
 
-const PRE_ROLL: usize = RATE * 6 / 5;
-pub(super) const VAD_SAMPLES: usize = RATE / 50;
-const FIRST_SPEECH_TIMEOUT: usize = RATE * 7 / 2;
-const END_SILENCE: usize = RATE * 7 / 10;
-const RECORDING_LIMIT: usize = RATE * 16;
+pub(crate) const VAD_SAMPLES: usize = RATE / 50;
 const WAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const SPEECH_RMS: i64 = 100;
 
-pub(super) struct Detector {
+pub(crate) struct Detector {
     model: Option<WakeModel>,
     frame: Vec<i16>,
     wake_frame: Vec<i16>,
@@ -43,14 +37,12 @@ struct Recording {
     id: u64,
     woke: bool,
     samples: Vec<i16>,
-    elapsed: usize,
-    voiced: usize,
-    silence: usize,
+    activity: VoiceActivity,
     gain: RecordingGain,
 }
 
 impl Detector {
-    pub(super) fn new(model: Option<WakeModel>) -> Self {
+    pub(crate) fn new(model: Option<WakeModel>) -> Self {
         Self {
             model,
             frame: Vec::with_capacity(VAD_SAMPLES),
@@ -66,7 +58,7 @@ impl Detector {
         }
     }
 
-    pub(super) fn with_selection(mut self, selection: Option<&Selection>) -> Self {
+    pub(crate) fn with_selection(mut self, selection: Option<&Selection>) -> Self {
         self.wake_metadata = self
             .model
             .as_ref()
@@ -87,7 +79,7 @@ impl Detector {
         }
     }
 
-    pub(super) fn clear(&mut self, app: &App) {
+    pub(crate) fn clear(&mut self, app: &App) {
         self.reset_wake(app);
         self.detection_enabled = false;
         self.wake_test = None;
@@ -95,7 +87,7 @@ impl Detector {
         self.frame.clear();
     }
 
-    pub(super) fn apply_pending_model(&mut self, app: &App) {
+    pub(crate) fn apply_pending_model(&mut self, app: &App) {
         if let Some(pending) = app.take_pending_wake_model() {
             log::info!("Wake model activated id={}", pending.selection.id);
             self.end_wake_stream(app);
@@ -109,7 +101,7 @@ impl Detector {
         }
     }
 
-    pub(super) fn push_sample(&mut self, sample: i16, app: &Arc<App>) {
+    pub(crate) fn push_sample(&mut self, sample: i16, app: &Arc<App>) {
         self.frame.push(sample);
         if self.frame.len() == VAD_SAMPLES {
             self.tick(app);
@@ -311,35 +303,13 @@ impl Recording {
             id,
             woke,
             samples,
-            elapsed: 0,
-            voiced: 0,
-            silence: 0,
+            activity: VoiceActivity::default(),
             gain,
         }
     }
 
     fn push(&mut self, frame: &[i16]) -> Option<bool> {
         self.samples.extend_from_slice(frame);
-        self.elapsed += frame.len();
-        let gain = self.gain.input_gain();
-        let energy: i64 = frame
-            .iter()
-            .map(|&sample| i64::from(scale_sample(sample, gain)).pow(2))
-            .sum();
-        if energy >= SPEECH_RMS * SPEECH_RMS * frame.len() as i64 {
-            self.voiced += frame.len();
-            self.silence = 0;
-        } else {
-            self.silence += frame.len();
-        }
-        let heard_speech = self.voiced >= RATE / 25;
-        if heard_speech && (self.silence >= END_SILENCE || self.elapsed >= RECORDING_LIMIT) {
-            return Some(true);
-        }
-        if !heard_speech && self.elapsed >= FIRST_SPEECH_TIMEOUT {
-            // A short question can already be in pre-roll when the detector fires.
-            return Some(self.woke);
-        }
-        None
+        self.activity.push(frame, self.gain.input_gain(), self.woke)
     }
 }

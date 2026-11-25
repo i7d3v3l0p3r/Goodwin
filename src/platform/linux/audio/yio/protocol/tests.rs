@@ -15,7 +15,7 @@ fn station_subscription_has_documented_wire_layout() {
     );
 }
 
-pub(in crate::station) async fn write_samples(socket: &mut TcpStream, sample: i16, frames: usize) {
+pub(crate) async fn write_samples(socket: &mut TcpStream, sample: i16, frames: usize) {
     let channels = Channels {
         channels: vec![Channel {
             name: "vqe_0".into(),

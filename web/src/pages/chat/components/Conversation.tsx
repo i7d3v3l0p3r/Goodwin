@@ -3,7 +3,6 @@ import { SymbolMark } from "../../../components/Brand";
 import { Button } from "../../../components/ui-kit/Button";
 import { InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { Icon } from "../../../components/icons";
-import { setupPath } from "../../../helpers/readiness";
 import type { Message, Snapshot } from "../../../helpers/api";
 import { errorLabel, type Words } from "../../../helpers/words";
 import { EmptyConversation } from "./EmptyConversation";
@@ -29,7 +28,7 @@ function ThreadMessage(props: { entry: Message; t: Words; progress?: string; str
 
 export function Conversation(props: {
   t: Words; snapshot?: Snapshot; draftReply?: Message; reachable: boolean; disabled: boolean; error: string;
-  draft: string; editDraft: (text: string) => void; wakeReady: boolean; setupRequired: boolean;
+  draft: string; editDraft: (text: string) => void; wakeReady: boolean; setupRequired: boolean; setupHref: string;
   send: (text: string) => Promise<boolean>;
 }) {
   const [sending, setSending] = createSignal(false);
@@ -122,7 +121,7 @@ export function Conversation(props: {
       </Show>
       <Show when={props.setupRequired && props.snapshot && props.reachable}>
         <div class={[styles.composeFeedback, styles.setupHint]} id="chat-setup-hint">
-          <a href={setupPath}>{props.t.firstRun.resume}</a>
+          <a href={props.setupHref}>{props.t.firstRun.resume}</a>
         </div>
       </Show>
       <form class={styles.compose} onSubmit={(event) => { event.preventDefault(); void send(); }}>

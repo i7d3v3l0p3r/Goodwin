@@ -1,6 +1,6 @@
 # Goodwin plugins
 
-Goodwin starts trusted native plugins as independent processes and runs WASM plugins through Wasmi. The [Timers plugin](timers/) uses the Rust SDK in [`sdk/`](sdk/) and provides a Solid page, a local scheduler, and assistant tools.
+Goodwin starts trusted native plugins as independent processes and runs WASM plugins through WAMR Fast. The [Timers plugin](timers/) uses the Rust SDK in [`sdk/`](sdk/) and provides a Solid page, a local scheduler, and assistant tools.
 
 ## Build a package
 
@@ -27,11 +27,11 @@ Goodwin runs the executable in its data directory and sets `GOODWIN_PLUGIN_DATA`
 - Optionally set `voiceContextTool` to a registered read-only tool that accepts `{}`. Goodwin may call it before each voice request and send its result to the configured model as `pluginContext`, under the plugin ID. Return a small JSON object with current state. Keep credentials and private data out of this result. Provide the same validation in the action tools as for calls made without a snapshot.
 - Send `play_timer_signal` as a JSON-RPC notification to request the host's short local timer sound.
 
-Supported Lucide names are `activity`, `audio-lines`, `calendar-days`, `database`, `download`, `headphones`, `house`, `list-checks`, `message-square-text`, `mic`, `monitor`, `plug`, `settings`, `sparkles`, and `timer`. Goodwin uses the plug icon when the name is omitted or unknown. The Rust SDK omits `icon` in replies to older hosts. When implementing JSON-RPC directly, include `icon` only if the host sends `pageIcons: true` in the `initialize` parameters.
+Supported Lucide names are `activity`, `audio-lines`, `calendar-days`, `database`, `download`, `headphones`, `house`, `list-checks`, `message-square-text`, `mic`, `monitor`, `plug`, `settings`, `sparkles`, and `timer`. Goodwin uses the plug icon when the name is omitted or unknown.
 
 ## WASM plugins
 
-Station builds include the Wasmi interpreter. To use it on a Linux development host, build the panel and enable the Cargo feature `wasm-plugins`. To build the WASM plugins and the test fixture, install Zig and the Rust target `wasm32-unknown-unknown`, then run `python scripts/build-wasm-plugins.py`.
+Station and ESP32-S3 builds use the same WAMR Fast adapter and guest contract. To use it on a Linux development host, install Git, CMake 3.23 or newer, and Ninja, build the panel, and enable the Cargo feature `wasm-plugins`. The first build fetches the pinned WAMR sources. See the [ESP32-S3 guide](../firmware/esp32s3/README.md) for that target's flash, HTTP and memory limits. To build the WASM plugins and the test fixture, install Zig and the Rust target `wasm32-unknown-unknown`, then run `python scripts/build-wasm-plugins.py`.
 
 The Timers WASM build uses `no_std` with `alloc` and enables full LTO in the build script.
 
@@ -58,7 +58,7 @@ Use exports for initialization and request handling. The host validates each mod
 For plugins that use host services, enable the SDK's `wasm-guest` feature for the WASM target and use `goodwin_plugin::wasm_plugin!`. The SDK exports `goodwin_input(length)` to allocate an exchange buffer on demand. `goodwin_buffer()` returns the reply offset after each call. Each plugin runs its calls in order. An upstream HTTP request can wait for network I/O while other plugins run.
 
 - `wasmHttp` enables provider calls. Set `baseUrl` to a fixed HTTPS API base or `baseUrlSetting` to a URL field. Set `keySetting` to the secret field used for bearer authentication. `requireKey` requires a key for POST requests. Goodwin sends HTTP and streams response chunks through its shared client with redirects disabled. The guest receives public settings and parses provider responses. Goodwin applies the bearer key in the host and cancels pending HTTP operations when the plugin stops.
-- `providerConnections` with `wasmHttp` enables named connections. Goodwin resolves the selected connection before invoking the guest and keeps its API URL and key in the host. In this mode the guest reads the selected protocol through `read_settings`. A queued call for a removed connection fails independently, and other connections continue serving requests.
+- `providerConnections` with `wasmHttp` enables named connections. Goodwin resolves the selected connection before invoking the guest and keeps its API URL and key in the host. In this mode the guest reads the selected protocol through `read_settings`. Named provider IDs have the form `<plugin-id>:<connection-id>`. A queued call for a removed connection fails independently, and other connections continue serving requests.
 - `wasmStorage` enables reads and writes relative to the plugin's data directory and lets the guest register for wake events. Wake-word dataset uses the same `.clip` format and `capture.json` as the native plugin.
 - Linear memory can grow up to 512 KiB for base plugins, 8 MiB for storage plugins and 64 MiB for HTTP providers. The provider limit accommodates the existing buffered recording and speech payloads.
 
@@ -90,7 +90,7 @@ Read the current values with `goodwin_plugin::settings::read_settings::<T>()`, w
 
 ## Providers
 
-Declare a `providers` array in the initialize result with any of `transcription`, `chat` and `speech`. The assistant's cascade engine selects one provider and one model for each stage. A model provider owns the connection to the upstream service. The default assignment uses the OpenRouter provider ID.
+Declare a `providers` array in the initialize result with any of `transcription`, `chat` and `speech`. The assistant's cascade engine selects one provider and one model for each stage. A model provider owns the connection to the upstream service. The default assignment uses the `openai-compatible:openrouter` connection.
 
 | Capability | JSON-RPC method | Request | Result |
 | --- | --- | --- | --- |
@@ -120,7 +120,7 @@ For a Solid page, set `web.solidRuntimeVersion` to `1` and export the page compo
 
 The component receives `pageId`, `language`, `request(path, method, body)` for your API, and `navigate(pagePath)` for declared pages as props. Use `onCleanup` to release timers and other resources when the panel unmounts the page. A prebuilt `.mjs` entry can also export `mount(container, context)` and return its own cleanup function.
 
-The panel can also supply `protectDraft(dirty)`. Register when a form becomes dirty, pass a function that returns whether its draft is unsaved, and call the returned cleanup after saving, discarding, or unmounting the draft. Check that the prop is present when supporting older panels.
+The panel also supplies `protectDraft(dirty)`. Register when a form becomes dirty, pass a function that returns whether its draft is unsaved, and call the returned cleanup after saving, discarding, or unmounting the draft.
 
 The panel provides `gw-button` with `variant="primary"` and `disabled`, `gw-card`, the `.gw-row` and `.gw-stack` utilities, and `--gw-color-*`, `--gw-space-*`, and `--gw-radius` CSS variables.
 

@@ -5,55 +5,26 @@ use axum::{
     routing::get,
 };
 
-use super::Panel;
+use crate::panel_core::{ASSETS, INDEX, PAGE_PATHS};
 
-const INDEX: &[u8] = include_bytes!("../../web/dist/index.html.gz");
-const SCRIPT: &[u8] = include_bytes!("../../web/dist/panel.js.gz");
-const PLUGIN_RUNTIME: &[u8] = include_bytes!("../../web/dist/plugin-runtime-v1.js.gz");
-const STYLE: &[u8] = include_bytes!("../../web/dist/panel.css.gz");
-const LICENSES: &[u8] = include_bytes!("../../web/dist/panel-licenses.md.gz");
+use super::Panel;
 
 pub(super) fn routes() -> Router<Panel> {
     let mut router = Router::new().route("/", get(index));
-    for path in [
-        "/setup",
-        "/station",
-        "/settings",
-        "/settings/activation",
-        "/settings/assistant",
-        "/settings/diagnostics",
-        "/settings/panel",
-        "/settings/update",
-    ] {
+    for &path in PAGE_PATHS.iter().skip(1) {
         router = router
             .route(path, get(index))
             .route(&format!("{path}/"), get(index));
     }
-    router
-        .route("/plugins", get(index))
-        .route("/plugins/", get(index))
-        // Both plugin pages and /plugins/{id}/settings use the panel entry point.
-        .route("/plugins/{*path}", get(index))
-        .route(
-            "/panel.js",
-            get(|| async { asset("text/javascript; charset=utf-8", SCRIPT) }),
-        )
-        .route(
-            "/plugin-runtime-v1.js",
-            get(|| async { asset("text/javascript; charset=utf-8", PLUGIN_RUNTIME) }),
-        )
-        .route(
-            "/panel.css",
-            get(|| async { asset("text/css; charset=utf-8", STYLE) }),
-        )
-        .route(
-            "/panel-licenses.md",
-            get(|| async { asset("text/plain; charset=utf-8", LICENSES) }),
-        )
+    for &(path, mime, content) in ASSETS {
+        router = router.route(path, get(move || async move { asset(mime, content) }));
+    }
+    // Both plugin pages and /plugins/{id}/settings use the panel entry point.
+    router.route("/plugins/{*path}", get(index))
 }
 
 async fn index() -> Response {
-    asset("text/html; charset=utf-8", INDEX)
+    asset(INDEX.0, INDEX.1)
 }
 
 #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]

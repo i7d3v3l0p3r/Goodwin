@@ -1,0 +1,4 @@
+key,type,encoding,value
+goodwin,namespace,,
+ssid,data,string,Your Wi-Fi network
+wifi_password,data,string,Your Wi-Fi password

@@ -14,6 +14,8 @@ export function WakeWordSettings(props: {
   visible: boolean;
   currentModel: WakeModel | null;
   modelLoaded: boolean;
+  hasCatalog: boolean;
+  onModelInstalled: () => void;
   pending: boolean;
   toggleListening: () => void;
   changeSensitivity: (value: number) => Promise<boolean>;
@@ -33,7 +35,8 @@ export function WakeWordSettings(props: {
     return `${model.wake_word} · ${tier}`;
   };
   const sensitivity = () => preview() ?? props.sensitivity;
-  const canInstall = () => Boolean(selected() && (!props.modelLoaded || selected()?.sha256 !== props.currentModel?.sha256));
+  const canInstall = () => Boolean(selected() && (!props.modelLoaded || selected()?.id !== props.currentModel?.id
+    || selected()?.sha256 !== props.currentModel?.sha256));
   protectDraft(() => !installing() && canInstall(), isSettingsPath);
 
   async function saveSensitivity(value: number) {
@@ -61,7 +64,7 @@ export function WakeWordSettings(props: {
     }
   }
 
-  createEffect(() => props.visible, visible => {
+  createEffect(() => props.visible && props.hasCatalog, visible => {
     if (visible && !catalog()) void loadCatalog();
   });
 
@@ -75,6 +78,7 @@ export function WakeWordSettings(props: {
     setError(undefined);
     try {
       await api<WakeModel>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
+      props.onModelInstalled();
       setInstalled(true);
       setId("");
     } catch (failure) {
@@ -107,6 +111,8 @@ export function WakeWordSettings(props: {
         }}>{props.t.retryWakeCatalog}</Button>
       </div>
     </Show>
+    <Show when={props.hasCatalog} fallback={<p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
+      ? modelLabel(props.currentModel) : props.t.noWakeModel}</p>}>
     <form class={styles.modelForm} onSubmit={event => void install(event)}>
       <label for="wake-model">{props.t.wakeModel}</label>
       <p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
@@ -134,5 +140,6 @@ export function WakeWordSettings(props: {
       </Show>
       <Show when={catalog()?.models.length === 0}><p role="status">{props.t.emptyWakeCatalog}</p></Show>
     </form>
+    </Show>
   </section>;
 }

@@ -1,0 +1,50 @@
+--- a/core/shared/platform/esp-idf/espidf_thread.c
++++ b/core/shared/platform/esp-idf/espidf_thread.c
+@@ -8,6 +8,8 @@
+ #endif
+ 
+ #include "platform_api_vmcore.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
+ #include "platform_api_extension.h"
+ 
+ typedef struct {
+@@ -33,9 +35,9 @@
+ korp_tid
+ os_self_thread(void)
+ {
+-    /* only allowed if this is a thread, xTaskCreate is not enough look at
+-     * product_mini for how to use this*/
+-    return pthread_self();
++    /* The embedder runs the interpreter from both pthreads and native tasks.
++       Wasm threads are disabled and this value is used as task identity. */
++    return (korp_tid)(uintptr_t)xTaskGetCurrentTaskHandle();
+ }
+ 
+ int
+--- a/core/shared/platform/esp-idf/espidf_platform.c
++++ b/core/shared/platform/esp-idf/espidf_platform.c
+@@ -4,6 +4,8 @@
+  */
+ 
+ #include "sdkconfig.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/idf_additions.h"
+ #include "platform_api_vmcore.h"
+ #include "platform_api_extension.h"
+ 
+@@ -75,13 +77,7 @@
+ uint8 *
+ os_thread_get_stack_boundary(void)
+ {
+-#if defined(CONFIG_FREERTOS_USE_TRACE_FACILITY)
+-    TaskStatus_t pxTaskStatus;
+-    vTaskGetInfo(xTaskGetCurrentTaskHandle(), &pxTaskStatus, pdTRUE, eInvalid);
+-    return pxTaskStatus.pxStackBase;
+-#else // !defined(CONFIG_FREERTOS_USE_TRACE_FACILITY)
+-    return NULL;
+-#endif
++    return pxTaskGetStackStart(NULL);
+ }
+ 
+ void

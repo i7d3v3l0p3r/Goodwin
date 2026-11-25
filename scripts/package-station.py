@@ -42,6 +42,8 @@ def add_bytes(archive: tarfile.TarFile, name: str, data: bytes, mode: int = 0o64
 
 def licenses(binary: bytes) -> bytes:
     license_text = (ROOT / "LICENSE").read_bytes()
+    if b"goodwin.plugins.wamr.v1" in binary:
+        license_text += b"\n\nWAMR\n\n" + (ROOT / "licenses/wamr-apache-2.0.txt").read_bytes()
     if b"goodwin.plugins.wasmi.v1" in binary:
         license_text += b"\n\nWasmi\n\n" + (ROOT / "licenses/wasmi-mit.txt").read_bytes()
     marker = (ROOT / "shared/wake-tflite-capability.txt").read_bytes().strip()

@@ -1,0 +1,24 @@
+--- a/core/iwasm/interpreter/wasm_loader.c
++++ b/core/iwasm/interpreter/wasm_loader.c
+@@ -2521,18 +2521,10 @@
+ adjust_table_max_size(bool is_table64, uint32 init_size, uint32 max_size_flag,
+                       uint32 *max_size)
+ {
+-    uint32 default_max_size;
+-
+-    /* TODO: current still use UINT32_MAX as upper limit for table size to keep
+-     * ABI unchanged */
++    /* Goodwin checks the initial size before loading the module. Cap growth
++       through WAMR even when the guest leaves its maximum unspecified. */
++    uint32 default_max_size = WASM_TABLE_MAX_SIZE;
+     (void)is_table64;
+-    if (UINT32_MAX / 2 > init_size)
+-        default_max_size = init_size * 2;
+-    else
+-        default_max_size = UINT32_MAX;
+-
+-    if (default_max_size < WASM_TABLE_MAX_SIZE)
+-        default_max_size = WASM_TABLE_MAX_SIZE;
+ 
+     if (max_size_flag) {
+         /* module defines the table limitation */

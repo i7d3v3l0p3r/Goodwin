@@ -26,7 +26,6 @@ pub enum Access {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(from = "StoredSettings")]
 pub struct Settings {
     pub assistant: AssistantSettings,
     pub sensitivity: f32,
@@ -34,55 +33,6 @@ pub struct Settings {
     pub microphone_muted: bool,
     pub wake_gain: Option<f32>,
     pub transcription_gain: Option<f32>,
-}
-
-#[derive(Deserialize)]
-struct StoredSettings {
-    assistant: Option<AssistantSettings>,
-    #[serde(default)]
-    providers: PreviousBindings,
-    sensitivity: f32,
-    listening: bool,
-    #[serde(default)]
-    microphone_muted: bool,
-    wake_gain: Option<f32>,
-    transcription_gain: Option<f32>,
-}
-
-#[derive(Default, Deserialize)]
-struct PreviousBindings {
-    transcription: Option<String>,
-    chat: Option<String>,
-    speech: Option<String>,
-}
-
-impl From<StoredSettings> for Settings {
-    fn from(stored: StoredSettings) -> Self {
-        let assistant = stored.assistant.unwrap_or_else(|| {
-            let mut settings = AssistantSettings::default();
-            for (stage, provider) in [
-                (
-                    &mut settings.pipeline.transcription,
-                    stored.providers.transcription,
-                ),
-                (&mut settings.pipeline.chat, stored.providers.chat),
-                (&mut settings.pipeline.speech, stored.providers.speech),
-            ] {
-                if let Some(provider) = provider {
-                    stage.provider = provider;
-                }
-            }
-            settings
-        });
-        Self {
-            assistant,
-            sensitivity: stored.sensitivity,
-            listening: stored.listening,
-            microphone_muted: stored.microphone_muted,
-            wake_gain: stored.wake_gain,
-            transcription_gain: stored.transcription_gain,
-        }
-    }
 }
 
 impl Default for Settings {
@@ -158,14 +108,7 @@ impl Config {
     }
 }
 
-pub(crate) fn normalize_system_prompt(prompt: &str) -> Result<String> {
-    let prompt = prompt.trim().replace("\r\n", "\n").replace('\r', "\n");
-    ensure!(
-        prompt.encode_utf16().count() <= 4_000,
-        "System prompt exceeds 4,000 UTF-16 code units"
-    );
-    Ok(prompt)
-}
+pub(crate) use crate::panel_core::normalize_system_prompt;
 
 #[derive(Clone)]
 pub(crate) struct RequestSettings {
@@ -271,14 +214,10 @@ pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
     Ok(bytes)
 }
 
-pub(crate) fn valid_password_length(password: &str) -> bool {
-    (8..=256).contains(&password.len())
-}
-
 #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
 pub fn hash_password(password: &str) -> Result<String> {
     ensure!(
-        valid_password_length(password),
+        crate::panel_core::valid_password_length(password),
         "Use a password between 8 and 256 bytes"
     );
     let salt =

@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../../components/ui-kit/ConfirmDialog";
 import { Icon } from "../../components/icons";
 import { PageHeader } from "../../components/PageHeader";
 import { usePanel } from "../../helpers/panel";
+import { assistantPath, setupPath } from "../../helpers/readiness";
 import { Conversation } from "./components/Conversation";
 import styles from "./ChatPage.module.css";
 
@@ -22,7 +23,7 @@ export function ChatPage() {
     </PageHeader>
     <Conversation t={panel.t()} snapshot={panel.snapshot()} draftReply={panel.chatDraft()} reachable={panel.reachable()} disabled={disabled()}
       draft={panel.draftMessage()} editDraft={panel.setDraftMessage} wakeReady={panel.wakeReady()} setupRequired={Boolean(panel.stageIssue("chat"))}
-      error={panel.error()} send={panel.send} />
+      setupHref={panel.builtinProvider() ? assistantPath : setupPath} error={panel.error()} send={panel.send} />
     <ConfirmDialog open={confirming()} title={panel.t().clearChat} description={panel.t().clearChatDescription}
       cancel={panel.t().cancel} confirm={panel.t().clearChat} disabled={disabled() || !panel.snapshot()?.messages.length}
       onCancel={() => setConfirming(false)} onConfirm={() => {

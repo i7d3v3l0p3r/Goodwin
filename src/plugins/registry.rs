@@ -26,22 +26,7 @@ impl Registry {
 
     pub(super) fn catalog(&self) -> Vec<View> {
         let entries = self.read();
-        entries
-            .values()
-            .map(|entry| entry.view(Self::connection_owner(&entries, &entry.manifest.id)))
-            .collect()
-    }
-
-    pub(super) fn connection_owner(
-        entries: &BTreeMap<String, Entry>,
-        provider: &str,
-    ) -> Option<&'static str> {
-        const UNIFIED: &str = "openai-compatible";
-        (provider == "openrouter"
-            && entries
-                .get(UNIFIED)
-                .is_some_and(|entry| entry.manifest.provider_connections))
-        .then_some(UNIFIED)
+        entries.values().map(Entry::view).collect()
     }
 
     pub(super) fn remove(&self, id: &str) {
@@ -150,8 +135,6 @@ pub struct View {
     model_catalog: bool,
     speech_streaming: bool,
     has_settings: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    settings_redirect: Option<&'static str>,
     connection_settings: bool,
     connections: Vec<connections::View>,
 }
@@ -163,9 +146,8 @@ impl Entry {
             .filter(|active| active.process.running())
     }
 
-    fn view(&self, settings_redirect: Option<&'static str>) -> View {
+    fn view(&self) -> View {
         let active = self.live();
-        let provider = active.filter(|_| settings_redirect.is_none());
         let stopped = self.active.is_some() && active.is_none();
         View {
             id: self.manifest.id.clone(),
@@ -181,15 +163,12 @@ impl Entry {
             settings_revision: self.settings_revision,
             web: active.and(self.manifest.web.clone()),
             pages: active.map_or_else(Vec::new, |active| active.registration.pages.clone()),
-            providers: provider.map_or_else(BTreeSet::new, |active| {
+            providers: active.map_or_else(BTreeSet::new, |active| {
                 active.registration.providers.clone()
             }),
-            model_catalog: provider.is_some_and(|active| active.registration.model_catalog),
-            speech_streaming: provider.is_some_and(|active| active.registration.speech_streaming),
-            has_settings: settings_redirect.is_some()
-                || self.manifest.provider_connections
-                || !self.manifest.settings.is_empty(),
-            settings_redirect,
+            model_catalog: active.is_some_and(|active| active.registration.model_catalog),
+            speech_streaming: active.is_some_and(|active| active.registration.speech_streaming),
+            has_settings: self.manifest.provider_connections || !self.manifest.settings.is_empty(),
             connection_settings: self.manifest.provider_connections,
             connections: active.map_or_else(Vec::new, |active| active.connections.clone()),
         }

@@ -1,15 +1,10 @@
-mod capture;
-mod gain;
-mod indicators;
-mod microphone;
+pub(crate) mod capture;
 mod playback;
-mod protocol;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use gain::RecordingGain;
-pub(crate) use indicators::Indicators;
-pub use microphone::run_microphone;
+pub(crate) use crate::model::Indicators;
+pub(crate) use crate::voice_core::RecordingGain;
 pub use playback::Player;
 pub(crate) use playback::{playback_failure, timer_signal};

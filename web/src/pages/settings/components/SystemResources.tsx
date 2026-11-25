@@ -13,6 +13,7 @@ interface Resources {
   supported: boolean;
   cpu_percent: number | null;
   memory: Usage | null;
+  psram?: Usage;
   storage: Usage | null;
   uptime_seconds: number | null;
   goodwin_cpu_percent: number | null;
@@ -71,12 +72,18 @@ export function SystemResources(props: { t: Words; language: Language }) {
     <Show when={data()} fallback={<Show when={!error()}><StatusIndicator tone="pending">{t().loadingResources}</StatusIndicator></Show>}>{sample =>
       <Show when={sample().supported} fallback={<EmptyState>{t().resourcesUnavailable}</EmptyState>}>
         <dl class={styles.metrics}>
-          <Metric label={t().systemCpu} value={percent(sample().cpu_percent)} level={sample().cpu_percent} />
+          <Show when={!sample().psram}>
+            <Metric label={t().systemCpu} value={percent(sample().cpu_percent)} level={sample().cpu_percent} />
+          </Show>
           <Metric label={t().systemMemory} value={usageText(sample().memory)} level={usagePercent(sample().memory)} />
-          <Metric label={t().dataStorage} value={usageText(sample().storage)} level={usagePercent(sample().storage)} />
+          <Show when={sample().psram} fallback={
+            <Metric label={t().dataStorage} value={usageText(sample().storage)} level={usagePercent(sample().storage)} />
+          }>{psram => <Metric label="PSRAM" value={usageText(psram())} level={usagePercent(psram())} />}</Show>
           <Metric label={t().systemUptime} value={uptime(sample().uptime_seconds)} />
-          <Metric label={t().goodwinCpu} value={percent(sample().goodwin_cpu_percent)} />
-          <Metric label={t().goodwinMemory} value={memoryText(sample().goodwin_rss_bytes)} />
+          <Show when={!sample().psram}>
+            <Metric label={t().goodwinCpu} value={percent(sample().goodwin_cpu_percent)} />
+            <Metric label={t().goodwinMemory} value={memoryText(sample().goodwin_rss_bytes)} />
+          </Show>
         </dl>
       </Show>
     }</Show>

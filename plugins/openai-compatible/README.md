@@ -7,8 +7,6 @@ The WASM package connects Goodwin to OpenRouter and to servers that implement Op
 3. Select the connection by name for each stage in **Settings → Assistant**. Choose a model from its catalog or enter the model ID manually. Set a voice for speech servers that require one.
 4. Save the assistant settings.
 
-On first installation, the unified package imports saved settings from the standalone OpenRouter package and the native OpenAI-compatible package. Existing stage assignments retain their provider IDs. The standalone OpenRouter settings link opens the unified connection list after migration.
-
 For KittenTTS 2, use the [official server](https://github.com/KittenML/KittenTTS/blob/main/docs/docker.md) and select the plugin for **Speech synthesis**. Enter the model ID `kitten-tts-2-latest` manually and use the `Russian` voice for Russian speech. Use the model and voice IDs accepted by your server if you run a different KittenTTS distribution.
 
 For OpenAI-compatible connections, the plugin sends multipart WAV to `audio/transcriptions`, JSON to `chat/completions`, and requests raw PCM from `audio/speech`. Speech output defaults to 24 kHz mono unless the server includes `rate` and `channels` in its PCM media type. Use a chat model with tool calling support to control Goodwin plugins by voice.

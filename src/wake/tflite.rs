@@ -1,8 +1,8 @@
-use std::{ffi::c_void, ptr::NonNull, sync::Mutex};
+use std::{borrow::Cow, ffi::c_void, ptr::NonNull, sync::Mutex};
 
 use anyhow::{Context, Result, ensure};
 
-use super::FRAME_SAMPLES;
+pub(crate) const FRAME_SAMPLES: usize = 1280;
 
 unsafe extern "C" {
     fn goodwin_tflite_open(bytes: *const u8, len: usize) -> *mut c_void;
@@ -13,9 +13,9 @@ unsafe extern "C" {
 
 static OPEN: Mutex<()> = Mutex::new(());
 
-pub(super) struct TfliteModel {
+pub(crate) struct TfliteModel {
     handle: NonNull<c_void>,
-    _bytes: Vec<u8>,
+    _bytes: Cow<'static, [u8]>,
 }
 
 // SAFETY: Each interpreter is exclusively owned. The shared operation resolver is
@@ -23,7 +23,13 @@ pub(super) struct TfliteModel {
 unsafe impl Send for TfliteModel {}
 
 impl TfliteModel {
-    pub(super) fn load(bytes: Vec<u8>) -> Result<Self> {
+    #[cfg(target_os = "espidf")]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self._bytes.as_ref()
+    }
+
+    pub(crate) fn load(bytes: impl Into<Cow<'static, [u8]>>) -> Result<Self> {
+        let bytes = bytes.into();
         let _open = OPEN.lock().expect("TFLite loader lock");
         // The interpreter borrows the model data until it is destroyed.
         let handle = NonNull::new(unsafe { goodwin_tflite_open(bytes.as_ptr(), bytes.len()) })
@@ -34,13 +40,13 @@ impl TfliteModel {
         })
     }
 
-    pub(super) fn predict(&mut self, frame: &[i16; FRAME_SAMPLES]) -> Result<f32> {
+    pub(crate) fn predict(&mut self, frame: &[i16; FRAME_SAMPLES]) -> Result<f32> {
         let score = unsafe { goodwin_tflite_step(self.handle.as_ptr(), frame.as_ptr()) };
         ensure!((0.0..=1.0).contains(&score), "TFLite wake inference failed");
         Ok(score)
     }
 
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         unsafe { goodwin_tflite_reset(self.handle.as_ptr()) };
     }
 }

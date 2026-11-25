@@ -4,9 +4,11 @@ import { Brand } from "../../components/Brand";
 import { Button } from "../../components/ui-kit/Button";
 import { Field } from "../../components/ui-kit/Field";
 import { InlineError } from "../../components/ui-kit/Feedback";
+import { api, type WifiStatus } from "../../helpers/api";
 import { usePanel } from "../../helpers/panel";
 import { errorLabel, type Language } from "../../helpers/words";
-import { setupPath, stationPath } from "../../helpers/readiness";
+import { assistantPath, setupPath, stationPath } from "../../helpers/readiness";
+import { settingsSectionPath } from "../settings/sections";
 import styles from "./LoginPage.module.css";
 
 export function LoginPage() {
@@ -68,8 +70,17 @@ function PasswordForm(props: { setup: boolean }) {
     }
     const settingUp = props.setup;
     const ok = settingUp ? await panel.setupPassword(password(), confirmation()) : await panel.login(password());
-    if (ok && settingUp) void navigate(panel.setupDismissed() ? stationPath : setupPath, { replace: true });
-    if (!ok) focusError(panel.error());
+    if (!ok) {
+      focusError(panel.error());
+      return;
+    }
+    if (panel.builtinProvider()) {
+      const wifi = await api<WifiStatus>("network").catch(() => undefined);
+      if (wifi?.status === "setup") void navigate(settingsSectionPath("network"), { replace: true });
+      else if (settingUp) void navigate(assistantPath, { replace: true });
+    } else if (settingUp) {
+      void navigate(panel.setupDismissed() ? stationPath : setupPath, { replace: true });
+    }
   }
 
   return <>

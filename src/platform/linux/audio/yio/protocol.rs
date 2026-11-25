@@ -9,12 +9,12 @@ use crate::wake::SAMPLE_RATE as RATE;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(super) use tests::write_samples;
+pub(crate) use tests::write_samples;
 
 pub(super) const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy)]
-pub(super) enum Framing {
+pub(crate) enum Framing {
     Typed,
     Legacy,
 }
@@ -31,7 +31,7 @@ struct Subscription {
 }
 
 #[derive(Clone, PartialEq, Message)]
-pub(super) struct Envelope {
+pub(crate) struct Envelope {
     #[prost(message, optional, tag = "158")]
     legacy_audio: Option<Channels>,
     #[prost(message, optional, tag = "159")]
@@ -61,7 +61,7 @@ struct Channel {
 }
 
 impl Framing {
-    pub(super) fn subscription(self) -> Envelope {
+    pub(crate) fn subscription(self) -> Envelope {
         match self {
             Self::Typed => Envelope {
                 payload: Some(

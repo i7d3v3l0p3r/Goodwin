@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from "@solidjs/router";
+import { useParams } from "@solidjs/router";
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { Button } from "../../components/ui-kit/Button";
 import { Disclosure } from "../../components/ui-kit/Disclosure";
@@ -22,16 +22,11 @@ type Changes = Record<string, string | boolean | number | null>;
 export function PluginSettingsRoute() {
   const panel = usePanel();
   const params = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const plugin = () => panel.snapshot()?.plugins.find(entry => entry.id === params.id);
-  const redirect = () => plugin()?.settings_redirect;
-  const legacyPage = () => !plugin()?.has_settings && plugin()?.pages.some(page => page.path === "settings");
+  const customSettingsPage = () => !plugin()?.has_settings && plugin()?.pages.some(page => page.path === "settings");
   const connections = () => plugin()?.connection_settings ? plugin() : undefined;
-  createEffect(redirect, id => {
-    if (id) void navigate(pluginSettingsPath(id), { replace: true });
-  });
-  return <Show when={panel.snapshot() && !redirect()} fallback={<PageHeader title={panel.t().settings} />}>
-    <Show when={connections()} fallback={<Show when={!legacyPage()} fallback={<ExtensionPage />}><PluginSettingsPage /></Show>}>
+  return <Show when={panel.snapshot()} fallback={<PageHeader title={panel.t().settings} />}>
+    <Show when={connections()} fallback={<Show when={!customSettingsPage()} fallback={<ExtensionPage />}><PluginSettingsPage /></Show>}>
       {plugin => <ProviderConnectionsPage plugin={plugin()} />}
     </Show>
   </Show>;

@@ -1,11 +1,13 @@
 use serde_json::{Value, json};
 
-use super::{
-    CONTEXT_INSTRUCTIONS, TOOL_INSTRUCTIONS, VOICE_INSTRUCTIONS, reply_with_tools, strip_wake_word,
-};
+use super::reply_with_tools;
 use crate::{
     plugins::{Process, VoiceTools},
     providers::Provider,
+    voice_core::{
+        VOICE_INSTRUCTIONS, strip_wake_word,
+        tools::{CONTEXT_INSTRUCTIONS, TOOL_INSTRUCTIONS},
+    },
 };
 
 #[tokio::test]

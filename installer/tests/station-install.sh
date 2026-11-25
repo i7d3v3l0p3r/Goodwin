@@ -29,7 +29,7 @@ fi
 EOF
 chmod 755 "$TEST_ROOT/tools/"*
 upload="$TEST_ROOT/data/opt/.goodwin-upload.test01"
-mkdir "$upload" "$TEST_ROOT/payload" "$TEST_ROOT/payload/models"
+mkdir "$upload" "$TEST_ROOT/payload"
 linked_upload="$TEST_ROOT/data/opt/.goodwin-upload.badlnk"
 ln -s "$upload" "$linked_upload"
 if sh "$TEST_ROOT/install-test.sh" "$linked_upload" keep > "$TEST_ROOT/linked.out" 2>&1; then
@@ -60,9 +60,18 @@ package() {
 case "\$1" in
     wake-check)
         case "\$2" in
-            --installed) test "$version" != legacy-int8 && test -f "\$3/wake-model.json" ;;
-            *.tflite) test "$version" != legacy-int8 && test -f "\$2" && test -f "\$3" ;;
-            *) test -f "\$2" ;;
+            --installed)
+                test -f "\$3/wake-model.json" || exit 1
+                if grep -q 'livekit-v2-micro-tflite' "\$3/wake-model.json"; then
+                    test "$version" != without-int8
+                elif [ "$version" = reject-installed-model ]; then
+                    exit 1
+                else
+                    grep -q 'livekit-v2-micro-onnx' "\$3/wake-model.json"
+                fi
+                ;;
+            *.tflite) test "$version" != without-int8 && test -f "\$2" && test -f "\$3" ;;
+            *) test -f "\$2" && grep -q 'livekit-v2-micro-onnx' "\$3" ;;
         esac
         ;;
     version|--version) echo "$version" ;;
@@ -70,19 +79,13 @@ case "\$1" in
 esac
 EOF
     cd "$TEST_ROOT/payload"
-    set -- "${3:-bundled}"
+    set -- "${3:-core}"
     case "$1" in
-        bundled)
-            for file in standard.onnx micro.onnx LICENSE NOTICE; do
-                echo "$model_version" > "models/$file"
-            done
-            set -- goodwin models/*
-            ;;
         catalog)
             printf '%s\n' "$model_version" > wake-model.onnx
             hash=$(sha256sum wake-model.onnx)
             hash=${hash%% *}
-            printf '{"id":"%s","wake_word":"Егор","tier":"micro","sha256":"%s"}\n' "$model_version" "$hash" > wake-model.json
+            printf '{"id":"%s","wake_word":"Егор","tier":"micro","sha256":"%s","runtime":"livekit-v2-micro-onnx"}\n' "$model_version" "$hash" > wake-model.json
             set -- goodwin wake-model.onnx wake-model.json
             ;;
         int8)
@@ -99,58 +102,39 @@ EOF
     cd "$TEST_ROOT"
 }
 
-package initial
-sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/fresh.out"
+package initial egor-micro catalog
+sh "$TEST_ROOT/install-test.sh" "$upload" catalog | tee "$TEST_ROOT/fresh.out"
 grep 'GOODWIN_INSTALL_OK fresh' "$TEST_ROOT/fresh.out"
 grep 'GOODWIN_INSTALL_VERSION initial' "$TEST_ROOT/fresh.out"
 data=$TEST_ROOT/data/opt/etc/goodwin
-test "$(cat "$data/model")" = standard
+grep 'egor-micro' "$data/wake-model.json"
+test "$(cat "$data/wake-models/$hash.onnx")" = egor-micro
+selected_hash=$hash
 echo retained > "$data/config.json"
 mkdir "$data/plugins"
-echo custom > "$data/models/custom.onnx"
-package current
-sh "$TEST_ROOT/install-test.sh" "$upload" micro | tee "$TEST_ROOT/update.out"
-grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/update.out"
-grep 'GOODWIN_INSTALL_VERSION current' "$TEST_ROOT/update.out"
-test "$(cat "$TEST_ROOT/running")" = current
-test "$(cat "$data/model")" = micro
+
 install_init=$upload/init.sh
 upload="$TEST_ROOT/tmp/.goodwin-upload.test02"
 mkdir "$upload"
 cp "$install_init" "$upload/init.sh"
-models_inode=$(stat -c %i "$data/models")
-package compact current
-sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/compact.out"
-grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/compact.out"
-test "$(cat "$TEST_ROOT/running")" = compact
-test "$(stat -c %i "$data/models")" = "$models_inode"
+models_inode=$(stat -c %i "$data/wake-models")
+package catalog-keep
+sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/update.out"
+grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/update.out"
+grep 'GOODWIN_INSTALL_VERSION catalog-keep' "$TEST_ROOT/update.out"
+test "$(cat "$TEST_ROOT/running")" = catalog-keep
+test "$(stat -c %i "$data/wake-models")" = "$models_inode"
+test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
 test ! -e "$upload/payload"
 for stage in "$TEST_ROOT/data/opt"/.goodwin-stage.*; do test ! -e "$stage"; done
-package broken
-if sh "$TEST_ROOT/install-test.sh" "$upload" standard > "$TEST_ROOT/failed.out" 2>&1; then
-    echo "The update with a failed startup unexpectedly succeeded" >&2
+
+package reject-installed-model
+if sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/rejected-model.out" 2>&1; then
+    echo "An update that rejects the installed ONNX model succeeded" >&2
     exit 1
 fi
-grep 'Restoring the previous state' "$TEST_ROOT/failed.out"
-grep 'GOODWIN_INSTALL_ERROR rolled_back' "$TEST_ROOT/failed.out"
-test "$(cat "$TEST_ROOT/running")" = compact
-test "$(cat "$data/model")" = micro
-test "$(cat "$data/models/standard.onnx")" = current
-test "$(cat "$data/models/custom.onnx")" = custom
-test "$(cat "$data/config.json")" = retained
-test -d "$data/plugins"
-test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
-
-package catalog-first egor-micro catalog
-sh "$TEST_ROOT/install-test.sh" "$upload" catalog
-grep 'egor-micro' "$data/wake-model.json"
-test "$(cat "$data/wake-models/$hash.onnx")" = egor-micro
-selected_hash=$hash
-
-package catalog-keep '' core
-sh "$TEST_ROOT/install-test.sh" "$upload" keep
+grep 'could not use the installed wake model' "$TEST_ROOT/rejected-model.out"
 test "$(cat "$TEST_ROOT/running")" = catalog-keep
-test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
 
 package broken goodwin-micro catalog
 if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/failed-catalog.out" 2>&1; then
@@ -158,11 +142,14 @@ if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/failed-catalo
     exit 1
 fi
 grep 'Restoring the previous state' "$TEST_ROOT/failed-catalog.out"
+grep 'GOODWIN_INSTALL_ERROR rolled_back' "$TEST_ROOT/failed-catalog.out"
 test "$(cat "$TEST_ROOT/running")" = catalog-keep
 grep 'egor-micro' "$data/wake-model.json"
 test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
 test ! -e "$data/wake-models/$hash.onnx"
 test "$(cat "$data/config.json")" = retained
+test -d "$data/plugins"
+test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
 
 hook=$TEST_ROOT/data/init.d/S96goodwin
 web_upload="$TEST_ROOT/data/opt/.goodwin-upload.web001"
@@ -217,23 +204,23 @@ grep 'goodwin-micro' "$data/wake-model.json"
 test "$(cat "$data/wake-models/$hash.onnx")" = goodwin-micro
 test ! -e "$data/models"
 
-package legacy-int8 goodwin-micro-int8 int8
+package without-int8 goodwin-micro-int8 int8
 if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/unsupported-int8.out" 2>&1; then
     echo 'An executable without INT8 support accepted a TFLite model' >&2
     exit 1
 fi
-grep 'could not load the INT8 wake model' "$TEST_ROOT/unsupported-int8.out"
+grep 'could not load the downloaded wake model' "$TEST_ROOT/unsupported-int8.out"
 test "$(cat "$TEST_ROOT/running")" = fresh-catalog
 package with-int8 goodwin-micro-int8 int8
 sh "$TEST_ROOT/install-test.sh" "$upload" catalog
 test "$(cat "$data/wake-models/$hash.tflite")" = goodwin-micro-int8
 
-package legacy-int8 '' core
+package without-int8 '' core
 if sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/unsupported-keep.out" 2>&1; then
     echo 'An executable without INT8 support replaced an installation using TFLite' >&2
     exit 1
 fi
-grep 'could not load the installed INT8 wake model' "$TEST_ROOT/unsupported-keep.out"
+grep 'could not use the installed wake model' "$TEST_ROOT/unsupported-keep.out"
 test "$(cat "$TEST_ROOT/running")" = with-int8
 
-printf '%s\n' 'Bundled and catalog installs, web updates and rollback passed.'
+printf '%s\n' 'Catalog installs, web updates and rollback passed.'

@@ -7,7 +7,7 @@ use goodwin_plugin::{
     settings::SettingsData,
     wake::Event,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(test)]
 use serde_json::json;
 use serde_json::{Map, Value};
@@ -22,6 +22,7 @@ use super::{
     Failure, VoiceTools, connections,
     package::{self, Manifest},
     process::Process,
+    registration::HttpResponse,
     registry::{Active, Entry, Registry, Status, View},
     settings::{self, Field},
     store::{Store, copy_data, storage},
@@ -36,12 +37,6 @@ struct Manager {
     lifecycle: Mutex<()>,
     player: Player,
     sound: Mutex<Option<mpsc::Sender<()>>>,
-}
-
-#[derive(Deserialize)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -81,7 +76,7 @@ fn registered_provider<'a>(
         }
     }
     let entry = registry.get(id)?;
-    if entry.manifest.provider_connections || Registry::connection_owner(registry, id).is_some() {
+    if entry.manifest.provider_connections {
         return None;
     }
     let active = entry.live()?;
@@ -135,7 +130,14 @@ impl Plugins {
             else {
                 continue;
             };
-            if !ids.is_empty() && !ids.contains(&id.as_str()) {
+            if !ids.is_empty()
+                && !ids.iter().any(|provider| {
+                    provider
+                        .split_once(':')
+                        .map_or(*provider, |(plugin, _)| plugin)
+                        == id
+                })
+            {
                 continue;
             }
             let manifest = Manifest::read(&item.path().join("package"));
@@ -178,10 +180,7 @@ impl Plugins {
     fn settings_fields(&self, id: &str) -> Result<Vec<Field>, Failure> {
         let registry = self.0.registry.read();
         let manifest = &registry.get(id).ok_or(Failure::NotFound)?.manifest;
-        if manifest.settings.is_empty()
-            || manifest.provider_connections
-            || Registry::connection_owner(&registry, id).is_some()
-        {
+        if manifest.settings.is_empty() || manifest.provider_connections {
             return Err(Failure::NotFound);
         }
         Ok(manifest.settings.clone())
@@ -300,11 +299,9 @@ impl Plugins {
             return Err(Failure::NotFound);
         }
         let directory = self.0.store.slot(id).join("data");
-        let openrouter = self.0.store.slot("openrouter").join("data");
         let plugin = id.to_owned();
         let (result, views, changed) = tokio::task::spawn_blocking(move || {
-            let mut store = connections::Store::load_or_migrate(&plugin, &directory, &openrouter)
-                .map_err(storage)?;
+            let mut store = connections::Store::initialize(&plugin, &directory).map_err(storage)?;
             let old_revision = store.revision();
             let result = change(&mut store)?;
             let changed = store.revision() != old_revision;
@@ -598,11 +595,8 @@ impl Manager {
         let connections = if manifest.provider_connections {
             let id = manifest.id.clone();
             let directory = slot.join("data");
-            let openrouter = self.store.slot("openrouter").join("data");
             tokio::task::spawn_blocking(move || {
-                Ok::<_, anyhow::Error>(
-                    connections::Store::load_or_migrate(&id, &directory, &openrouter)?.view(&id),
-                )
+                Ok::<_, anyhow::Error>(connections::Store::initialize(&id, &directory)?.view(&id))
             })
             .await??
         } else {

@@ -4,6 +4,8 @@
 /web/node_modules/
 /goodwin-data/
 /installer/target/
+/.embuild/
+/firmware/esp32s3/provisioning.csv
 /.env
 /datasets/
 .codex

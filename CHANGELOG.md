@@ -4,6 +4,17 @@
 
 ### English
 
+- Goodwin reads the current assistant configuration format and addresses named providers as `<plugin-id>:<connection-id>`. Re-enter API settings from standalone provider packages in the unified plugin and reselect any stage still using an earlier provider ID.
+- Use `goodwin wav` to process a WAV file from the command line.
+- The Station installer uses wake models from the catalog. Select a new catalog model when updating a Station that used a model bundled with an older installer or whose saved selection lacks a runtime.
+- ESP32-S3 uses PBKDF2-SHA512 panel passwords. Test devices with an earlier Argon2 password hash require password setup again.
+- Goodwin selects the platform, device model and drivers at build time. `goodwin device-capabilities` reports the Mini 3 build's activation modes, wake runtimes and speech streaming support.
+- The standalone ESP32-S3 N16R8 build supports local «Гудвин» activation, push-to-talk and an OpenAI-compatible voice pipeline with buffered and streaming playback. Its web panel configures Wi-Fi and the provider, runs chat and voice diagnostics, and installs firmware updates.
+- The ESP32-S3 panel installs WASM add-ons, including Timers, Wake-word dataset and OpenAI-compatible. Plugin packages and data persist in a separate Flash partition. The voice pipeline can select plugin providers independently for each stage.
+- ESP32-S3 and Station Mini 3 use WAMR Fast for WASM add-ons. Installed packages and their data carry over when upgrading from Wasmi.
+- The ESP32-S3 panel saves a custom system prompt and lets signed-in users read the current boot's diagnostic log.
+- On ESP32-S3, choose a compatible Micro INT8 wake model from Goodwin-wakeword and run a wake-word voice check while continuous listening is paused.
+- The Station release package is smaller because the Goodwin binary ships without its symbol table.
 - Chat comes first in the main navigation and opens from the Goodwin logo. Timers has a direct navigation link when installed. The gear menu opens below its button. The setup wizard shows one step at a time, opens at the next check when the assistant is already connected, and can be skipped in the current browser.
 - Setup checks now identify the tested models and ask you to repeat a check after changing its configuration. Voice diagnostics link failures to the relevant settings.
 - The installer shows recovery actions for common failures and reports the version returned by the installed Goodwin binary.
@@ -15,6 +26,17 @@
 
 ### Русский
 
+- Goodwin читает текущий формат настроек ассистента. ID именованных подключений имеют вид `<ID плагина>:<ID подключения>`. Перенесите настройки API из отдельных плагинов в объединённый и заново выберите подключения для стадий со старыми ID.
+- Для обработки WAV из командной строки используется команда `goodwin wav`.
+- Установщик Станции использует модели активации из каталога. При обновлении Станции со встроенной моделью из старого пакета или с сохранённой моделью без указания рантайма выберите модель из каталога заново.
+- ESP32-S3 использует PBKDF2-SHA512 для пароля панели. На тестовых устройствах с прежним хешем Argon2 потребуется заново задать пароль.
+- Платформа, модель устройства и драйверы выбираются при сборке Goodwin. Команда `goodwin device-capabilities` показывает режимы активации, рантаймы слова активации и поддержку потокового звука в сборке для Мини 3.
+- Автономная прошивка для ESP32-S3 N16R8 поддерживает локальную активацию по «Гудвин», активацию кнопкой и голосовой каскад через OpenAI-совместимый API с потоковым воспроизведением. В панели можно настроить Wi-Fi и провайдера, проверить чат и голосовой запрос и обновить прошивку.
+- В панели ESP32-S3 можно установить WASM-дополнения, включая «Таймеры», «Датасет слова активации» и OpenAI-совместимый провайдер. Пакеты и данные хранятся в отдельном разделе флеш-памяти. Провайдер плагина можно выбрать отдельно для каждой стадии голосового каскада.
+- На ESP32-S3 и Станции Мини 3 WASM-дополнения работают через WAMR Fast. Установленные пакеты и их данные сохраняются при обновлении с Wasmi.
+- В панели ESP32-S3 можно сохранить свой системный промпт, а после входа с паролем доступен журнал диагностики текущего запуска.
+- На ESP32-S3 можно выбрать совместимую модель Micro INT8 из Goodwin-wakeword и запустить голосовую проверку по слову активации при выключенном постоянном прослушивании.
+- Пакет для Станции стал меньше за счёт удаления таблицы символов из файла `goodwin`.
 - «Чат» стоит первым в основной навигации и открывается по логотипу Goodwin. Когда плагин таймеров установлен, в меню есть прямая ссылка «Таймеры». Меню настроек открывается под шестерёнкой. Мастер показывает по одному шагу, сразу переходит к проверке настроенного ассистента и запоминает пропуск в текущем браузере.
 - В настройке Goodwin видны проверенные модели. При изменении конфигурации панель предлагает повторить тест. Голосовая диагностика ведёт из ошибок к нужным настройкам.
 - Установщик предлагает действия для типовых сбоев и показывает версию, которую сообщила установленная сборка Goodwin.

@@ -72,8 +72,12 @@ fn mouth_brightness_follows_pcm_and_closes_after_playback() {
 #[test]
 fn speech_levels_accept_embedded_announcements_with_extra_wave_chunks() {
     for wave in [
-        include_bytes!("../../../assets/error-ru.wav").as_slice(),
-        include_bytes!("../../../assets/no-speech-ru.wav").as_slice(),
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/error-ru.wav")).as_slice(),
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/no-speech-ru.wav"
+        ))
+        .as_slice(),
     ] {
         assert!(speech_levels(wave).unwrap().iter().any(|&level| level > 0));
     }

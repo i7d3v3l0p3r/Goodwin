@@ -111,9 +111,26 @@ function PanelShell(props: ParentProps) {
           <Show when={timersPage()}>{page =>
             <a href={timersPath} aria-current={current(timersPath)}><Icon name="timer" /><span>{page().title[panel.language()]}</span></a>
           }</Show>
-          <a href={stationPath} aria-current={stationCurrent()}><Icon name="activity" /><span>{panel.t().station}</span></a>
-          <a href={assistantPath} aria-current={current(assistantPath)}><Icon name="sparkles" /><span>{panel.t().assistant}</span></a>
-          <a href={pluginsPath} aria-current={extensionsCurrent()}><Icon name="plugin" /><span>{panel.t().extensions}</span></a>
+          <Show when={!panel.builtinProvider()} fallback={
+            <>
+              <a href={assistantPath} aria-current={current(assistantPath)}><Icon name="sparkles" /><span>{panel.t().embedded.provider}</span></a>
+              <a href={settingsSectionPath("network")} aria-current={current(settingsSectionPath("network"))}>
+                <Icon name="monitor" /><span>{panel.t().wifi}</span>
+              </a>
+              <a href={settingsSectionPath("activation")} aria-current={current(settingsSectionPath("activation"))}>
+                <Icon name="mic" /><span>{panel.t().activation}</span>
+              </a>
+              <a href={settingsSectionPath("diagnostics")} aria-current={current(settingsSectionPath("diagnostics"))}>
+                <Icon name="activity" /><span>{panel.t().diagnostics}</span>
+              </a>
+            </>
+          }>
+            <a href={stationPath} aria-current={stationCurrent()}><Icon name="activity" /><span>{panel.t().station}</span></a>
+            <a href={assistantPath} aria-current={current(assistantPath)}><Icon name="sparkles" /><span>{panel.t().assistant}</span></a>
+          </Show>
+          <Show when={panel.pluginPackages()}>
+            <a href={pluginsPath} aria-current={extensionsCurrent()}><Icon name="plugin" /><span>{panel.t().extensions}</span></a>
+          </Show>
         </nav>
       </aside>
       <main ref={main} id="panel-content" class={styles.main} tabindex={-1}>{props.children}</main>

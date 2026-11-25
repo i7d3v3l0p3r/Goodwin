@@ -62,15 +62,11 @@ fn concurrent_settings_updates_keep_the_committed_preferences_and_system_prompt(
 }
 
 #[test]
-fn configuration_without_provider_bindings_or_a_system_prompt_uses_defaults() {
+fn configuration_without_a_system_prompt_uses_defaults() {
     let dir = tempfile::tempdir().unwrap();
-    let mut settings = serde_json::to_value(Settings::default()).unwrap();
-    let fields = settings.as_object_mut().unwrap();
-    fields.remove("assistant");
-    fields.remove("microphone_muted");
     let config = serde_json::json!({
         "access": {"mode": "open"},
-        "settings": settings,
+        "settings": Settings::default(),
     });
     fs::write(Config::path(dir.path()), config.to_string()).unwrap();
     let config = Config::load(dir.path()).unwrap();
@@ -78,15 +74,7 @@ fn configuration_without_provider_bindings_or_a_system_prompt_uses_defaults() {
     assert!(!config.settings.microphone_muted);
     assert_eq!(
         config.settings.assistant.pipeline.chat.provider,
-        "openrouter"
-    );
-    assert_eq!(
-        config.settings.assistant.pipeline.transcription.provider,
-        "openrouter"
-    );
-    assert_eq!(
-        config.settings.assistant.pipeline.speech.provider,
-        "openrouter"
+        "openai-compatible:openrouter"
     );
 }
 
@@ -123,48 +111,19 @@ fn speech_streaming_defaults_on_and_can_be_disabled_in_saved_settings() {
 }
 
 #[test]
-fn previous_provider_bindings_load_without_importing_openrouter_settings() {
-    use serde_json::json;
-
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        Config::path(root.path()),
-        json!({
-            "access": {"mode": "open"},
-            "settings": {
-                "listening": false,
-                "sensitivity": 0.8,
-                "providers": {"transcription": null, "chat":"another-provider", "speech":null},
-                "models": {"chat": "fixture/chat", "speech": "fixture/speech", "voice": "Fixture"}
-            },
-            "key": "fixture-migration-key",
-            "system_prompt": "Fixture prompt"
-        })
-        .to_string(),
-    )
-    .unwrap();
-
-    let config = Config::load(root.path()).unwrap();
-    assert_eq!(
-        config.settings.assistant.pipeline.transcription.provider,
-        "openrouter"
-    );
-    assert_eq!(
-        config.settings.assistant.pipeline.chat.provider,
-        "another-provider"
-    );
-    assert_eq!(
-        config.settings.assistant.pipeline.speech.provider,
-        "openrouter"
-    );
-    assert!(!config.settings.listening);
-    assert_eq!(config.settings.wake_gain, None);
-    assert_eq!(config.settings.transcription_gain, None);
-    assert_eq!(config.system_prompt, "Fixture prompt");
-    let saved = serde_json::to_value(&config).unwrap();
-    assert!(saved.get("key").is_none());
-    assert!(saved["settings"].get("models").is_none());
-    assert!(!root.path().join("plugins").exists());
+fn configuration_requires_settings_in_the_current_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "access": {"mode": "open"},
+        "settings": {
+            "listening": true,
+            "sensitivity": 0.5,
+            "providers": {"chat": "old-provider"}
+        },
+    });
+    fs::write(Config::path(dir.path()), config.to_string()).unwrap();
+    let error = Config::load(dir.path()).err().unwrap();
+    assert!(format!("{error:#}").contains("missing field `assistant`"));
 }
 
 #[test]

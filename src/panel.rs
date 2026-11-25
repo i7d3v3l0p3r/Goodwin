@@ -27,6 +27,7 @@ use tokio::sync::Mutex;
 use crate::{
     app::{App, Failure, Source},
     config::{Settings, normalize_system_prompt},
+    panel_core::Chat,
     plugins::SETTINGS_BODY_LIMIT,
 };
 
@@ -104,6 +105,10 @@ pub fn router(app: Arc<App>) -> Router {
         ));
 
     assets::routes()
+        .route(
+            "/api/capabilities",
+            get(|| async { Json(crate::model::capabilities()) }),
+        )
         .route("/api/access", get(access))
         .route("/api/events", get(events::subscribe))
         .route("/api/setup", post(setup_password))
@@ -194,19 +199,12 @@ async fn system_prompt(
     }
 }
 
-#[derive(Deserialize)]
-struct Chat {
-    message: String,
-    #[serde(default)]
-    test: bool,
-}
-
 async fn chat(State(panel): State<Panel>, Json(chat): Json<Chat>) -> Response {
-    let message = chat.message.trim().to_owned();
-    if message.is_empty() || message.len() > 8_000 || message.chars().count() > 2000 {
+    let test = chat.test;
+    let Some(message) = chat.into_message() else {
         return problem(StatusCode::BAD_REQUEST, "invalid_message");
-    }
-    let started = if chat.test {
+    };
+    let started = if test {
         panel.app.start_chat_test()
     } else {
         panel.app.start(Source::Chat)

@@ -121,12 +121,8 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
     assert_eq!(state["last"]["error"], "provider_unavailable");
 }
 
-use super::{
-    Player, RecordingGain,
-    playback::TestSink,
-    protocol::{Framing, write_samples},
-    run_microphone,
-};
+use super::{Player, RecordingGain, playback::TestSink};
+use crate::platform::linux::audio::yio::{Framing, run_microphone, write_samples};
 
 async fn wait_for(mut check: impl FnMut() -> bool) {
     timeout(Duration::from_secs(8), async {
@@ -304,7 +300,8 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
         Player::recording_to(sink.clone()),
         DEFAULT_MICROPHONE_GAIN,
     );
-    app.plugins.mock_provider("openrouter", provider);
+    app.plugins
+        .mock_provider(crate::assistant::DEFAULT_PROVIDER, provider);
     let (panel, panel_task) = serve(panel::router(app.clone())).await;
     let mic = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = mic.local_addr().unwrap();
@@ -490,7 +487,7 @@ async fn wake_word_without_a_transcribed_question_plays_a_local_retry_prompt() {
         DEFAULT_MICROPHONE_GAIN,
     );
     app.plugins.mock_provider(
-        "openrouter",
+        crate::assistant::DEFAULT_PROVIDER,
         Process::mock_rpc(|method, _| {
             assert_eq!(method, "provider.transcribe");
             Ok(json!({"text": "Гудвин."}))

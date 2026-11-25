@@ -17,27 +17,15 @@ const PREFIX: &str = "goodwin-mini3";
 const SUMS: &str = "SHA256SUMS";
 const PACKAGE_LIMIT: u64 = 128 * 1024 * 1024;
 const METADATA_LIMIT: u64 = 64 * 1024;
-const LEGACY_FILES: [&str; 5] = [
-    "goodwin",
-    "models/standard.onnx",
-    "models/micro.onnx",
-    "models/LICENSE",
-    "models/NOTICE",
-];
-const CORE_FILES: [&str; 1] = ["goodwin"];
 
 pub(crate) enum Source {
     Latest,
     Local(PathBuf),
 }
 
-pub(crate) fn prepare(
-    source: Source,
-    work: &Path,
-    log: &impl Fn(String),
-) -> Result<(String, bool)> {
+pub(crate) fn prepare(source: Source, work: &Path, log: &impl Fn(String)) -> Result<String> {
     let unpack = work.join("payload");
-    fs::create_dir_all(unpack.join("models"))?;
+    fs::create_dir_all(&unpack)?;
     let label = match source {
         Source::Latest => {
             let archive = work.join(ARCHIVE);
@@ -76,18 +64,7 @@ pub(crate) fn prepare(
             path.display().to_string()
         }
     };
-    Ok((label, package_files(&unpack) == LEGACY_FILES))
-}
-
-fn package_files(path: &Path) -> &'static [&'static str] {
-    if LEGACY_FILES[1..]
-        .iter()
-        .any(|name| path.join(name).exists())
-    {
-        &LEGACY_FILES
-    } else {
-        &CORE_FILES
-    }
+    Ok(label)
 }
 
 fn download_release(work: &Path, log: &impl Fn(String)) -> Result<String> {
@@ -158,7 +135,7 @@ fn unpack_archive(source: &Path, output: &Path) -> Result<()> {
         let path = entry.path_bytes();
         let path = std::str::from_utf8(&path)?;
         let kind = entry.header().entry_type();
-        if kind.is_dir() && matches!(path.trim_end_matches('/'), PREFIX | "goodwin-mini3/models") {
+        if kind.is_dir() && path.trim_end_matches('/') == PREFIX {
             continue;
         }
         ensure!(kind.is_file(), "В пакете есть специальный файл: {path}");
@@ -170,7 +147,7 @@ fn unpack_archive(source: &Path, output: &Path) -> Result<()> {
             continue;
         }
         ensure!(
-            LEGACY_FILES.contains(&name) || name == SUMS,
+            name == "goodwin" || name == SUMS,
             "Неожиданный файл: {name}"
         );
         let dest = output.join(name);
@@ -182,10 +159,7 @@ fn unpack_archive(source: &Path, output: &Path) -> Result<()> {
         copy_limited(entry, &dest, limit)?;
     }
     let sums = read_checksums(&output.join(SUMS)).context("Некорректный манифест пакета")?;
-    for &name in package_files(output) {
-        verify(&output.join(name), name, &sums)?;
-    }
-    Ok(())
+    verify(&output.join("goodwin"), "goodwin", &sums)
 }
 
 fn copy_folder(source: &Path, output: &Path) -> Result<()> {
@@ -194,16 +168,13 @@ fn copy_folder(source: &Path, output: &Path) -> Result<()> {
         .is_file()
         .then(|| read_checksums(&manifest))
         .transpose()?;
-    let mut left = PACKAGE_LIMIT;
-    for &name in package_files(source) {
-        let file = File::open(source.join(name)).with_context(|| {
-            format!("В папке нет файла {name}. Выберите папку с архивом {ARCHIVE} или распакованной сборкой")
-        })?;
-        let dest = output.join(name);
-        left -= copy_limited(file, &dest, left)?;
-        if let Some(sums) = &sums {
-            verify(&dest, name, sums)?;
-        }
+    let file = File::open(source.join("goodwin")).with_context(|| {
+        format!("В папке нет файла goodwin. Выберите папку с архивом {ARCHIVE} или распакованной сборкой")
+    })?;
+    let dest = output.join("goodwin");
+    copy_limited(file, &dest, PACKAGE_LIMIT)?;
+    if let Some(sums) = &sums {
+        verify(&dest, "goodwin", sums)?;
     }
     Ok(())
 }
@@ -282,9 +253,7 @@ pub(crate) fn build_payload(work: &Path, model: Option<&str>) -> Result<u64> {
     );
 
     let mut manifest = File::create(input.join(SUMS))?;
-    let files = package_files(&input)
-        .iter()
-        .copied()
+    let files = std::iter::once("goodwin")
         .chain(model.into_iter().flat_map(|name| [name, "wake-model.json"]));
     for name in files.clone() {
         writeln!(manifest, "{}  {name}", checksum(&input.join(name))?)?;
@@ -306,14 +275,10 @@ mod tests {
     use super::*;
 
     fn local_fixture(folder: &Path) {
-        fs::create_dir(folder.join("models")).unwrap();
         let mut elf = [0; 20];
         elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
         elf[18] = 0xb7;
         fs::write(folder.join("goodwin"), elf).unwrap();
-        for name in &LEGACY_FILES[1..] {
-            fs::write(folder.join(name), name).unwrap();
-        }
     }
 
     #[test]
@@ -329,7 +294,7 @@ mod tests {
             File::create(input.path().join(ARCHIVE)).unwrap(),
             Compression::fast(),
         ));
-        for name in LEGACY_FILES.into_iter().chain([SUMS]) {
+        for name in ["goodwin", SUMS] {
             archive
                 .append_path_with_name(
                     unpacked.path().join("payload").join(name),
@@ -385,7 +350,7 @@ mod tests {
     #[ignore = "downloads the public Station package from GitHub"]
     fn latest_public_release_has_a_valid_station_package() {
         let work = tempfile::tempdir().unwrap();
-        let (tag, _) = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
+        let tag = prepare(Source::Latest, work.path(), &|line| println!("{line}")).unwrap();
         build_payload(work.path(), None).unwrap();
         assert!(release_tag(&tag));
         assert!(work.path().join("payload.tar.gz").is_file());

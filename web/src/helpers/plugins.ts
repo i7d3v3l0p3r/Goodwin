@@ -8,7 +8,7 @@ export interface PluginContext {
   language: Language;
   request: <T>(path: string, method?: string, body?: unknown) => Promise<T>;
   navigate: (pagePath: string) => void;
-  protectDraft?: (dirty: () => boolean) => () => void;
+  protectDraft: (dirty: () => boolean) => () => void;
 }
 
 interface Module {

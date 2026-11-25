@@ -117,7 +117,7 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
   function editMinimum(value?: string) {
     setMinimumDraft(value);
     if (value && Number(value) !== status()?.minimumScore) {
-      unregisterDraft ??= protectDraft?.(minimumChanged);
+      unregisterDraft ??= protectDraft(minimumChanged);
     } else {
       unregisterDraft?.();
       unregisterDraft = undefined;

@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     fs::File,
     io::Read,
     path::PathBuf,
@@ -7,22 +6,16 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use wasmi::{
-    Caller, CompilationMode, Config, EnforcedLimits, Engine, ExternType, Linker, Memory, Module,
-    Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
-};
+use crate::plugin_wasm::{Guest, Reply};
 
 use super::*;
 #[cfg(test)]
 mod integration;
 mod services;
 
-const MODULE_LIMIT: usize = 512 * 1024;
 const MEMORY_LIMIT: usize = 512 * 1024;
 const INSTANCE_LIMIT: usize = 16;
 const STATE_LIMIT: usize = 64 * 1024;
-const CALL_FUEL: u64 = 32_000_000;
-const MAX_SIGNALS: u32 = 32;
 
 pub(super) async fn start(
     root: &Path,
@@ -59,7 +52,7 @@ pub(super) async fn start(
         .context("WASM module loading timed out")??;
         let request = json!({
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": { "apiVersion": API_VERSION, "pageIcons": true, "state": state },
+            "params": { "apiVersion": API_VERSION, "state": state },
         });
         let (mut reply, _) = instance
             .invoke(
@@ -75,16 +68,7 @@ pub(super) async fn start(
             .context("WASM plugin stopped during initialization")?;
         let effects = Effects::take(&mut reply)?;
         let registration: Registration = serde_json::from_value(response(reply, 0)??)?;
-        registration.validate(manifest)?;
-        ensure!(
-            (manifest.wasm_http.is_some()
-                || (registration.providers.is_empty()
-                    && !registration.model_catalog
-                    && !registration.chat_streaming
-                    && !registration.speech_streaming))
-                && (manifest.wasm_storage || !registration.wake_events),
-            "WASM plugin registration requires host services"
-        );
+        registration.validate_wasm(manifest)?;
         Ok::<_, anyhow::Error>((instance, registration, effects))
     };
     let (instance, registration, effects) = ready.await?;
@@ -293,7 +277,7 @@ impl Effects {
 struct Instance(Arc<Mutex<Active>>);
 
 struct Active {
-    guest: Guest,
+    guest: Guest<services::Host>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -315,7 +299,7 @@ impl Instance {
             .try_acquire_owned()
             .context("Too many active WASM plugins")?;
         tokio::task::spawn_blocking(move || {
-            let guest = Guest::open(path, host, memory_limit).context("Load WASM plugin")?;
+            let guest = Guest::open(&path, host, memory_limit).context("Load WASM plugin")?;
             Ok(Self(Arc::new(Mutex::new(Active {
                 guest,
                 _permit: permit,
@@ -353,7 +337,7 @@ impl Instance {
                 "WASM plugin request is too large"
             );
             let mut active = active.lock().map_err(|_| anyhow!("WASM worker failed"))?;
-            if let Some(host) = active.guest.store.data_mut().host.as_mut()
+            if let Some(host) = active.guest.host_mut()
                 && host
                     .select_connection(connection.as_ref().and_then(Value::as_str))
                     .is_err()
@@ -366,9 +350,16 @@ impl Instance {
                     0,
                 ));
             }
-            active
-                .guest
-                .call(&frame, limits.response, deadline, chunks, shutdown)
+            if let Some(host) = active.guest.host_mut() {
+                host.deadline = deadline;
+                host.chunks = chunks;
+                host.shutdown = shutdown;
+            }
+            let result = active.guest.call(&frame, limits.response);
+            if let Some(host) = active.guest.host_mut() {
+                host.finish();
+            }
+            result
         });
         let result = tokio::select! {
             result = timeout(limits.timeout, &mut work) => Some(result),
@@ -389,331 +380,6 @@ impl Instance {
         }
         Ok(None)
     }
-}
-
-type Reply = (Value, u32);
-
-struct GuestState {
-    limits: StoreLimits,
-    signals: u32,
-    host: Option<services::Host>,
-    memory: Option<Memory>,
-}
-
-struct Guest {
-    store: Store<GuestState>,
-    memory: Memory,
-    buffer: TypedFunc<(), i32>,
-    input: Option<TypedFunc<i32, i32>>,
-    dispatch: TypedFunc<i32, i32>,
-}
-
-impl Guest {
-    fn open(path: PathBuf, host: Option<services::Host>, memory_limit: usize) -> Result<Self> {
-        let mut module = Vec::new();
-        File::open(path)?
-            .take((MODULE_LIMIT + 1) as u64)
-            .read_to_end(&mut module)?;
-        ensure!(module.len() <= MODULE_LIMIT, "WASM module is too large");
-        Self::load(&module, host, memory_limit)
-    }
-
-    #[cfg(test)]
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        Self::load(bytes, None, MEMORY_LIMIT)
-    }
-
-    fn load(bytes: &[u8], host: Option<services::Host>, memory_limit: usize) -> Result<Self> {
-        let mut config = Config::default();
-        config
-            .consume_fuel(true)
-            .compilation_mode(CompilationMode::LazyTranslation)
-            .allow_start_fn(false)
-            .wasm_multi_memory(false)
-            .set_max_stack_height(if host.is_some() {
-                256 * 1024
-            } else {
-                32 * 1024
-            })
-            .enforced_limits(EnforcedLimits::strict());
-        // Wasmi keeps translated functions in the engine. Release them with each guest.
-        let engine = Engine::new(&config);
-        let bytes = with_memory_export(bytes)?;
-        let module = Module::new(&engine, bytes.as_ref())?;
-        for name in ["__post_instantiate", "__wasm_call_ctors"] {
-            ensure!(
-                !matches!(module.get_export(name), Some(ExternType::Func(_))),
-                "WASM plugins cannot export a startup hook"
-            );
-        }
-        let mut linker = Linker::<GuestState>::new(&engine);
-        linker.func_wrap(
-            "goodwin",
-            "play_timer_signal",
-            |mut caller: Caller<'_, GuestState>| {
-                let signals = &mut caller.data_mut().signals;
-                *signals = (*signals + 1).min(MAX_SIGNALS);
-            },
-        )?;
-        if host.is_some() {
-            linker.func_wrap("goodwin", "host_call", host_call)?;
-            linker.func_wrap("goodwin", "host_result", host_result)?;
-        }
-        let mut store = Store::new(
-            &engine,
-            GuestState {
-                limits: StoreLimitsBuilder::new()
-                    .memory_size(memory_limit)
-                    .memories(1)
-                    .table_elements(4096)
-                    .tables(4)
-                    .build(),
-                signals: 0,
-                host,
-                memory: None,
-            },
-        );
-        store.limiter(|state| &mut state.limits);
-        store.set_fuel(CALL_FUEL)?;
-        let instance = linker.instantiate_and_start(&mut store, &module)?;
-        let memory = instance
-            .exports(&store)
-            .find_map(wasmi::Export::into_memory)
-            .context("WASM plugin is missing linear memory")?;
-        store.data_mut().memory = Some(memory);
-        let input = if store.data().host.is_some() {
-            Some(
-                instance
-                    .get_typed_func(&store, "goodwin_input")
-                    .context("Expected WASM export goodwin_input(i32) -> i32")?,
-            )
-        } else {
-            None
-        };
-        let buffer = instance
-            .get_typed_func(&store, "goodwin_buffer")
-            .context("Expected WASM export goodwin_buffer() -> i32")?;
-        let dispatch = instance
-            .get_typed_func(&store, "goodwin_call")
-            .context("Expected WASM export goodwin_call(i32) -> i32")?;
-        Ok(Self {
-            store,
-            memory,
-            buffer,
-            input,
-            dispatch,
-        })
-    }
-
-    fn call(
-        &mut self,
-        frame: &[u8],
-        response_limit: usize,
-        deadline: Instant,
-        chunks: Option<StreamChunks>,
-        shutdown: Option<watch::Receiver<bool>>,
-    ) -> Result<Reply> {
-        self.store.data_mut().signals = 0;
-        if let Some(host) = self.store.data_mut().host.as_mut() {
-            host.deadline = deadline;
-            host.chunks = chunks;
-            host.shutdown = shutdown;
-        }
-        let fuel = if self.input.is_some() {
-            1_000_000_000
-        } else {
-            CALL_FUEL
-        };
-        let result = self.exchange(frame, response_limit, fuel);
-        if let Some(host) = self.store.data_mut().host.as_mut() {
-            host.finish();
-        }
-        result
-    }
-
-    fn exchange(&mut self, frame: &[u8], response_limit: usize, fuel: u64) -> Result<Reply> {
-        self.store.set_fuel(fuel)?;
-        let offset = if let Some(input) = &self.input {
-            input
-                .call(&mut self.store, frame.len() as i32)
-                .context("WASM plugin trapped in goodwin_input")? as u32 as usize
-        } else {
-            ensure!(
-                frame.len() <= FRAME_LIMIT,
-                "WASM plugin request is too large"
-            );
-            let offset = self
-                .buffer
-                .call(&mut self.store, ())
-                .context("WASM plugin trapped in goodwin_buffer")? as u32
-                as usize;
-            ensure!(
-                offset
-                    .checked_add(FRAME_LIMIT)
-                    .is_some_and(|end| end <= self.memory.data(&self.store).len()),
-                "WASM plugin returned an invalid exchange buffer"
-            );
-            offset
-        };
-        self.memory.write(&mut self.store, offset, frame)?;
-        let used = self
-            .dispatch
-            .call(&mut self.store, frame.len() as i32)
-            .context("WASM plugin trapped in goodwin_call")?;
-        let used = usize::try_from(used).context("WASM plugin returned an invalid frame")?;
-        let offset = if self.input.is_some() {
-            self.buffer
-                .call(&mut self.store, ())
-                .context("WASM plugin trapped in goodwin_buffer")? as u32 as usize
-        } else {
-            offset
-        };
-        ensure!(
-            used <= response_limit && (self.input.is_some() || used <= FRAME_LIMIT),
-            "WASM plugin response is too large"
-        );
-        let response = self
-            .memory
-            .data(&self.store)
-            .get(offset..)
-            .and_then(|tail| tail.get(..used))
-            .context("WASM plugin returned an invalid frame")?;
-        Ok((serde_json::from_slice(response)?, self.store.data().signals))
-    }
-}
-
-fn host_call(
-    mut caller: Caller<'_, GuestState>,
-    meta: u32,
-    meta_len: u32,
-    data: u32,
-    data_len: u32,
-) -> i32 {
-    let Some(memory) = caller.data().memory else {
-        return -1;
-    };
-    let (memory, state) = memory.data_and_store_mut(&mut caller);
-    let Some(host) = state.host.as_mut() else {
-        return -1;
-    };
-    host.output.clear();
-    let result = (|| -> Result<Vec<u8>> {
-        ensure!(
-            meta_len as usize <= services::META_LIMIT && data_len as usize <= services::INPUT_LIMIT,
-            "WASM host operation is too large"
-        );
-        let request = serde_json::from_slice(guest_slice(memory, meta, meta_len)?)?;
-        host.execute(request, guest_slice(memory, data, data_len)?)
-    })();
-    match result {
-        Ok(output) => {
-            host.output = output;
-            host.output.len() as i32
-        }
-        Err(_) => -1,
-    }
-}
-
-fn host_result(mut caller: Caller<'_, GuestState>, offset: u32, length: u32) -> i32 {
-    let Some(memory) = caller.data().memory else {
-        return -1;
-    };
-    let Some(host) = caller.data_mut().host.as_mut() else {
-        return -1;
-    };
-    let output = std::mem::take(&mut host.output);
-    if output.len() != length as usize {
-        return -1;
-    }
-    memory
-        .write(&mut caller, offset as usize, &output)
-        .map_or(-1, |()| 0)
-}
-
-fn guest_slice(memory: &[u8], offset: u32, length: u32) -> Result<&[u8]> {
-    if length == 0 {
-        return Ok(&[]);
-    }
-    memory
-        .get(offset as usize..)
-        .and_then(|tail| tail.get(..length as usize))
-        .context("WASM host buffer is out of bounds")
-}
-
-fn with_memory_export(module: &[u8]) -> Result<Cow<'_, [u8]>> {
-    let mut sections = module
-        .strip_prefix(b"\0asm\x01\0\0\0")
-        .context("Expected WebAssembly 1 bytecode")?;
-    while let Some((&section, rest)) = sections.split_first() {
-        let start = module.len() - sections.len();
-        sections = rest;
-        let mut contents = field(&mut sections)?;
-        if section != 7 {
-            continue;
-        }
-        let count = integer(&mut contents)?;
-        let exports = contents;
-        let mut has_memory = false;
-        for _ in 0..count {
-            let name = field(&mut contents)?;
-            ensure!(!name.contains(&0), "WASM export name contains a null byte");
-            let (&kind, rest) = contents.split_first().context("Missing WASM export kind")?;
-            contents = rest;
-            integer(&mut contents)?;
-            has_memory |= kind == 2;
-        }
-        ensure!(contents.is_empty(), "Trailing bytes in WASM export section");
-        if has_memory {
-            break;
-        }
-        // Older packages could keep their single linear memory private. Wasmi accesses it by export.
-        let memory_export = b"\0goodwin_memory";
-        let mut contents = Vec::new();
-        write_integer(&mut contents, count + 1);
-        contents.extend_from_slice(exports);
-        write_integer(&mut contents, memory_export.len() as u32);
-        contents.extend_from_slice(memory_export);
-        contents.extend([2, 0]);
-        let mut result = Vec::with_capacity(module.len() + 24);
-        result.extend_from_slice(&module[..start]);
-        result.push(section);
-        write_integer(&mut result, contents.len() as u32);
-        result.extend_from_slice(&contents);
-        result.extend_from_slice(sections);
-        return Ok(Cow::Owned(result));
-    }
-    Ok(Cow::Borrowed(module))
-}
-
-fn write_integer(bytes: &mut Vec<u8>, mut value: u32) {
-    while value >= 128 {
-        bytes.push((value as u8 & 127) | 128);
-        value >>= 7;
-    }
-    bytes.push(value as u8);
-}
-
-fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8]> {
-    let length = integer(bytes)? as usize;
-    let (value, rest) = bytes
-        .split_at_checked(length)
-        .context("Truncated WASM field")?;
-    *bytes = rest;
-    Ok(value)
-}
-
-fn integer(bytes: &mut &[u8]) -> Result<u32> {
-    let mut result = 0;
-    for offset in (0..32).step_by(7) {
-        let (&byte, rest) = bytes.split_first().context("Truncated WASM integer")?;
-        *bytes = rest;
-        ensure!(offset != 28 || byte < 16, "WASM integer overflow");
-        result |= u32::from(byte & 127) << offset;
-        if byte < 128 {
-            return Ok(result);
-        }
-    }
-    bail!("WASM integer overflow")
 }
 
 #[cfg(test)]
@@ -849,7 +515,7 @@ mod tests {
 
     #[test]
     fn wasm_instruction_limit_traps_a_guest_loop() {
-        let mut guest = Guest::from_bytes(LIMITS).unwrap();
+        let mut guest = Guest::<services::Host>::load(LIMITS, None, MEMORY_LIMIT).unwrap();
         let fuel = 10_000;
         let (reply, _) = guest
             .exchange(br#"{"id":1,"method":"grow"}"#, FRAME_LIMIT, fuel)
@@ -858,11 +524,8 @@ mod tests {
         let error = guest
             .exchange(br#"{"id":1,"method":"loop"}"#, FRAME_LIMIT, fuel)
             .unwrap_err();
-        assert_eq!(
-            error
-                .downcast_ref::<wasmi::Error>()
-                .and_then(wasmi::Error::as_trap_code),
-            Some(wasmi::TrapCode::OutOfFuel),
+        assert!(
+            error.to_string().contains("instruction limit exceeded"),
             "{error:#}"
         );
     }
@@ -875,7 +538,7 @@ mod tests {
         let mut module = module_with_function.to_vec();
         module.extend(b"\x08\x01\0");
         module.extend(function_body);
-        let Err(error) = Guest::from_bytes(&module) else {
+        let Err(error) = Guest::<services::Host>::load(&module, None, MEMORY_LIMIT) else {
             panic!("WASM start section was accepted");
         };
         assert!(error.to_string().contains("start"), "{error:#}");
@@ -889,7 +552,7 @@ mod tests {
             module.extend(name);
             module.extend([0, 0]);
             module.extend(function_body);
-            let Err(error) = Guest::from_bytes(&module) else {
+            let Err(error) = Guest::<services::Host>::load(&module, None, MEMORY_LIMIT) else {
                 panic!("WASM startup hook was accepted");
             };
             let error = error.to_string();
@@ -907,7 +570,7 @@ mod tests {
                        \x03\x03\x02\0\x01\x05\x03\x01\0\x02\
                        \x07\x21\x02\x0egoodwin_buffer\0\0\x0cgoodwin_call\0\x01\
                        \x0a\x0b\x02\x04\0\x41\0\x0b\x04\0\x41\0\x0b";
-        let guest = Guest::from_bytes(module).unwrap();
-        assert_eq!(guest.memory.data(&guest.store).len(), FRAME_LIMIT);
+        let guest = Guest::<services::Host>::load(module, None, MEMORY_LIMIT).unwrap();
+        assert_eq!(guest.memory_size(), FRAME_LIMIT);
     }
 }

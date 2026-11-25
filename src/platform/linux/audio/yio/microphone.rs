@@ -14,12 +14,9 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::app::App;
+use crate::{app::App, station::capture::Detector};
 
-use super::{
-    capture::Detector,
-    protocol::{FRAME_TIMEOUT, Framing, capture_channel, receive},
-};
+use super::protocol::{FRAME_TIMEOUT, Framing, capture_channel, receive};
 
 #[cfg(test)]
 mod tests;

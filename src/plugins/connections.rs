@@ -1,9 +1,8 @@
 use std::{collections::BTreeMap, path::Path};
 
 use anyhow::Result;
-use goodwin_plugin::settings::SettingsData;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+#[cfg(not(target_os = "espidf"))]
 use sha2::{Digest, Sha256};
 
 use super::{Failure, package, settings::valid_base_url};
@@ -21,31 +20,31 @@ pub(crate) fn valid_provider_id(id: &str) -> bool {
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum Protocol {
+pub(crate) enum Protocol {
     OpenAi,
     OpenRouter,
 }
 
 impl Protocol {
-    pub(super) fn speech_streaming(self) -> bool {
+    pub(crate) fn speech_streaming(self) -> bool {
         matches!(self, Self::OpenAi)
     }
-    pub(super) fn requires_key(self) -> bool {
+    pub(crate) fn requires_key(self) -> bool {
         matches!(self, Self::OpenRouter)
     }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub(super) struct Connection {
+pub(crate) struct Connection {
     name: String,
-    pub(super) protocol: Protocol,
-    pub(super) base_url: String,
+    pub(crate) protocol: Protocol,
+    pub(crate) base_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(super) key: String,
+    pub(crate) key: String,
 }
 
 #[derive(Default, Deserialize, Serialize)]
-pub(super) struct Store {
+pub(crate) struct Store {
     revision: u64,
     entries: BTreeMap<String, Connection>,
 }
@@ -53,18 +52,20 @@ pub(super) struct Store {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct View {
-    pub(super) id: String,
-    pub(super) provider_id: String,
+    pub(crate) id: String,
+    pub(crate) provider_id: String,
     name: String,
     protocol: Protocol,
     base_url: String,
     has_key: bool,
-    pub(super) speech_streaming: bool,
+    pub(crate) speech_streaming: bool,
     revision: u64,
     #[serde(skip)]
-    pub(super) request_configuration: [u8; 32],
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) request_configuration: [u8; 32],
     #[serde(skip)]
-    pub(super) request_revision: u64,
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) request_revision: u64,
 }
 
 #[derive(Deserialize)]
@@ -78,54 +79,42 @@ pub(crate) struct Update {
 }
 
 impl Store {
-    pub(super) fn revision(&self) -> u64 {
+    pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
 
-    pub(super) fn read(directory: &Path) -> Result<Self> {
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) fn read(directory: &Path) -> Result<Self> {
         goodwin_plugin::read_json(&directory.join(FILE))
     }
 
-    #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
-    pub(super) fn connection(&self, id: &str) -> Option<&Connection> {
+    #[cfg(target_os = "espidf")]
+    pub(crate) fn read(directory: &Path) -> Result<Self> {
+        crate::platform::espidf::plugins::services::read_json(&directory.join(FILE))
+    }
+
+    #[cfg(all(
+        feature = "wasm-plugins",
+        any(target_os = "linux", target_os = "espidf")
+    ))]
+    pub(crate) fn connection(&self, id: &str) -> Option<&Connection> {
         self.entries.get(id)
     }
 
-    pub(super) fn load_or_migrate(
-        plugin: &str,
-        directory: &Path,
-        openrouter: &Path,
-    ) -> Result<Self> {
+    pub(crate) fn initialize(plugin: &str, directory: &Path) -> Result<Self> {
         if directory.join(FILE).try_exists()? {
             return Self::read(directory);
         }
+
         let mut store = Self::default();
         if plugin == "openai-compatible" {
-            let legacy = SettingsData::read(directory)?;
-            if let Some(base_url) = legacy
-                .values
-                .get("base_url")
-                .and_then(Value::as_str)
-                .filter(|url| valid_base_url(url))
-            {
-                store.entries.insert(
-                    "default".into(),
-                    Connection {
-                        name: "OpenAI-compatible".into(),
-                        protocol: Protocol::OpenAi,
-                        base_url: base_url.into(),
-                        key: legacy.secrets.get("key").cloned().unwrap_or_default(),
-                    },
-                );
-            }
-            let legacy = SettingsData::read(openrouter)?;
             store.entries.insert(
                 "openrouter".into(),
                 Connection {
                     name: "OpenRouter".into(),
                     protocol: Protocol::OpenRouter,
                     base_url: OPENROUTER_URL.into(),
-                    key: legacy.secrets.get("key").cloned().unwrap_or_default(),
+                    key: String::new(),
                 },
             );
         }
@@ -133,26 +122,33 @@ impl Store {
         Ok(store)
     }
 
-    pub(super) fn save(&self, directory: &Path) -> Result<()> {
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) fn save(&self, directory: &Path) -> Result<()> {
         goodwin_plugin::save_json(&directory.join(FILE), self)
     }
 
-    pub(super) fn view(&self, plugin: &str) -> Vec<View> {
+    #[cfg(target_os = "espidf")]
+    pub(crate) fn save(&self, directory: &Path) -> Result<()> {
+        crate::platform::espidf::plugins::services::save_json(
+            &directory.join(FILE),
+            self,
+            64 * 1024,
+        )
+    }
+
+    pub(crate) fn view(&self, plugin: &str) -> Vec<View> {
         self.entries
             .iter()
             .map(|(id, connection)| View {
                 id: id.clone(),
-                provider_id: match (plugin, id.as_str()) {
-                    ("openai-compatible", "default") => plugin.into(),
-                    ("openai-compatible", "openrouter") => "openrouter".into(),
-                    _ => format!("{plugin}:{id}"),
-                },
+                provider_id: format!("{plugin}:{id}"),
                 name: connection.name.clone(),
                 protocol: connection.protocol,
                 base_url: connection.base_url.clone(),
                 has_key: !connection.key.is_empty(),
                 speech_streaming: connection.protocol.speech_streaming(),
                 revision: self.revision,
+                #[cfg(not(target_os = "espidf"))]
                 request_configuration: Sha256::digest(
                     serde_json::to_vec(&(
                         &connection.protocol,
@@ -162,12 +158,13 @@ impl Store {
                     .expect("connection configuration is serializable"),
                 )
                 .into(),
+                #[cfg(not(target_os = "espidf"))]
                 request_revision: self.revision,
             })
             .collect()
     }
 
-    pub(super) fn update(
+    pub(crate) fn update(
         &mut self,
         update: Update,
         new_id: impl FnOnce() -> Result<String>,
@@ -221,7 +218,7 @@ impl Store {
         Ok(id)
     }
 
-    pub(super) fn remove(&mut self, id: &str) -> Result<(), Failure> {
+    pub(crate) fn remove(&mut self, id: &str) -> Result<(), Failure> {
         self.entries.remove(id).ok_or(Failure::NotFound)?;
         self.revision += 1;
         Ok(())
@@ -232,6 +229,24 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn openrouter_is_created_only_when_the_connection_store_is_new() {
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = "openai-compatible";
+        let mut store = Store::initialize(plugin, directory.path()).unwrap();
+        let views = store.view(plugin);
+        let [connection] = views.as_slice() else {
+            panic!("Expected the initial OpenRouter connection");
+        };
+        assert_eq!(connection.provider_id, "openai-compatible:openrouter");
+        assert!(!connection.has_key);
+
+        assert!(store.remove(&connection.id).is_ok());
+        store.save(directory.path()).unwrap();
+        let reopened = Store::initialize(plugin, directory.path()).unwrap();
+        assert!(reopened.view(plugin).is_empty());
+    }
 
     #[test]
     fn changing_a_connection_url_requires_an_explicit_key_change() {

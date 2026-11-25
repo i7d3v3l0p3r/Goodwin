@@ -1,5 +1,4 @@
 use std::{
-    collections::{BTreeSet, HashSet},
     path::Path,
     process::Stdio,
     sync::{
@@ -18,7 +17,7 @@ use goodwin_plugin::{
     },
     wake::{EVENT_METHOD, Event, Observation},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -27,7 +26,9 @@ use tokio::{
     time::timeout,
 };
 
-use super::package::{self, API_VERSION, Label, Manifest};
+use super::package::{API_VERSION, Manifest};
+
+pub(crate) use super::registration::{Page, Registration, Tool};
 
 #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
 mod wasm;
@@ -35,199 +36,6 @@ mod wasm;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_LIMIT: usize = 128 * 1024;
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Route {
-    pub method: String,
-    pub path: String,
-    #[serde(default)]
-    pub password_required: bool,
-}
-
-impl Route {
-    pub fn accepts(&self, method: &str, path: &str) -> bool {
-        self.method == method
-            && self.path.split('/').count() == path.split('/').count()
-            && self
-                .path
-                .split('/')
-                .zip(path.split('/'))
-                .all(|(template, part)| {
-                    template == part || template.starts_with(':') && !part.is_empty()
-                })
-    }
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Page {
-    pub id: String,
-    pub path: String,
-    pub title: Label,
-    #[serde(default)]
-    pub navigation: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    pub parameters: Value,
-}
-
-impl Tool {
-    fn valid(&self) -> bool {
-        let Some(properties) = self.parameters["properties"].as_object() else {
-            return false;
-        };
-        let Some(required) = self.parameters["required"].as_array() else {
-            return false;
-        };
-        package::name(&self.name)
-            && !self.description.trim().is_empty()
-            && self.description.len() <= 1000
-            && self.parameters["type"] == "object"
-            && self.parameters["additionalProperties"] == false
-            && properties.len() <= 16
-            && required
-                .iter()
-                .all(|key| key.as_str().is_some_and(|key| properties.contains_key(key)))
-            && properties.values().all(|property| {
-                matches!(
-                    property["type"].as_str(),
-                    Some("string" | "integer" | "number" | "boolean")
-                )
-            })
-    }
-
-    pub fn accepts(&self, args: &Value) -> bool {
-        let Some(args) = args.as_object() else {
-            return false;
-        };
-        self.parameters["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|key| args.contains_key(key.as_str().unwrap()))
-            && args.iter().all(|(key, value)| {
-                match self.parameters["properties"][key]["type"].as_str() {
-                    Some("string") => value.as_str().is_some_and(|value| value.len() <= 1000),
-                    Some("integer") => value.is_i64() || value.is_u64(),
-                    Some("number") => value.is_number(),
-                    Some("boolean") => value.is_boolean(),
-                    _ => false,
-                }
-            })
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Registration {
-    api_version: u32,
-    #[serde(default)]
-    pub routes: Vec<Route>,
-    #[serde(default)]
-    pub pages: Vec<Page>,
-    #[serde(default)]
-    pub tools: Vec<Tool>,
-    #[serde(default)]
-    pub voice_context_tool: Option<String>,
-    #[serde(default)]
-    pub providers: BTreeSet<Capability>,
-    #[serde(default)]
-    pub model_catalog: bool,
-    #[serde(default)]
-    chat_streaming: bool,
-    #[serde(default)]
-    pub(super) speech_streaming: bool,
-    #[serde(default)]
-    wake_events: bool,
-    #[serde(default)]
-    wake_subscription: u64,
-}
-
-impl Registration {
-    fn validate(&self, manifest: &Manifest) -> Result<()> {
-        ensure!(
-            self.api_version == API_VERSION,
-            "Plugin RPC version mismatch"
-        );
-        ensure!(
-            self.pages.len() <= 16 && self.routes.len() <= 32 && self.tools.len() <= 16,
-            "Too many plugin registrations"
-        );
-        ensure!(
-            self.pages.is_empty() || manifest.web.is_some(),
-            "Pages require a web entry module"
-        );
-        let mut paths = HashSet::new();
-        let mut ids = HashSet::new();
-        for page in &self.pages {
-            ensure!(
-                manifest.settings.is_empty() || page.path != "settings",
-                "The settings page path is reserved for plugins with declarative settings"
-            );
-            ensure!(
-                package::name(&page.id)
-                    && page.title.valid()
-                    && (page.path.is_empty() || page.path.split('/').all(package::name))
-                    && page.path.len() <= 128,
-                "Invalid plugin page registration"
-            );
-            ensure!(
-                paths.insert(&page.path) && ids.insert(&page.id),
-                "Duplicate plugin page"
-            );
-        }
-        let mut routes = HashSet::new();
-        for route in &self.routes {
-            let path = route
-                .path
-                .strip_prefix('/')
-                .context("Plugin API routes are absolute within the plugin")?;
-            ensure!(
-                matches!(
-                    route.method.as_str(),
-                    "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
-                ) && path.len() <= 128
-                    && path
-                        .split('/')
-                        .all(|part| package::name(part.strip_prefix(':').unwrap_or(part))),
-                "Invalid plugin API registration"
-            );
-            let shape = path
-                .split('/')
-                .map(|part| if part.starts_with(':') { ":" } else { part })
-                .collect::<Vec<_>>()
-                .join("/");
-            ensure!(
-                routes.insert((&route.method, shape)),
-                "Duplicate plugin API route"
-            );
-        }
-        let mut tools = HashSet::new();
-        for tool in &self.tools {
-            ensure!(
-                tool.valid() && tools.insert(&tool.name),
-                "Invalid or repeated assistant tool"
-            );
-        }
-        if let Some(name) = &self.voice_context_tool {
-            ensure!(
-                self.tools
-                    .iter()
-                    .any(|tool| tool.name == *name && tool.accepts(&json!({}))),
-                "Voice context must reference a tool that accepts empty arguments"
-            );
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone)]
 pub struct Process {
@@ -412,7 +220,7 @@ impl Process {
         let ready = async {
             let initialize = json!({
                 "jsonrpc": "2.0", "id": 0, "method": "initialize",
-                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true, "pageIcons": true },
+                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true },
             });
             write(&mut input, &initialize, FRAME_LIMIT).await?;
             let ready: Registration =

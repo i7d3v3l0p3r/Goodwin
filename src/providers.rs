@@ -12,12 +12,9 @@ use crate::{
     app::Failure,
     assistant::StageSettings,
     plugins::{Plugins, Process, SpeechReplies},
+    voice_core::tools::CompletionMessage,
     wav::PcmAudio,
 };
-
-mod chat;
-use chat::CompletionMessage;
-pub(crate) use chat::ToolConversation;
 
 pub(crate) struct Provider {
     process: Process,

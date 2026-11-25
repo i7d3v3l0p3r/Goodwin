@@ -75,8 +75,6 @@ pub(crate) fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Action> 
                 ensure!(model.is_none(), "Параметр --model указан повторно");
                 model = Some(match value(&mut args, "--model")?.to_str() {
                     Some("keep") => Model::Keep,
-                    Some("standard") => Model::Id("goodwin-standard".into()),
-                    Some("micro") => Model::Id("goodwin-micro".into()),
                     Some(id) if valid_model_id(id) => Model::Id(id.into()),
                     _ => bail!("Для --model используйте keep или ID модели из каталога"),
                 });

@@ -5,11 +5,11 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use tempfile::NamedTempFile;
 use tokio::sync::{Notify, oneshot};
 
-use crate::wake_catalog::{Catalog, Selection};
+use crate::wake_catalog::{Catalog, Runtime, Selection};
 
 use super::{FRAME_SAMPLES, WakeModel, runtimes};
 
@@ -73,14 +73,27 @@ impl WakeModels {
     pub(crate) fn initial_model(&self) -> Result<(WakeModel, Option<Selection>)> {
         let selected = self.selected();
         let (model, path) = if let Some(selection) = &selected {
-            let path = self.model_path(selection);
+            let path = model_path(&self.dir, selection);
             (WakeModel::load_selected(&path, selection)?, path)
         } else {
-            let path = legacy_model_path(&self.dir);
+            let path = local_model_path(&self.dir);
             (WakeModel::load(&path)?, path)
         };
         println!("Loaded {} wake model from {}", model.kind(), path.display());
         Ok((model, selected))
+    }
+
+    pub(crate) fn check_installed(dir: &Path) -> Result<()> {
+        let selection = read_selection(dir)?.context("No catalog wake model is installed")?;
+        let path = model_path(dir, &selection);
+        if selection.runtime == Runtime::MicroTflite {
+            let mut model = WakeModel::load_selected(&path, &selection)?;
+            model.predict(&[0; FRAME_SAMPLES])?;
+        } else {
+            // The running service may still hold an ONNX model in memory during an update.
+            ensure!(path.is_file(), "Missing wake model {}", path.display());
+        }
+        Ok(())
     }
 
     pub(crate) fn install(
@@ -123,7 +136,7 @@ impl WakeModels {
         model.reset()?;
 
         let previous = self.selected();
-        let target = self.model_path(selected);
+        let target = model_path(&self.dir, selected);
         let mut manifest = NamedTempFile::new_in(&self.dir)?;
         serde_json::to_writer(manifest.as_file_mut(), selected)?;
         manifest.as_file().sync_all()?;
@@ -132,7 +145,7 @@ impl WakeModels {
         if let Err(error) = manifest.persist(self.dir.join(MANIFEST)) {
             if previous
                 .as_ref()
-                .is_none_or(|old| self.model_path(old) != target)
+                .is_none_or(|old| model_path(&self.dir, old) != target)
             {
                 let _ = fs::remove_file(&target);
             }
@@ -141,7 +154,7 @@ impl WakeModels {
 
         let activated = self.queue_model(selected.clone(), model);
         if let Some(old) = previous
-            .map(|old| self.model_path(&old))
+            .map(|old| model_path(&self.dir, &old))
             .filter(|old| *old != target)
             && let Err(error) = fs::remove_file(old)
             && error.kind() != ErrorKind::NotFound
@@ -169,14 +182,11 @@ impl WakeModels {
         self.changed.notify_one();
         confirmation
     }
+}
 
-    fn model_path(&self, selected: &Selection) -> PathBuf {
-        self.dir.join("wake-models").join(format!(
-            "{}.{}",
-            selected.sha256,
-            selected.runtime().format()
-        ))
-    }
+fn model_path(dir: &Path, selected: &Selection) -> PathBuf {
+    dir.join("wake-models")
+        .join(format!("{}.{}", selected.sha256, selected.runtime.format()))
 }
 
 fn read_selection(dir: &Path) -> Result<Option<Selection>> {
@@ -191,17 +201,8 @@ fn read_selection(dir: &Path) -> Result<Option<Selection>> {
     Ok(Some(selection))
 }
 
-fn legacy_model_path(dir: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os("GOODWIN_WAKE_MODEL") {
-        return path.into();
-    }
-    let legacy = fs::read_to_string(dir.join("model")).ok();
-    let tier = legacy.as_deref().map(str::trim).unwrap_or("standard");
-    if matches!(tier, "standard" | "micro") {
-        let bundled = dir.join("models").join(format!("{tier}.onnx"));
-        if bundled.is_file() {
-            return bundled;
-        }
-    }
-    dir.join("goodwin.onnx")
+fn local_model_path(dir: &Path) -> PathBuf {
+    std::env::var_os("GOODWIN_WAKE_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("goodwin.onnx"))
 }

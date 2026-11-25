@@ -15,10 +15,9 @@ use futures_util::stream;
 use serde::Serialize;
 use tokio::sync::watch;
 
-use super::{
-    Panel,
-    auth::{AccessState, access_state},
-};
+use super::{Panel, auth::access_state};
+
+use crate::panel_core::AccessState;
 
 #[cfg(test)]
 mod tests;

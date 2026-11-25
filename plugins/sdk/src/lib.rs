@@ -231,13 +231,6 @@ fn run_protocol(
         registration["wakeEvents"] = json!(true);
         registration["wakeSubscription"] = json!(plugin.wake_subscription());
     }
-    if init.params["pageIcons"] != true
-        && let Some(pages) = registration.get_mut("pages").and_then(Value::as_array_mut)
-    {
-        for page in pages.iter_mut().filter_map(Value::as_object_mut) {
-            page.remove("icon");
-        }
-    }
     host.confirm_ready(&json!({"jsonrpc": "2.0", "id": init.id, "result": registration}))?;
 
     for line in input {
@@ -426,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn page_icons_are_sent_only_to_hosts_that_support_them() {
+    fn initialization_preserves_page_icons() {
         struct PagesPlugin;
 
         impl Plugin for PagesPlugin {
@@ -435,24 +428,14 @@ mod tests {
             }
         }
 
-        for supported in [false, true] {
-            let mut initialize: Value = serde_json::from_slice(INITIALIZE).unwrap();
-            if supported {
-                initialize["params"]["pageIcons"] = json!(true);
-            }
-            let input = initialize.to_string();
-            run_protocol(PagesPlugin, input.as_bytes(), move |frame| {
-                let page = &frame["result"]["pages"][0];
-                assert_eq!(page["id"], "main");
-                assert_eq!(page["navigation"], true);
-                assert_eq!(
-                    page.get("icon").and_then(Value::as_str),
-                    supported.then_some("timer")
-                );
-                Ok(())
-            })
-            .unwrap();
-        }
+        run_protocol(PagesPlugin, INITIALIZE, |frame| {
+            let page = &frame["result"]["pages"][0];
+            assert_eq!(page["id"], "main");
+            assert_eq!(page["navigation"], true);
+            assert_eq!(page["icon"], "timer");
+            Ok(())
+        })
+        .unwrap();
     }
 
     struct SpeechPlugin;

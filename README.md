@@ -36,7 +36,7 @@ goodwin-installer install station.local
 goodwin-installer install 192.168.1.42:5555 --package ./goodwin-mini3-aarch64.tar.gz --model egor-micro
 ```
 
-The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model <id>` to select a model ID from the latest release's [metadata.json](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest/download/metadata.json). The default `keep` retains the model on updates and downloads `goodwin-standard` for a fresh installation. The aliases `standard` and `micro` select the corresponding «Гудвин» models. Put IPv6 addresses in brackets, as in `[fd00::42]:5555`.
+The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model <id>` to select a model ID from the latest release's [metadata.json](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest/download/metadata.json). The default `keep` retains the model on updates and downloads `goodwin-standard` for a fresh installation. Put IPv6 addresses in brackets, as in `[fd00::42]:5555`.
 
 The command writes progress and errors to stderr. On success it exits with status 0 and prints the panel URL to stdout. An installation failure returns status 1 and invalid arguments return status 2. Fresh installations still ask for a password on the first panel visit.
 
@@ -50,6 +50,14 @@ Goodwin checks that the panel starts after the restart and restores the previous
 
 ## Build
 
+Goodwin also has a standalone [ESP32-S3 N16R8 build](firmware/esp32s3/README.md).
+It supports local «Гудвин» activation, push-to-talk, Wi-Fi setup and firmware updates from the panel.
+The Cargo target selects the platform backend. The build features
+`model-mini3` and `model-esp32s3-generic` select the model and its drivers.
+Each platform defaults to its supported model, so existing Mini 3 build commands
+continue to work. Both builds use the same Rust voice pipeline, panel contract,
+and Solid panel assets. `/api/capabilities` describes the selected model to the browser.
+
 Use Rust, Node.js 22.12+ or 24 LTS, and npm.
 
 ```sh
@@ -58,7 +66,7 @@ npm run build --prefix web
 cargo build --locked --release
 ```
 
-The panel is compressed with gzip during the build and embedded in the binary alongside the Russian offline error announcement. Building the Station's INT8 wake-word runtime requires Git, Python 3, CMake 3.23 or newer, Ninja, and Zig. The WASM runtime, Wasmi, builds through Cargo. On Windows, the Station build script also builds and packages the WASM and native plugins.
+The panel is compressed with gzip during the build and embedded in the binary alongside the Russian offline error announcement. Building the Station's INT8 wake-word runtime requires Git, Python 3, CMake 3.23 or newer, Ninja, and Zig. With `wasm-plugins`, Cargo fetches and builds the pinned WAMR Fast interpreter. This also requires Git, CMake 3.23 or newer, and Ninja. Use Zig when cross-compiling for the Station. On Windows, the Station build script also builds and packages the WASM and native plugins.
 
 ```powershell
 rustup target add aarch64-unknown-linux-musl wasm32-unknown-unknown
@@ -135,7 +143,7 @@ The Windows Station build produces `target/plugins/timers-wasm32.tar.gz` and `ta
 
 Upload `wake-dataset-wasm32.tar.gz` to collect and label Station recordings for wake-word training. Open **Wake-word dataset** in the password-protected panel and start collection. Listen to recordings, mark whether the wake word is present, and choose **Download labelled dataset**. See the [dataset plugin guide](plugins/wake-dataset/) for the audio format and metadata.
 
-The [OpenAI-compatible WASM provider](plugins/openai-compatible/) supports multiple named connections, including OpenRouter and local inference servers such as KittenTTS. Add connections in the plugin's settings and select them by name for each stage of the assistant. The assistant settings hold the models and voice. The first installation of the unified package imports the previous provider settings and keeps existing stage bindings. The standalone OpenRouter settings page opens the unified connection list after migration.
+The [OpenAI-compatible WASM provider](plugins/openai-compatible/) supports multiple named connections, including OpenRouter and local inference servers such as KittenTTS. Add connections in the plugin's settings and select them by name for each stage of the assistant. The assistant settings hold the models and voice. On first installation, the plugin creates an OpenRouter connection. Configure its key on the plugin settings page.
 
 See the [plugin development guide](plugins/README.md) for the package format, process protocol, and UI kit.
 

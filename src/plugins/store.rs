@@ -7,41 +7,41 @@ use anyhow::{Context, Result, ensure};
 
 use super::{Failure, package};
 
-pub(super) struct Store {
+pub(crate) struct Store {
     root: PathBuf,
 }
 
 impl Store {
-    pub(super) fn new(dir: &Path) -> Self {
+    pub(crate) fn new(dir: &Path) -> Self {
         Self {
             root: dir.join("plugins"),
         }
     }
 
-    pub(super) fn installed(&self) -> PathBuf {
+    pub(crate) fn installed(&self) -> PathBuf {
         self.root.join("installed")
     }
     fn backups(&self) -> PathBuf {
         self.root.join("rollback")
     }
-    pub(super) fn work(&self) -> PathBuf {
+    pub(crate) fn work(&self) -> PathBuf {
         self.root.join("work")
     }
-    pub(super) fn slot(&self, id: &str) -> PathBuf {
+    pub(crate) fn slot(&self, id: &str) -> PathBuf {
         self.installed().join(id)
     }
-    pub(super) fn backup(&self, id: &str) -> PathBuf {
+    pub(crate) fn backup(&self, id: &str) -> PathBuf {
         self.backups().join(id)
     }
 
-    pub(super) fn dirs(&self) -> Result<()> {
+    pub(crate) fn dirs(&self) -> Result<()> {
         for path in [self.installed(), self.backups(), self.work()] {
             fs::create_dir_all(path)?;
         }
         Ok(())
     }
 
-    pub(super) fn recover(&self) -> Result<()> {
+    pub(crate) fn recover(&self) -> Result<()> {
         if !self.root.exists() {
             return Ok(());
         }
@@ -61,7 +61,7 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn restore_backup(&self, id: &str) -> Result<()> {
+    pub(crate) fn restore_backup(&self, id: &str) -> Result<()> {
         let slot = self.slot(id);
         if slot.exists() {
             fs::remove_dir_all(&slot)?;
@@ -70,12 +70,12 @@ impl Store {
     }
 }
 
-pub(super) fn storage(error: impl std::fmt::Display) -> Failure {
+pub(crate) fn storage(error: impl std::fmt::Display) -> Failure {
     log::error!("Plugin storage: {error}");
     Failure::Storage
 }
 
-pub(super) fn copy_data(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_data(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let kind = entry.file_type()?;

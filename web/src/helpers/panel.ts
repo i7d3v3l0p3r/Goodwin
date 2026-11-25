@@ -1,11 +1,12 @@
 import { createContext, createEffect, createSignal, onSettled, useContext } from "solid-js";
-import { ApiError, api, type Access, type Message, type Settings, type Snapshot } from "./api";
+import { ApiError, api, type Access, type DeviceCapabilities, type Message, type Settings, type Snapshot } from "./api";
 import { initialLanguage, words, type Language } from "./words";
 import { capabilities, createProviderReadiness, wakeReady } from "./readiness";
 
 export function createPanel() {
   const [language, setLanguage] = createSignal<Language>(initialLanguage());
   const [access, setAccess] = createSignal<Access>();
+  const [device, setDevice] = createSignal<DeviceCapabilities>();
   const [snapshot, setSnapshot] = createSignal<Snapshot>();
   const [chatDraft, setChatDraft] = createSignal<Message>();
   const [draftMessage, setDraftMessage] = createSignal("");
@@ -16,10 +17,17 @@ export function createPanel() {
   const [microphonePending, setMicrophonePending] = createSignal(false);
   const [microphoneError, setMicrophoneError] = createSignal("");
   const t = () => words[language()];
-  const { stageIssue, updateProviderSettings } = createProviderReadiness(snapshot, reachable);
+  const providerReadiness = createProviderReadiness(snapshot, reachable);
+  const builtinProvider = () => device()?.provider_configuration === "builtin";
+  const stageIssue = (stage: Parameters<typeof providerReadiness.stageIssue>[0]) =>
+    builtinProvider()
+      ? snapshot()?.provider_ready ? undefined : { kind: "configure" as const, href: "/settings/assistant" }
+      : providerReadiness.stageIssue(stage);
   let events: EventSource | undefined;
   let retry = 0;
   let retryDelay = 1000;
+  let generation = 0;
+  let updates: DeviceCapabilities["panel_updates"] | undefined;
 
   function updateAccess(state: Access) {
     setAccess(state);
@@ -32,6 +40,7 @@ export function createPanel() {
   }
 
   function disconnect() {
+    generation++;
     window.clearTimeout(retry);
     events?.close();
     events = undefined;
@@ -39,6 +48,14 @@ export function createPanel() {
 
   function connect() {
     disconnect();
+    if (!updates) {
+      void detectProfile(generation);
+      return;
+    }
+    if (updates === "poll") {
+      void poll(generation, true);
+      return;
+    }
     const source = new EventSource("/api/events");
     events = source;
 
@@ -73,6 +90,50 @@ export function createPanel() {
         id, role: "assistant", text: previous?.id === id ? previous.text + text : text,
       }));
     });
+  }
+
+  async function detectProfile(current: number) {
+    try {
+      const profile = await api<DeviceCapabilities>("capabilities");
+      if (generation !== current) return;
+      updates = profile.panel_updates;
+      setDevice(profile);
+    } catch (reason) {
+      if (generation !== current) return;
+      if (!(reason instanceof ApiError && reason.code === "not_found")) {
+        setReachable(false);
+        retry = window.setTimeout(connect, 1000);
+        return;
+      }
+      updates = "events";
+    }
+    connect();
+  }
+
+  async function poll(current: number, refreshAccess = false) {
+    try {
+      let authorized = access()?.authorized;
+      if (refreshAccess || !authorized) {
+        const next = await api<Access>("access");
+        if (generation !== current) return;
+        authorized = next.authorized;
+        updateAccess(next);
+      }
+      if (authorized) {
+        const next = await api<Snapshot>("state");
+        if (generation !== current) return;
+        setSnapshot(next);
+      }
+      setReachable(true);
+    } catch (reason) {
+      if (generation !== current) return;
+      if (reason instanceof ApiError && reason.code === "login_required") {
+        updateAccess({ protected: true, authorized: false, setup_required: false });
+      } else {
+        setReachable(false);
+      }
+    }
+    if (generation === current) retry = window.setTimeout(() => void poll(current), 1000);
   }
 
   onSettled(() => {
@@ -112,7 +173,7 @@ export function createPanel() {
     setActionError("");
     try {
       await request();
-      if (options.recheckAccess) connect();
+      if (options.recheckAccess || builtinProvider()) connect();
       return true;
     } catch (reason) {
       const code = reason instanceof ApiError ? reason.code : "internal";
@@ -139,6 +200,10 @@ export function createPanel() {
     if (!state) return t().connecting;
     if (state.active) return t().stages[state.active.stage];
     if (state.settings.microphone_muted) return t().microphoneMuted;
+    if (builtinProvider()) {
+      if (!state.provider_ready) return t().embedded.provider;
+      if (!state.model || !state.settings.listening) return t().embedded.pushToTalk;
+    }
     if (!state.settings.listening) return t().paused;
     if (!state.microphone) return t().offline;
     if (!state.model) return t().noModel;
@@ -147,7 +212,12 @@ export function createPanel() {
 
   return {
     access, snapshot, chatDraft, draftMessage, setDraftMessage, reachable, pending, error, language, t, status, changeLanguage, clearError,
-    stageIssue, updateProviderSettings, wakeReady: () => reachable() && wakeReady(snapshot()),
+    stageIssue, updateProviderSettings: providerReadiness.updateProviderSettings, builtinProvider,
+    pluginPackages: () => device()?.plugin_packages ?? !builtinProvider(),
+    hasWakeRuntime: () => Boolean(device()?.wake_runtimes.length),
+    hasWakeCatalog: () => device()?.wake_catalog ?? !builtinProvider(),
+    refresh: () => { if (builtinProvider()) connect(); },
+    wakeReady: () => reachable() && wakeReady(snapshot()),
     assistantNeedsSetup: () => Boolean(snapshot() && capabilities.some(capability => {
       const issue = stageIssue(capability);
       return issue && issue.kind !== "checking";
@@ -161,8 +231,10 @@ export function createPanel() {
     microphonePending, microphoneError,
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
-      action(() => api("setup", "POST", { password, confirmation }), { recheckAccess: true }),
-    login: (password: string) => action(() => api("login", "POST", { password }), { recheckAccess: true }),
+      action(() => api("setup", "POST", { password, confirmation }, builtinProvider() ? 90_000 : undefined),
+        { recheckAccess: true }),
+    login: (password: string) => action(() => api("login", "POST", { password }, builtinProvider() ? 90_000 : undefined),
+      { recheckAccess: true }),
     logout: () => action(async () => {
       await api("logout", "POST", {});
       updateAccess({ protected: true, authorized: false, setup_required: false });
@@ -172,11 +244,13 @@ export function createPanel() {
     clearChat: () => action(() => api("chat/clear", "POST", {})),
     saveSettings: (settings: Settings, options?: { showError?: boolean }) =>
       action(() => api("settings", "PUT", { settings }), options),
+    saveAssistant: (settings: Settings) =>
+      action(() => api("settings/assistant", "PUT", settings.assistant)),
     saveSystemPrompt: (systemPrompt: string) =>
       action(() => api("settings/system-prompt", "PUT", { system_prompt: systemPrompt })),
     testStation: (mode: "manual" | "wake", onError: (code: string) => void) =>
       action(() => api("test", "POST", { mode }), { onError }),
-    uploadPlugin: (file: File) => action(() => api("plugin-packages", "POST", file)),
+    uploadPlugin: (file: File) => action(() => api("plugin-packages", "POST", file, builtinProvider() ? 90_000 : undefined)),
     removePlugin: (id: string) => action(() => api(`plugin-packages/${id}`, "DELETE")),
   };
 }

@@ -26,7 +26,7 @@ enum Kind {
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Field {
+pub(crate) struct Field {
     id: String,
     label: Label,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,7 +68,7 @@ impl Field {
     }
 }
 
-pub(super) fn valid_base_url(text: &str) -> bool {
+pub(crate) fn valid_base_url(text: &str) -> bool {
     Url::parse(text).is_ok_and(|url| {
         matches!(url.scheme(), "http" | "https")
             && url.host().is_some()
@@ -79,7 +79,7 @@ pub(super) fn valid_base_url(text: &str) -> bool {
     })
 }
 
-pub(super) fn wasm_http_fields(fields: &[Field], base: Option<&str>, key: &str) -> bool {
+pub(crate) fn wasm_http_fields(fields: &[Field], base: Option<&str>, key: &str) -> bool {
     base.is_none_or(|id| {
         fields
             .iter()
@@ -89,7 +89,7 @@ pub(super) fn wasm_http_fields(fields: &[Field], base: Option<&str>, key: &str) 
         .any(|field| field.id == key && field.kind == Kind::Secret)
 }
 
-pub(super) fn validate(fields: &[Field]) -> Result<()> {
+pub(crate) fn validate(fields: &[Field]) -> Result<()> {
     ensure!(fields.len() <= 24, "Too many plugin settings");
     let mut ids = HashSet::new();
     for field in fields {
@@ -125,7 +125,7 @@ pub(crate) struct View {
 }
 
 impl View {
-    pub(super) fn new(fields: Vec<Field>, data: SettingsData) -> Self {
+    pub(crate) fn new(fields: Vec<Field>, data: SettingsData) -> Self {
         let values = fields
             .iter()
             .filter_map(|field| {
@@ -147,7 +147,7 @@ impl View {
     }
 }
 
-pub(super) fn apply(
+pub(crate) fn apply(
     fields: &[Field],
     mut data: SettingsData,
     patch: Map<String, Value>,

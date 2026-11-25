@@ -1,6 +1,5 @@
-use super::{
-    Detector, END_SILENCE, FIRST_SPEECH_TIMEOUT, PRE_ROLL, Recording, RecordingGain, VAD_SAMPLES,
-};
+use super::{Detector, PRE_ROLL, Recording, RecordingGain, VAD_SAMPLES};
+use crate::voice_core::{END_SILENCE, FIRST_SPEECH_TIMEOUT};
 
 #[test]
 fn pre_roll_reaches_transcription_even_when_speech_ends_before_the_wake_score() {

@@ -1,6 +1,32 @@
 import type { Stage } from "./words";
 
 export type Capability = "transcription" | "chat" | "speech";
+export interface DeviceCapabilities {
+  platform: string;
+  device: string;
+  wake_runtimes: string[];
+  wake_catalog?: boolean;
+  panel_updates: "events" | "poll";
+  provider_configuration: "plugins" | "builtin";
+  plugin_packages?: boolean;
+}
+
+export interface BuiltinProvider {
+  base_url: string;
+  has_key: boolean;
+  stt_model: string;
+  chat_model: string;
+  tts_model: string;
+  voice: string;
+  speech_streaming: boolean;
+}
+
+export type WifiStatus = { status: "connecting" } | {
+  status: "setup" | "connected";
+  ssid: string;
+  address: string;
+  error: string | null;
+};
 export interface ModelSelection {
   model?: string;
   parameters?: Record<string, unknown>;
@@ -35,7 +61,7 @@ export interface WakeModel {
   id: string;
   wake_word: string;
   tier: "standard" | "micro";
-  runtime?: "livekit-v2-standard-onnx" | "livekit-v2-micro-onnx" | "livekit-v2-micro-tflite";
+  runtime: "livekit-v2-standard-onnx" | "livekit-v2-micro-onnx" | "livekit-v2-micro-tflite";
   sha256: string;
 }
 
@@ -46,7 +72,7 @@ export interface WakeModelCatalog {
 
 export interface Report {
   stage: Stage;
-  source: "chat" | "wake" | "manual_test" | "wake_test";
+  source: "chat" | "wake" | "manual_test" | "wake_test" | "push_to_talk";
   timings: { stage: Stage; ms: number }[];
   error: string | null;
   message_id?: number;
@@ -77,6 +103,8 @@ export interface Message {
 }
 
 export interface Snapshot {
+  provider_ready?: boolean;
+  voice_provider_ready?: boolean;
   settings: Settings;
   system_prompt: string;
   microphone: boolean;
@@ -119,7 +147,6 @@ export interface Plugin {
   model_catalog: boolean;
   speech_streaming?: boolean;
   has_settings: boolean;
-  settings_redirect?: string;
   connection_settings?: boolean;
   connections?: ProviderConnection[];
 }
@@ -162,13 +189,15 @@ export class ApiError extends Error {
 
 export async function api<T>(route: string, method = "GET", body?: unknown, timeout?: number): Promise<T> {
   let response: Response;
-  const archive = body instanceof File;
+  const binary = body instanceof Blob;
+  const contentType = body instanceof File ? "application/gzip"
+    : binary ? body.type || "application/octet-stream" : "application/json";
   try {
     response = await fetch(`/api/${route}`, {
       method,
-      headers: body === undefined ? undefined : { "Content-Type": archive ? "application/gzip" : "application/json" },
-      body: archive ? body : body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(timeout ?? (archive ? 60_000 : 10_000)),
+      headers: body === undefined ? undefined : { "Content-Type": contentType },
+      body: binary ? body : body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout ?? (binary ? 60_000 : 10_000)),
     });
   } catch {
     throw new ApiError("connection");

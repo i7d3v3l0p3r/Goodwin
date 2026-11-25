@@ -42,19 +42,6 @@ pub(crate) enum Model {
     Id(String),
 }
 
-impl Model {
-    fn bundled_arg(&self) -> Result<&'static str> {
-        match self {
-            Self::Keep => Ok("keep"),
-            Self::Id(id) if id == "goodwin-standard" => Ok("standard"),
-            Self::Id(id) if id == "goodwin-micro" => Ok("micro"),
-            _ => {
-                bail!("Эта модель требует сборку Goodwin с поддержкой отдельного каталога моделей")
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct Address {
     host: String,
@@ -272,57 +259,51 @@ pub(crate) fn install_with_progress(
     } else {
         InstallIssue::Release
     };
-    let (source, bundled_models) = package::prepare(source, work.path(), &log).context(issue)?;
-    let mut model_file = None;
-    let choice = if bundled_models {
-        model.bundled_arg().context(InstallIssue::Model)?
-    } else {
-        let id = match &model {
-            Model::Id(id) => Some(id.as_str()),
-            Model::Keep => (!already_installed(&adb)?).then_some("goodwin-standard"),
+    let source = package::prepare(source, work.path(), &log).context(issue)?;
+    let id = match &model {
+        Model::Id(id) => Some(id.as_str()),
+        Model::Keep => (!already_installed(&adb)?).then_some("goodwin-standard"),
+    };
+    let (choice, model_file) = if let Some(id) = id {
+        let payload = work.path().join("payload");
+        let binary = fs::read(payload.join("goodwin"))?;
+        let marker = tflite_marker();
+        let with_tflite = binary.windows(marker.len()).any(|bytes| bytes == marker);
+        let runtimes = Runtime::available(with_tflite);
+        drop(binary);
+        log(format!("Скачиваем модель активации {id}…"));
+        let latest;
+        let catalog = match catalog {
+            Some(catalog) => catalog,
+            None => {
+                latest = Catalog::latest(runtimes).context(InstallIssue::Model)?;
+                &latest
+            }
         };
-        if let Some(id) = id {
-            let payload = work.path().join("payload");
-            let binary = fs::read(payload.join("goodwin"))?;
-            let marker = tflite_marker();
-            let with_tflite = binary.windows(marker.len()).any(|bytes| bytes == marker);
-            let runtimes = Runtime::available(with_tflite);
-            drop(binary);
-            log(format!("Скачиваем модель активации {id}…"));
-            let latest;
-            let catalog = match catalog {
-                Some(catalog) => catalog,
-                None => {
-                    latest = Catalog::latest(runtimes).context(InstallIssue::Model)?;
-                    &latest
-                }
-            };
-            let model = catalog
-                .models
-                .iter()
-                .find(|model| model.selection.id == id)
-                .context("В каталоге нет выбранной модели активации")
-                .context(InstallIssue::Model)?;
-            ensure!(
-                runtimes.contains(&model.selection.runtime()),
-                InstallIssue::Model
-            );
-            let name = match model.selection.runtime() {
-                Runtime::MicroTflite => "wake-model.tflite",
-                _ => "wake-model.onnx",
-            };
-            let selection = catalog
-                .download(id, fs::File::create(payload.join(name))?)
-                .context(InstallIssue::Model)?;
-            serde_json::to_writer(
-                fs::File::create(payload.join("wake-model.json"))?,
-                selection,
-            )?;
-            model_file = Some(name);
-            "catalog"
-        } else {
-            "keep"
-        }
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| model.selection.id == id)
+            .context("В каталоге нет выбранной модели активации")
+            .context(InstallIssue::Model)?;
+        ensure!(
+            runtimes.contains(&model.selection.runtime),
+            InstallIssue::Model
+        );
+        let name = match model.selection.runtime {
+            Runtime::MicroTflite => "wake-model.tflite",
+            _ => "wake-model.onnx",
+        };
+        let selection = catalog
+            .download(id, fs::File::create(payload.join(name))?)
+            .context(InstallIssue::Model)?;
+        serde_json::to_writer(
+            fs::File::create(payload.join("wake-model.json"))?,
+            selection,
+        )?;
+        ("catalog", Some(name))
+    } else {
+        ("keep", None)
     };
     let scratch_kib = package::build_payload(work.path(), model_file)?;
     for (name, script) in [("install-station.sh", INSTALL), ("init.sh", INIT)] {

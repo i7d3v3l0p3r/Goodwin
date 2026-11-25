@@ -64,8 +64,8 @@ void* goodwin_tflite_open(const uint8_t* bytes, size_t len) {
     flatbuffers::Verifier verifier(bytes, len);
     if (!tflite::VerifyModelBuffer(verifier)) return nullptr;
     if (!valid_signature(tflite::GetModel(bytes))) return nullptr;
-    auto* storage = std::malloc(sizeof(Detector));
-    if (!storage) return nullptr;
+    void* storage = nullptr;
+    if (posix_memalign(&storage, alignof(Detector), sizeof(Detector)) != 0) return nullptr;
     auto* detector = new (storage) Detector(bytes);
     if (detector->model.ok() && detector->model.save_warm_state()) return detector;
     detector->~Detector();

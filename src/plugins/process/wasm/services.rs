@@ -19,10 +19,11 @@ use rustix::fs::{self, AtFlags, Dir, Mode, OFlags};
 use tokio::sync::mpsc::error::TrySendError;
 
 use super::*;
-use crate::plugins::{connections, package::WasmHttp};
+use crate::{
+    plugin_wasm::{HostServices, META_LIMIT},
+    plugins::{connections, package::WasmHttp},
+};
 
-pub(super) const META_LIMIT: usize = 32 * 1024;
-pub(super) const INPUT_LIMIT: usize = MAX_RECORDING_BYTES.div_ceil(3) * 4 + FRAME_LIMIT;
 const STORAGE_LIMIT: usize = 128 * 1024;
 const SPEECH_ERROR_LIMIT: usize = 8 * 1024;
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
@@ -38,7 +39,6 @@ pub(super) struct Host {
     storage: Option<OwnedFd>,
     response: Option<HttpResponseBody>,
     runtime: tokio::runtime::Handle,
-    pub(super) output: Vec<u8>,
     pub(super) chunks: Option<StreamChunks>,
     pub(super) deadline: Instant,
     pub(super) shutdown: Option<watch::Receiver<bool>>,
@@ -58,7 +58,6 @@ impl Host {
             storage,
             response: None,
             runtime: tokio::runtime::Handle::current(),
-            output: Vec::new(),
             chunks: None,
             deadline: Instant::now(),
             shutdown: None,
@@ -68,7 +67,6 @@ impl Host {
     pub(super) fn finish(&mut self) {
         self.connection = None;
         self.response = None;
-        self.output = Vec::new();
         self.chunks = None;
         self.shutdown = None;
     }
@@ -104,8 +102,10 @@ impl Host {
         );
         Ok(())
     }
+}
 
-    pub(super) fn execute(&mut self, request: Request, input: &[u8]) -> Result<Vec<u8>> {
+impl HostServices for Host {
+    fn execute(&mut self, request: Request, input: &[u8]) -> Result<Vec<u8>> {
         self.check_active()?;
         match request {
             Request::Settings if self.has_connections => {
@@ -186,7 +186,9 @@ impl Host {
             }
         }
     }
+}
 
+impl Host {
     fn http_start(&mut self, request: HttpRequest, input: &[u8]) -> Result<Vec<u8>> {
         static CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
             Client::builder()

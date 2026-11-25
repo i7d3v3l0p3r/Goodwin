@@ -496,7 +496,7 @@ impl InstallerWindow {
             "«Гудвин» Standard"
         };
         let label = |model: &crate::wake_catalog::Selection| {
-            let tier = match model.runtime() {
+            let tier = match model.runtime {
                 Runtime::MicroTflite => "Micro INT8",
                 Runtime::Micro => "Micro",
                 _ => "Standard",

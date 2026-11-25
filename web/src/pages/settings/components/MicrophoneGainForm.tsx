@@ -10,6 +10,7 @@ export function MicrophoneGainForm(props: {
   t: Words;
   snapshot: Snapshot;
   pending: boolean;
+  showWakeGain: boolean;
   save: (settings: Settings) => Promise<boolean>;
 }) {
   const wakeGain = createMemo(() => props.snapshot.settings.wake_gain);
@@ -43,7 +44,7 @@ export function MicrophoneGainForm(props: {
     };
     const ok = await props.save({
       ...props.snapshot.settings,
-      wake_gain: gain("wake_gain"),
+      wake_gain: props.showWakeGain ? gain("wake_gain") : props.snapshot.settings.wake_gain,
       transcription_gain: gain("transcription_gain"),
     });
     if (ok) setEdited({ wake_gain: false, transcription_gain: false });
@@ -55,13 +56,13 @@ export function MicrophoneGainForm(props: {
     <h2 id="microphone-settings-title">{props.t.audioInput}</h2>
     <form class={styles.form} onSubmit={event => void save(event)}>
       <fieldset class={styles.gains} disabled={props.pending}>
-        <label class={styles.field}>
+        <Show when={props.showWakeGain}><label class={styles.field}>
           {props.t.wakeGain}
           <input type="number" inputmode="decimal" name="wake_gain" min={0.1} max={64} step="any"
             value={wakeGain() ?? ""} placeholder={String(props.snapshot.default_microphone_gain)}
             aria-describedby="wake-gain-hint" onInput={event => edit("wake_gain", event.currentTarget)} />
           <span id="wake-gain-hint" class={styles.hint}>{props.t.defaultGainHint}</span>
-        </label>
+        </label></Show>
         <label class={styles.field}>
           {props.t.transcriptionGain}
           <input type="number" inputmode="decimal" name="transcription_gain" min={0.1} max={64} step="any"

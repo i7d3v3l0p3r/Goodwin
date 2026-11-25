@@ -6,6 +6,12 @@ use std::{
 };
 
 use goodwin_plugin::provider::Capability;
+
+use crate::panel_core::{
+    CHAT_INSTRUCTIONS, ChatTest, Message, PlaybackMode, Report, VoiceDetails, VoiceModel,
+    VoiceReport, recent_chat,
+};
+pub use crate::panel_core::{Failure, Source, Stage};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
@@ -24,78 +30,6 @@ use crate::{
 mod tests;
 mod voice;
 
-pub(crate) use voice::VOICE_INSTRUCTIONS;
-
-const CHAT_INSTRUCTIONS: &str =
-    "You are Goodwin, a home assistant. Reply concisely in the user's language.";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Source {
-    Chat,
-    Wake,
-    ManualTest,
-    WakeTest,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Stage {
-    AwaitingWake,
-    Recording,
-    Transcribing,
-    Thinking,
-    Synthesizing,
-    Playing,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Failure {
-    Busy,
-    Microphone,
-    MicrophoneMuted,
-    Model,
-    ProviderUnavailable,
-    ProviderFailed,
-    ChatInterrupted,
-    Playback,
-    NoSpeech,
-    NoWake,
-}
-
-#[derive(Clone, Copy, Serialize)]
-pub struct Timing {
-    stage: Stage,
-    ms: u64,
-}
-
-#[derive(Clone, Serialize)]
-pub struct Report {
-    source: Source,
-    stage: Stage,
-    timings: Vec<Timing>,
-    error: Option<Failure>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chat_test: Option<ChatTest>,
-    #[serde(skip)]
-    tested_configuration: Option<[u8; 32]>,
-}
-
-#[derive(Clone, Serialize)]
-struct ChatTest {
-    model: VoiceModel,
-    answered: bool,
-}
-
-#[derive(Clone, Serialize)]
-struct VoiceModel {
-    provider: String,
-    model: Option<String>,
-}
-
 impl From<&StageSettings> for VoiceModel {
     fn from(settings: &StageSettings) -> Self {
         Self {
@@ -103,26 +37,6 @@ impl From<&StageSettings> for VoiceModel {
             model: settings.selection.model.clone(),
         }
     }
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PlaybackMode {
-    Streaming,
-    Buffered,
-    Announcement,
-}
-
-#[derive(Clone, Serialize)]
-struct VoiceDetails {
-    started_at_ms: u64,
-    transcription: VoiceModel,
-    chat: VoiceModel,
-    speech: VoiceModel,
-    transcript: Option<String>,
-    answer: Option<String>,
-    playback: Option<PlaybackMode>,
-    error_stage: Option<Stage>,
 }
 
 impl VoiceDetails {
@@ -143,14 +57,6 @@ impl VoiceDetails {
     }
 }
 
-#[derive(Clone, Serialize)]
-struct VoiceReport {
-    #[serde(flatten)]
-    report: Report,
-    #[serde(flatten)]
-    details: VoiceDetails,
-}
-
 struct Turn {
     id: u64,
     started: Instant,
@@ -168,15 +74,6 @@ pub(crate) struct ActiveTurn {
     pub sensitivity: f32,
     pub wake_gain: Option<f32>,
     pub transcription_gain: Option<f32>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct Message {
-    id: u64,
-    role: &'static str,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<Failure>,
 }
 
 #[derive(Default)]
@@ -677,14 +574,7 @@ impl App {
             let context: Vec<_> = if turn.report.chat_test.is_some() {
                 Vec::new()
             } else {
-                runtime
-                    .messages
-                    .iter()
-                    .rev()
-                    .filter(|message| message.role != "assistant" || message.error.is_none())
-                    .take(12)
-                    .cloned()
-                    .collect()
+                recent_chat(runtime.messages.iter().rev())
             };
             let message_id = runtime.push_message("user", text.clone());
             runtime
@@ -788,10 +678,7 @@ impl Runtime {
 impl Turn {
     fn record_timing(&mut self) {
         let now = Instant::now();
-        self.report.timings.push(Timing {
-            stage: self.report.stage,
-            ms: now.duration_since(self.started).as_millis() as u64,
-        });
+        self.report.record_timing(now.duration_since(self.started));
         self.started = now;
     }
 }

@@ -15,18 +15,21 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use blake2::{Blake2s256, Digest};
-use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::config::{Access, random_bytes, valid_password_length, verify_password};
+use crate::{
+    config::{Access, random_bytes, verify_password},
+    panel_core::{
+        AccessState, CONTENT_SECURITY_POLICY, Login, SESSION_DURATION, SetupPassword, same_origin,
+        session_cookie as cookie, session_token, valid_password_length,
+    },
+};
 
 use super::{Panel, problem};
 
 #[cfg(test)]
 mod tests;
 
-const SESSION_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
-const COOKIE: &str = "goodwin_session";
 const SESSION_FILE: &str = "panel-sessions.json";
 
 #[derive(Default)]
@@ -71,9 +74,10 @@ pub(super) async fn response_headers(request: axum::extract::Request, next: Next
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(
-        "default-src 'self'; font-src 'self' data:; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    ));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
     response
 }
 
@@ -82,40 +86,29 @@ pub(super) async fn require_same_origin(request: axum::extract::Request, next: N
         return next.run(request).await;
     }
     let headers = request.headers();
-    let cross_site = headers
+    let host = headers
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .or_else(|| {
+            request
+                .uri()
+                .authority()
+                .map(|authority| authority.as_str())
+        });
+    let origin = headers
+        .get(header::ORIGIN)
+        .map(|value| value.to_str().unwrap_or_default());
+    let site = headers
         .get("sec-fetch-site")
-        .is_some_and(|value| value == "cross-site");
-    let wrong_origin = headers.get(header::ORIGIN).is_some_and(|value| {
-        let origin = value.to_str().unwrap_or_default();
-        let host = headers
-            .get(header::HOST)
-            .and_then(|host| host.to_str().ok())
-            .or_else(|| {
-                request
-                    .uri()
-                    .authority()
-                    .map(|authority| authority.as_str())
-            });
-        origin
-            .strip_prefix("http://")
-            .or_else(|| origin.strip_prefix("https://"))
-            != host
-            || host.is_none()
-    });
-    if cross_site || wrong_origin {
+        .and_then(|value| value.to_str().ok());
+    if !same_origin(origin, host, site) {
         return problem(StatusCode::FORBIDDEN, "origin");
     }
     next.run(request).await
 }
 
 fn token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .filter_map(|part| part.trim().split_once('='))
-        .find_map(|(key, value)| (key == COOKIE).then_some(value))
+    session_token(headers.get(header::COOKIE)?.to_str().ok()?)
 }
 
 async fn authorized(panel: &Panel, headers: &HeaderMap) -> bool {
@@ -192,13 +185,6 @@ pub(super) async fn require_owner(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
-pub(super) struct AccessState {
-    protected: bool,
-    pub(super) authorized: bool,
-    setup_required: bool,
-}
-
 pub(super) async fn access_state(
     panel: &Panel,
     headers: &HeaderMap,
@@ -218,12 +204,6 @@ pub(super) async fn access_state(
 
 pub(super) async fn access(State(panel): State<Panel>, headers: HeaderMap) -> impl IntoResponse {
     Json(access_state(&panel, &headers).await.0)
-}
-
-#[derive(Deserialize)]
-pub(super) struct SetupPassword {
-    password: String,
-    confirmation: String,
 }
 
 pub(super) async fn setup_password(
@@ -261,11 +241,6 @@ pub(super) async fn setup_password(
         Ok(Ok(response)) => response,
         _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "password_save_failed"),
     }
-}
-
-#[derive(Deserialize)]
-pub(super) struct Login {
-    password: String,
 }
 
 pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) -> Response {
@@ -318,10 +293,6 @@ fn create_session(panel: &Panel, password_hash: &str) -> Result<String> {
     sessions.insert(session_key(password_hash, &token), now + SESSION_DURATION);
     auth.save(&panel.app.dir, sessions)?;
     Ok(cookie(&token, SESSION_DURATION.as_secs()))
-}
-
-fn cookie(token: &str, age: u64) -> String {
-    format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}")
 }
 
 pub(super) async fn logout(

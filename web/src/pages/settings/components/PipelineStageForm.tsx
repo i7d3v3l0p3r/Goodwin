@@ -25,6 +25,7 @@ export function PipelineStageForm(props: {
   capability: Capability;
   draft: StageDraft;
   plugins: Plugin[];
+  builtin?: boolean;
   t: Words;
   language: Language;
   invalidParameters: boolean;
@@ -34,7 +35,7 @@ export function PipelineStageForm(props: {
   const providers = createMemo(() => {
     const available = props.plugins.filter(plugin => plugin.status === "ready" && plugin.providers.includes(props.capability));
     const ids = new Set(props.plugins.flatMap(plugin => plugin.connections ?? []).map(connection => connection.providerId));
-    return available.flatMap(plugin => {
+    const entries = available.flatMap(plugin => {
       if (plugin.connection_settings) return (plugin.connections ?? []).map(connection => ({
         id: connection.providerId, name: connection.name, model_catalog: plugin.model_catalog,
         speech_streaming: connection.speechStreaming && plugin.speech_streaming === true,
@@ -44,6 +45,11 @@ export function PipelineStageForm(props: {
       return [{ id: plugin.id, name: plugin.title[props.language], revision: plugin.revision ?? "",
         model_catalog: plugin.model_catalog, speech_streaming: plugin.speech_streaming === true }];
     });
+    if (props.builtin) entries.unshift({
+      id: "builtin", name: props.t.embedded.builtinProvider, revision: "",
+      model_catalog: false, speech_streaming: true,
+    });
+    return entries;
   });
   const current = () => providers().find(plugin => plugin.id === props.draft.provider);
   const [catalog, setCatalog] = createSignal<ModelCatalog>();
@@ -110,7 +116,9 @@ export function PipelineStageForm(props: {
           }</For>
         </select>}
       </Field>
-      <Show when={current() && !current()?.model_catalog}><p class={styles.note}>{props.t.providerUpdate}</p></Show>
+      <Show when={current() && !current()?.model_catalog && current()?.id !== "builtin"}>
+        <p class={styles.note}>{props.t.providerUpdate}</p>
+      </Show>
       <Show when={current()?.model_catalog}>
         <Field class={styles.primaryField} label={props.t.modelName}>
           {control => <select {...control} value={modelValue()} onChange={event => {

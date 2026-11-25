@@ -38,7 +38,7 @@ fn installation_accepts_a_named_adb_and_a_local_package() {
         "--adb",
         "Platform Tools/adb",
         "--model",
-        "micro",
+        "goodwin-micro",
         "--package",
         "Local Builds/goodwin.tar.gz",
     ])

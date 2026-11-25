@@ -10,7 +10,7 @@ use crate::wake_catalog::{Runtime, Selection, tflite_marker};
 mod catalog;
 mod micro;
 #[cfg(feature = "wake-tflite")]
-mod tflite;
+use crate::wake_tflite::TfliteModel;
 
 pub(crate) use catalog::{InstallError, PendingModel, WakeModels};
 pub use livekit_wakeword::{FRAME_SAMPLES, SAMPLE_RATE};
@@ -34,7 +34,7 @@ enum Backend {
     Standard(Box<WakeWordModel>),
     Micro(Box<micro::MicroModel>),
     #[cfg(feature = "wake-tflite")]
-    Tflite(tflite::TfliteModel),
+    Tflite(TfliteModel),
 }
 
 impl WakeModel {
@@ -44,7 +44,7 @@ impl WakeModel {
 
     pub(crate) fn load_selected(path: &Path, selection: &Selection) -> Result<Self> {
         ensure!(
-            runtimes().contains(&selection.runtime()),
+            runtimes().contains(&selection.runtime),
             "The selected wake runtime is unavailable in this build"
         );
         Self::load_file(path, Some(selection))
@@ -58,15 +58,14 @@ impl WakeModel {
         let tflite = bytes.get(4..8) == Some(b"TFL3");
         if let Some(selection) = selection {
             ensure!(
-                sha256 == selection.sha256
-                    && tflite == (selection.runtime() == Runtime::MicroTflite),
+                sha256 == selection.sha256 && tflite == (selection.runtime == Runtime::MicroTflite),
                 "Wake model does not match its selection"
             );
         }
         if tflite {
             #[cfg(feature = "wake-tflite")]
             return Ok(Self {
-                backend: Backend::Tflite(tflite::TfliteModel::load(bytes)?),
+                backend: Backend::Tflite(TfliteModel::load(bytes)?),
                 sha256,
                 calibrated_threshold: Some(
                     selection
@@ -97,7 +96,7 @@ impl WakeModel {
             calibrated_threshold: None,
         };
         ensure!(
-            selection.is_none_or(|selection| model.runtime() == selection.runtime()),
+            selection.is_none_or(|selection| model.runtime() == selection.runtime),
             "Wake model does not match its selection"
         );
         Ok(model)
@@ -246,7 +245,7 @@ mod tests {
             wake_word: "Гудвин".into(),
             tier: "micro".into(),
             sha256: format!("{:x}", Sha256::digest(&bytes)),
-            runtime: Some(Runtime::MicroTflite),
+            runtime: Runtime::MicroTflite,
             score_threshold: Some(0.390625),
         };
         let mut model = WakeModel::load_selected(path, &selection).unwrap();

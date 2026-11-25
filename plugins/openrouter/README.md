@@ -1,8 +1,8 @@
-# Legacy OpenRouter provider
+# Standalone OpenRouter provider
 
-Current Station releases provide OpenRouter through the [OpenAI-compatible WASM package](../openai-compatible/). Install that package and configure the OpenRouter connection there. On first installation it imports the standalone package's API key and retains existing assistant stage assignments.
+Current Station releases provide OpenRouter through the [OpenAI-compatible WASM package](../openai-compatible/). Configure the OpenRouter connection in that package's settings.
 
-The standalone package remains in the source tree for older installations and native development. To build and package it for a Windows development instance, run these commands from the repository root.
+To build and package the standalone provider for a Windows development instance, run these commands from the repository root.
 
 ```powershell
 cargo build --locked --release -p goodwin-openrouter

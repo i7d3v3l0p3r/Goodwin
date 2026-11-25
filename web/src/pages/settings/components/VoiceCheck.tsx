@@ -135,12 +135,56 @@ interface ReportProps {
   report: Report;
 }
 
+export function EmbeddedVoiceDiagnostics(props: {
+  t: Words;
+  language: Language;
+  snapshot: Snapshot;
+  pending: boolean;
+  test: (mode: TestMode, onError: (code: string) => void) => Promise<boolean>;
+}) {
+  const active = () => props.snapshot.active?.source === "chat" ? null : props.snapshot.active;
+  const [error, setError] = createSignal("");
+  const disabled = () => props.pending || !!props.snapshot.active
+    || !(props.snapshot.voice_provider_ready ?? props.snapshot.provider_ready) || props.snapshot.settings.microphone_muted;
+  const wakeWord = () => props.snapshot.wake_model?.wake_word ?? props.t.defaultWakeWord;
+  const start = (mode: TestMode) => { setError(""); void props.test(mode, setError); };
+  return <section class={styles.details} aria-labelledby="last-voice-title">
+    <h2 id="last-voice-title">{props.t.lastVoiceRequest}</h2>
+    <p class={styles.note}>{props.t.embedded.pushToTalkHint}</p>
+    <div class="gw-row">
+      <Button type="button" onClick={() => start("manual")} disabled={disabled()}>
+        {props.t.firstRun.noWakeWord}
+      </Button>
+      <Show when={props.snapshot.model}>
+        <Button type="button" onClick={() => start("wake")} disabled={disabled()}>
+          {props.t.byWake(wakeWord())}
+        </Button>
+      </Show>
+    </div>
+    <Show when={error()}><p role="alert">{errorLabel(props.t, error())}</p></Show>
+    <Show when={active()}>{report => <div class={styles.progress} role="status">
+      <StatusIndicator tone="pending">{props.t.stages[report().stage]}</StatusIndicator>
+      <Show when={report().stage === "awaiting_wake"}>
+        <p class={styles.note}>{props.t.embedded.wakeTestHint(wakeWord())}</p>
+      </Show>
+      <Show when={isVoiceTest(report()) && report().stage === "recording"}>
+        <p class={styles.note}>{props.t.embedded.speakNow}</p>
+      </Show>
+      <Timings t={props.t} language={props.language} report={report()} />
+    </div>}</Show>
+    <Show when={props.snapshot.last_voice} fallback={<EmptyState>{props.t.noRequest}</EmptyState>}>{report =>
+      <RequestDetails t={props.t} language={props.language} report={report()} showConfiguration />
+    }</Show>
+  </section>;
+}
+
 function RequestDetails(props: Omit<ReportProps, "report"> & { report: VoiceReport; stale?: boolean; showConfiguration?: boolean }) {
   const details = () => props.report;
   const dateFormat = createMemo(() => new Intl.DateTimeFormat(props.language, { dateStyle: "medium", timeStyle: "medium" }));
   const numberFormat = createMemo(() => new Intl.NumberFormat(props.language));
   const modes = () => ({
     wake: props.t.wakeRequest, manual_test: props.t.manualTest, wake_test: props.t.wakeTest, chat: props.t.chat,
+    push_to_talk: props.t.embedded.pushToTalk,
   });
   const failure = (code: string) => {
     const message = errorLabel(props.t, code);
@@ -187,8 +231,17 @@ function RequestDetails(props: Omit<ReportProps, "report"> & { report: VoiceRepo
 }
 
 function FailureAction(props: { t: Words; code: string; stage?: Stage }) {
+  const panel = usePanel();
   const recovery = () => {
     const t = props.t.voiceRecovery;
+    if (panel.builtinProvider()) {
+      if (props.code === "microphone" || props.code === "no_speech") {
+        return { hint: props.t.embedded.pushToTalkHint };
+      }
+      if (props.code === "provider_unavailable") {
+        return { href: settingsSectionPath("assistant"), label: props.t.embedded.provider };
+      }
+    }
     switch (props.code) {
       case "model":
       case "no_wake":

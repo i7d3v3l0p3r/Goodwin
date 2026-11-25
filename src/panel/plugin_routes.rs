@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     config::Access,
-    plugins::{ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure},
+    plugins::{ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure, package::asset_mime},
 };
 
 use super::{Panel, problem};
@@ -164,15 +164,8 @@ pub(super) async fn plugin_asset(
     State(panel): State<Panel>,
     Path((id, revision, path)): Path<(String, String, String)>,
 ) -> Response {
-    let mime = match path.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("mjs" | "js") => "text/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("png") => "image/png",
-        Some("jpeg" | "jpg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        Some("woff2") => "font/woff2",
-        _ => return plugin_problem(PluginFailure::NotFound),
+    let Some(mime) = asset_mime(&path) else {
+        return plugin_problem(PluginFailure::NotFound);
     };
     let plugins = panel.app.plugins.clone();
     match tokio::task::spawn_blocking(move || plugins.asset(&id, &revision, &path)).await {
@@ -182,13 +175,6 @@ pub(super) async fn plugin_asset(
 }
 
 fn plugin_problem(error: PluginFailure) -> Response {
-    let status = match error {
-        PluginFailure::InvalidPackage | PluginFailure::InvalidSettings => StatusCode::BAD_REQUEST,
-        PluginFailure::NotFound => StatusCode::NOT_FOUND,
-        PluginFailure::PasswordRequired => StatusCode::FORBIDDEN,
-        PluginFailure::StartFailed | PluginFailure::RolledBack => StatusCode::CONFLICT,
-        PluginFailure::Storage => StatusCode::INTERNAL_SERVER_ERROR,
-        PluginFailure::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-    };
+    let status = StatusCode::from_u16(error.status()).expect("valid plugin error HTTP status");
     problem(status, error.code())
 }

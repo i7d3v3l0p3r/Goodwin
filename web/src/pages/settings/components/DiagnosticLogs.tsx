@@ -11,7 +11,7 @@ interface Logs {
   goodwin: string | null;
 }
 
-export function DiagnosticLogs(props: { t: Words; passwordProtected: boolean }) {
+export function DiagnosticLogs(props: { t: Words; passwordProtected: boolean; showKernel?: boolean }) {
   const [logs, setLogs] = createSignal<Logs>();
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
@@ -41,7 +41,9 @@ export function DiagnosticLogs(props: { t: Words; passwordProtected: boolean }) 
       <Show when={logs()}>{current =>
         <Show when={current().supported} fallback={<EmptyState>{t().logsUnavailable}</EmptyState>}>
           <div class={styles.logs}>
-            <Log title={t().kernelLog} value={current().kernel} t={t()} />
+            <Show when={props.showKernel !== false}>
+              <Log title={t().kernelLog} value={current().kernel} t={t()} />
+            </Show>
             <Log title={t().goodwinLog} value={current().goodwin} t={t()} />
           </div>
         </Show>

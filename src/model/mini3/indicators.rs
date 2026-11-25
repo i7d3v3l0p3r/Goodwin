@@ -85,19 +85,19 @@ impl Indicators {
         }
     }
 
-    pub(super) fn envelope(&self, wave: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn envelope(&self, wave: &[u8]) -> Option<Vec<u8>> {
         self.worker.as_ref()?;
         Some(speech_levels(wave).unwrap_or_default())
     }
 
-    pub(super) fn speak(&self, levels: Vec<u8>) {
+    pub(crate) fn speak(&self, levels: Vec<u8>) {
         self.send(Scene::Speaking {
             start: Instant::now(),
             levels,
         });
     }
 
-    pub(super) fn begin_stream(&self, audio: &PcmAudio) -> Option<SpeechEnvelope> {
+    pub(crate) fn begin_stream(&self, audio: &PcmAudio) -> Option<SpeechEnvelope> {
         self.worker.as_ref()?;
         let mut envelope = SpeechEnvelope::new(
             u64::from(audio.sample_rate),
@@ -107,7 +107,7 @@ impl Indicators {
         Some(envelope)
     }
 
-    pub(super) fn append_levels(&self, levels: Vec<u8>) {
+    pub(crate) fn append_levels(&self, levels: Vec<u8>) {
         if !levels.is_empty() {
             self.send(Scene::SpeechLevels(levels));
         }
@@ -255,7 +255,7 @@ fn speech_levels(wave: &[u8]) -> Option<Vec<u8>> {
     Some(levels)
 }
 
-pub(super) struct SpeechEnvelope {
+pub(crate) struct SpeechEnvelope {
     rate: u64,
     channels: usize,
     frame: u64,
@@ -280,7 +280,7 @@ impl SpeechEnvelope {
         }
     }
 
-    pub(super) fn push(&mut self, pcm: &[u8]) -> Vec<u8> {
+    pub(crate) fn push(&mut self, pcm: &[u8]) -> Vec<u8> {
         let mut levels = Vec::new();
         let mut pcm = pcm.as_chunks::<2>().0;
         while !pcm.is_empty() {
@@ -304,7 +304,7 @@ impl SpeechEnvelope {
         levels
     }
 
-    pub(super) fn finish(&mut self) -> Option<u8> {
+    pub(crate) fn finish(&mut self) -> Option<u8> {
         (self.samples != 0).then(|| self.level())
     }
 

@@ -1,7 +1,4 @@
-pub(super) fn scale_sample(sample: i16, gain: f32) -> i16 {
-    // Float-to-integer casts saturate at the PCM limits.
-    (f32::from(sample) * gain) as i16
-}
+use super::scale_sample;
 
 #[derive(Clone, Copy)]
 pub(crate) enum RecordingGain {
@@ -10,11 +7,11 @@ pub(crate) enum RecordingGain {
 }
 
 impl RecordingGain {
-    pub(super) fn new(fixed: Option<f32>, fallback: f32) -> Self {
+    pub(crate) fn new(fixed: Option<f32>, fallback: f32) -> Self {
         fixed.map_or(Self::Automatic(fallback), Self::Fixed)
     }
 
-    pub(super) fn input_gain(self) -> f32 {
+    pub(crate) fn input_gain(self) -> f32 {
         match self {
             Self::Automatic(gain) | Self::Fixed(gain) => gain,
         }

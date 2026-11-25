@@ -38,6 +38,7 @@ export function AssistantForm(props: {
   pending: boolean;
   error: string;
   focusStage?: Capability;
+  builtin?: boolean;
   save: (settings: Settings) => Promise<boolean>;
 }) {
   const savedSettings = createMemo(() => draftPipeline(props.snapshot.settings), {
@@ -92,6 +93,7 @@ export function AssistantForm(props: {
       <fieldset class={styles.stages} disabled={props.pending} aria-labelledby="assistant-title">
         <For each={capabilities}>{capability =>
           <PipelineStageForm capability={capability} draft={draft()[capability]} plugins={props.snapshot.plugins}
+            builtin={props.builtin}
             t={props.t} language={props.language} invalidParameters={invalid() === capability}
             focusOnOpen={props.focusStage === capability}
             change={changes => {
