@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-25
+
 ### English
 
 - Reduced the memory used to format diagnostic entries on Mini 3 and ESP32-S3 and to retain them on ESP32-S3.
