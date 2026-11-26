@@ -5,9 +5,9 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use goodwin_error::{Context, Result as AnyResult, ensure};
+use goodwin_error::{Result as AnyResult, ensure};
 use goodwin_plugin::provider::{
-    CHAT_STREAM_METHOD, Capability, ChatRequest, ChatRole, MAX_CHAT_BYTES, MAX_SPEECH_CHUNK_BYTES,
+    CHAT_STREAM_METHOD, Capability, ChatMessage, ChatRequest, MAX_SPEECH_CHUNK_BYTES,
     MODELS_METHOD, ModelCatalog, ModelsRequest, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
 };
 
@@ -15,6 +15,7 @@ use super::{
     Failure, PathBuf, PluginIdentity, Plugins, Runtime, connections, random_id, services, store,
 };
 use crate::{
+    assistant::{chat, speech},
     plugins::ProviderConfig,
     voice_core::{VoiceProviders, VoiceRequest},
 };
@@ -367,18 +368,10 @@ impl Provider<'_> {
 
     pub(in crate::platform::espidf) fn complete(
         &self,
-        mut request: ChatRequest,
-    ) -> goodwin_error::Result<crate::voice_core::tools::CompletionMessage> {
-        request.selection = self.settings.selection.clone();
-        let response: goodwin_plugin::provider::Completion =
-            self.call(Capability::Chat, request)?;
-        goodwin_error::ensure!(
-            response.message.role == ChatRole::Assistant,
-            "Invalid plugin completion role"
-        );
-        Ok(crate::voice_core::tools::CompletionMessage(
-            response.message,
-        ))
+        request: &mut ChatRequest,
+    ) -> goodwin_error::Result<ChatMessage> {
+        request.selection.clone_from(&self.settings.selection);
+        chat::assistant_message(self.call(Capability::Chat, request)?)
     }
 
     pub(in crate::platform::espidf) fn streaming(&self, capability: Capability) -> bool {
@@ -391,10 +384,10 @@ impl Provider<'_> {
 
     pub(in crate::platform::espidf) fn stream_chat(
         &self,
-        mut request: ChatRequest,
+        request: &mut ChatRequest,
         mut consume: impl FnMut(&str),
     ) -> AnyResult<String> {
-        request.selection = self.settings.selection.clone();
+        request.selection.clone_from(&self.settings.selection);
         let mut answer = String::new();
         self.stream(
             Capability::Chat,
@@ -402,17 +395,12 @@ impl Provider<'_> {
             request,
             services::StreamChunks::Chat,
             |chunk| {
-                ensure!(
-                    answer.len() + chunk.len() <= MAX_CHAT_BYTES,
-                    "Plugin chat response is too large"
-                );
+                chat::append_chunk(&mut answer, &chunk)?;
                 consume(&chunk);
-                answer.push_str(&chunk);
                 Ok(())
             },
         )?;
-        ensure!(!answer.trim().is_empty(), "Empty plugin chat response");
-        Ok(answer.trim().to_owned())
+        chat::answer_text(answer)
     }
 
     pub(in crate::platform::espidf) fn synthesize(
@@ -506,26 +494,13 @@ impl PcmNormalizer {
         const RATE: u64 = crate::builtin_assistant::SPEECH_HZ as u64;
         let channels = usize::from(audio.channels);
         let rate = u64::from(audio.sample_rate);
-        ensure!(
-            (1..=2).contains(&channels) && (8_000..=96_000).contains(&rate),
-            "Invalid plugin PCM format"
-        );
         let format = (audio.sample_rate, channels);
         ensure!(
             *self.format.get_or_insert(format) == format,
             "Plugin PCM format changed"
         );
-        ensure!(
-            audio.pcm_base64.len() <= byte_limit.div_ceil(3) * 4,
-            "Plugin PCM chunk is too large"
-        );
-        let pcm = STANDARD
-            .decode(audio.pcm_base64)
-            .context("Decode plugin PCM")?;
-        ensure!(
-            !pcm.is_empty() && pcm.len() <= byte_limit && pcm.len().is_multiple_of(2 * channels),
-            "Invalid plugin PCM length"
-        );
+        let pcm = speech::decode_pcm(&audio, byte_limit)?;
+        drop(audio);
         let count = (pcm.len() / (2 * channels)) as u64;
         ensure!(
             self.frames + count <= rate * 30,

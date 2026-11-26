@@ -1,17 +1,17 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use goodwin_error::{Context, Result, ensure};
+use goodwin_error::{Result, ensure};
 use goodwin_plugin::provider::{
-    Capability, ChatMessage, ChatRequest, ChatRole, Completion, MAX_CHAT_BYTES,
-    MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MAX_SPEECH_CHUNK_BYTES, ModelSelection, SpeechAudio,
-    SpeechRequest, Transcription, TranscriptionRequest,
+    Capability, ChatMessage, ChatRequest, MAX_RECORDING_BYTES, MAX_SPEECH_BYTES,
+    MAX_SPEECH_CHUNK_BYTES, ModelSelection, SpeechAudio, SpeechRequest, Transcription,
+    TranscriptionRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     app::Failure,
-    assistant::StageSettings,
+    assistant::{StageSettings, chat, speech},
+    panel_core::Message,
     plugins::{Plugins, Process, SpeechReplies},
-    voice_core::tools::CompletionMessage,
     wav::PcmAudio,
 };
 
@@ -33,18 +33,22 @@ impl SpeechStream {
             ensure!(self.received != 0, "Empty PCM stream");
             return Ok(None);
         };
-        let audio = decode_speech(reply, MAX_SPEECH_CHUNK_BYTES)?;
-        let format = (audio.sample_rate, audio.channels);
+        let format = (reply.sample_rate, reply.channels);
         ensure!(
             *self.format.get_or_insert(format) == format,
             "PCM format changed"
         );
-        self.received += audio.data.len();
+        let data = speech::decode_pcm(&reply, MAX_SPEECH_CHUNK_BYTES)?;
+        self.received += data.len();
         ensure!(
             self.received <= MAX_SPEECH_BYTES,
             "PCM stream exceeds size limit"
         );
-        Ok(Some(audio))
+        Ok(Some(PcmAudio {
+            sample_rate: reply.sample_rate,
+            channels: reply.channels,
+            data,
+        }))
     }
 }
 
@@ -117,70 +121,40 @@ impl Provider {
         Ok(result.text.trim().to_owned())
     }
 
-    pub(crate) async fn reply<'a>(
+    pub(crate) async fn reply(
         &self,
         text: &str,
         instructions: &str,
-        history: impl IntoIterator<Item = (&'a str, &'a str)>,
+        history: Vec<Message>,
         on_chunk: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<String> {
-        let mut messages = vec![ChatMessage::text(ChatRole::System, instructions)];
-        messages.extend(history.into_iter().map(|(role, content)| {
-            ChatMessage::text(
-                if role == "assistant" {
-                    ChatRole::Assistant
-                } else {
-                    ChatRole::User
-                },
-                content,
-            )
-        }));
-        messages.push(ChatMessage::text(ChatRole::User, text));
         let request = ChatRequest {
-            messages,
-            tools: Vec::new(),
-            tool_choice: None,
-            max_completion_tokens: 256,
             selection: self.selection.clone(),
+            ..chat::request(instructions, text, history)
         };
         if let Some(on_chunk) = on_chunk
             && let Some(mut stream) = self.process.stream_chat(&request)?
         {
             let mut answer = String::new();
             while let Some(chunk) = stream.next().await? {
-                ensure!(
-                    answer.len() + chunk.len() <= MAX_CHAT_BYTES,
-                    "Provider answer exceeds size limit"
-                );
-                answer.push_str(&chunk);
+                chat::append_chunk(&mut answer, &chunk)?;
                 on_chunk(&chunk);
             }
-            let answer = answer.trim();
-            ensure!(!answer.is_empty(), "Empty provider answer");
-            return Ok(answer.to_owned());
+            return chat::answer_text(answer);
         }
-        self.complete_request(request).await?.text()
+        let message = self.complete_request(&request).await?;
+        chat::answer_text(message.content.unwrap_or_default())
     }
 
-    pub(crate) async fn complete(&self, mut request: ChatRequest) -> Result<CompletionMessage> {
-        request.selection = self.selection.clone();
-        self.complete_request(request).await
+    async fn complete_request(&self, request: &ChatRequest) -> Result<ChatMessage> {
+        chat::assistant_message(self.call(Capability::Chat, request).await?)
     }
 
-    async fn complete_request(&self, request: ChatRequest) -> Result<CompletionMessage> {
-        let result: Completion = self.call(Capability::Chat, request).await?;
-        ensure!(
-            result.message.role == ChatRole::Assistant,
-            "Invalid completion role"
-        );
-        Ok(CompletionMessage(result.message))
-    }
-
-    pub(crate) async fn synthesize(&self, text: &str) -> Result<PcmAudio> {
+    pub(crate) async fn synthesize_wav(&self, text: &str) -> Result<Vec<u8>> {
         let audio: SpeechAudio = self
             .call(Capability::Speech, self.speech_request(text))
             .await?;
-        decode_speech(audio, MAX_SPEECH_BYTES)
+        speech::decode_wav(audio)
     }
 
     pub(crate) fn stream_speech(&self, text: &str) -> Result<Option<SpeechStream>> {
@@ -210,21 +184,9 @@ impl Provider {
     }
 }
 
-fn decode_speech(audio: SpeechAudio, limit: usize) -> Result<PcmAudio> {
-    let data = STANDARD
-        .decode(audio.pcm_base64)
-        .context("Decode plugin PCM")?;
-    ensure!(
-        (8_000..=96_000).contains(&audio.sample_rate)
-            && (1..=2).contains(&audio.channels)
-            && !data.is_empty()
-            && data.len() <= limit
-            && data.len().is_multiple_of(2 * usize::from(audio.channels)),
-        "Invalid plugin PCM"
-    );
-    Ok(PcmAudio {
-        data,
-        sample_rate: audio.sample_rate,
-        channels: audio.channels,
-    })
+impl crate::voice_core::tools::ToolChat for Provider {
+    async fn complete(&self, request: &mut ChatRequest) -> Result<ChatMessage> {
+        request.selection.clone_from(&self.selection);
+        self.complete_request(request).await
+    }
 }

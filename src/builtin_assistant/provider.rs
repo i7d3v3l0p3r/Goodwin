@@ -62,20 +62,16 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         Ok(goodwin_json::from_slice::<Response>(&reply)?.text)
     }
 
-    pub(crate) fn reply(&self, user: &str, instructions: &str) -> Result<String> {
-        self.complete(user, instructions, &[])
-    }
-
     #[cfg(feature = "wasm-plugins")]
     pub(crate) fn complete_tools(
         &self,
-        request: goodwin_plugin::provider::ChatRequest,
-    ) -> Result<crate::voice_core::tools::CompletionMessage> {
-        use goodwin_plugin::provider::{ChatCompletion, ChatPayload, ChatRole};
+        request: &goodwin_plugin::provider::ChatRequest,
+    ) -> Result<goodwin_plugin::provider::ChatMessage> {
+        use goodwin_plugin::provider::{ChatCompletion, ChatPayload};
 
         let body = goodwin_json::to_vec(&ChatPayload::new(
             &self.settings.chat_model,
-            &request,
+            request,
             false,
             false,
         ))?;
@@ -90,13 +86,7 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
             .into_iter()
             .next()
             .context("Chat returned no message")?;
-        ensure!(
-            completion.message.role == ChatRole::Assistant,
-            "Invalid completion role"
-        );
-        Ok(crate::voice_core::tools::CompletionMessage(
-            completion.message,
-        ))
+        crate::assistant::chat::assistant_message(completion)
     }
 
     pub(crate) fn chat(
@@ -105,10 +95,6 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         history: &[Message],
         instructions: &str,
     ) -> Result<String> {
-        self.complete(user, instructions, history)
-    }
-
-    fn complete(&self, user: &str, instructions: &str, history: &[Message]) -> Result<String> {
         #[derive(Serialize)]
         struct ChatMessage<'a> {
             role: &'static str,

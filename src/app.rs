@@ -661,10 +661,7 @@ impl App {
             .reply(
                 &text,
                 instructions,
-                context
-                    .iter()
-                    .rev()
-                    .map(|message| (message.role, message.text.as_str())),
+                context,
                 Some(&mut |text| self.append_chat(id, text)),
             )
             .await;

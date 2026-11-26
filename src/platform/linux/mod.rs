@@ -241,14 +241,14 @@ async fn answer_wav(dir: PathBuf, input: PathBuf, output: PathBuf) -> Result<()>
             .context("Transcribe recording")?;
         ensure!(!text.is_empty(), "No speech was transcribed");
         let reply = chat
-            .reply(&text, VOICE_INSTRUCTIONS, [], None)
+            .reply(&text, VOICE_INSTRUCTIONS, Vec::new(), None)
             .await
             .context("Generate an answer")?;
-        let audio = speech
-            .synthesize(&reply)
+        let wav = speech
+            .synthesize_wav(&reply)
             .await
             .context("Synthesize the answer")?;
-        audio.write_wav(fs::File::create(output)?)?;
+        fs::write(output, wav)?;
         Ok(())
     }
     .await;

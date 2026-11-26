@@ -102,6 +102,29 @@ fn strips_only_a_leading_wake_word() {
 }
 
 #[tokio::test]
+async fn a_batch_with_a_duplicate_call_id_runs_no_tools() {
+    let provider = Provider::mock(Process::mock_rpc(|_, _| {
+        let call = json!({
+            "id": "duplicated", "function": { "name": "probe__example", "arguments": "{}" }
+        });
+        Ok(json!({"message": {"role": "assistant", "tool_calls": [&call, &call]}}))
+    }));
+    let result = reply_with_tools(
+        &provider,
+        "Отмени таймер",
+        "",
+        VoiceTools::mock(|_| panic!("An invalid batch must be rejected before running a tool")),
+    )
+    .await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("repeated tool call identifier")
+    );
+}
+
+#[tokio::test]
 async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
     const PROMPT: &str = "Обращайся ко мне на ты.\nОтвечай спокойно.";
     let provider = Provider::mock(Process::mock_rpc(|method, body| {

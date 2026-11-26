@@ -4,6 +4,7 @@
 
 ### English
 
+- Mini 3 decodes buffered speech directly into its playback buffer. Mini 3 and ESP32-S3 reuse the conversation and tool definitions across calls within a voice request.
 - ESP32-S3 keeps wake capture positions across long listening sessions and resynchronizes before using a prediction whose pre-roll was lost.
 - ESP32-S3 diagnostics report how much audio reaches the wake detector and the largest delay behind captured audio.
 - ESP32-S3 plays due timer alarms during pauses in streamed speech and then resumes the reply.
@@ -33,6 +34,7 @@
 
 ### Русский
 
+- Мини 3 декодирует буферизованную озвучку сразу в буфер воспроизведения. Мини 3 и ESP32-S3 повторно используют историю диалога и описания инструментов при последовательных вызовах в одном голосовом запросе.
 - ESP32-S3 продолжает захват при длительном прослушивании и отбрасывает результаты активации, у которых аудио до срабатывания уже вытеснено.
 - Диагностика ESP32-S3 показывает объём захвата для детектора активации и максимальное отставание от принятого звука.
 - ESP32-S3 воспроизводит сигналы таймеров в паузах потоковой озвучки и затем продолжает ответ.

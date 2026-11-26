@@ -1,10 +1,10 @@
-use goodwin_error::{Context, Result};
+use goodwin_error::Result;
 
 use crate::{
     plugins::VoiceTools,
     providers::{Provider, SpeechStream},
     station::{RecordingGain, playback_failure},
-    voice_core::{self, Turn, VoiceProviders},
+    voice_core::{self, Turn, VoiceProviders, VoiceRequest},
     wav::PcmAudio,
 };
 
@@ -24,7 +24,7 @@ impl App {
         else {
             return;
         };
-        let error = self.voice_answer(id, samples, woke, gain).await.err();
+        let error = self.voice_answer(&request, samples, woke, gain).await.err();
         let announcement: Option<&[u8]> = match error {
             Some(Failure::ProviderUnavailable | Failure::ProviderFailed) => {
                 Some(include_bytes!("../../assets/error-ru.wav"))
@@ -54,32 +54,28 @@ impl App {
 
     async fn voice_answer(
         &self,
-        id: u64,
+        request: &VoiceRequest,
         mut samples: Vec<i16>,
         woke: bool,
         gain: RecordingGain,
     ) -> Result<(), Failure> {
-        let (request, wake_word, voice, providers) = self
+        let id = request.id;
+        let (providers, system_prompt, speech_streaming, wake_word) = self
             .runtime()
             .active
             .as_mut()
             .filter(|turn| turn.id == id)
             .and_then(|turn| {
                 Some((
-                    turn.request.clone(),
-                    turn.wake_word.clone(),
-                    turn.voice_request.clone()?,
                     turn.voice_providers.take()?,
+                    turn.request.system_prompt.clone(),
+                    turn.request.settings.assistant.pipeline.speech_streaming,
+                    turn.wake_word.take(),
                 ))
             })
             .ok_or(Failure::Busy)?;
-        voice.check()?;
-        let engine = &request.settings.assistant;
-        let VoiceProviders {
-            transcription,
-            chat,
-            speech,
-        } = providers.map_err(|(stage, error)| {
+        request.check()?;
+        let providers = providers.map_err(|(stage, error)| {
             self.update_voice(id, |details, _| details.error_stage = Some(stage));
             error
         })?;
@@ -89,15 +85,13 @@ impl App {
             Failure::Microphone
         })?;
         voice_core::run(
-            &voice,
+            request,
             &mut StationTurn {
                 app: self,
                 id,
-                transcription,
-                chat,
-                speech,
-                system_prompt: &request.system_prompt,
-                speech_streaming: engine.pipeline.speech_streaming,
+                providers,
+                system_prompt: &system_prompt,
+                speech_streaming,
             },
             wav,
             woke.then_some(wake_word.as_deref().unwrap_or("Гудвин")),
@@ -109,9 +103,7 @@ impl App {
 struct StationTurn<'a> {
     app: &'a App,
     id: u64,
-    transcription: Provider,
-    chat: Provider,
-    speech: Provider,
+    providers: VoiceProviders<Provider>,
     system_prompt: &'a str,
     speech_streaming: bool,
 }
@@ -130,6 +122,7 @@ impl Turn for StationTurn<'_> {
 
     async fn transcribe(&mut self, wav: &[u8]) -> Result<String, Failure> {
         let text = self
+            .providers
             .transcription
             .transcribe(wav)
             .await
@@ -148,7 +141,7 @@ impl Turn for StationTurn<'_> {
             runtime.voice_turn
         };
         reply_with_tools(
-            &self.chat,
+            &self.providers.chat,
             text,
             self.system_prompt,
             self.app.plugins.voice_tools(voice_turn),
@@ -163,6 +156,7 @@ impl Turn for StationTurn<'_> {
         self.app.push("assistant", answer.clone());
         if self.speech_streaming
             && let Some(mut stream) = self
+                .providers
                 .speech
                 .stream_speech(&answer)
                 .map_err(Provider::failure)?
@@ -174,16 +168,12 @@ impl Turn for StationTurn<'_> {
                 .ok_or(Failure::ProviderFailed)?;
             return Ok(Speech::Streaming(first, stream));
         }
-        let audio = self
+        let wav = self
+            .providers
             .speech
-            .synthesize(&answer)
+            .synthesize_wav(&answer)
             .await
             .map_err(Provider::failure)?;
-        let mut wav = Vec::with_capacity(audio.data.len() + 44);
-        audio
-            .write_wav(&mut wav)
-            .context("Encode synthesized speech")
-            .map_err(playback_failure)?;
         Ok(Speech::Buffered(wav))
     }
 
@@ -221,7 +211,9 @@ async fn reply_with_tools(
     let voice_instructions = voice_core::instructions(system_prompt);
     let definitions = tools.definitions();
     if definitions.len() == 0 {
-        return provider.reply(text, &voice_instructions, [], None).await;
+        return provider
+            .reply(text, &voice_instructions, Vec::new(), None)
+            .await;
     }
     let context = tools.context().await;
     let tools = &tools;
@@ -230,7 +222,7 @@ async fn reply_with_tools(
         text,
         definitions,
         context,
-        |request| provider.complete(request),
+        provider,
         |call| async move { tools.call(&call.name, &call.arguments).await },
     )
     .await

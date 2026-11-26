@@ -300,7 +300,7 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
         Job::Chat(context, message, history) => {
             let provider = context.provider(panel, None);
             let answer = wait_for_network(panel, provider.https(), || false).and_then(|()| {
-                provider.chat(&message, &history, |_chunk| {
+                provider.chat(&message, history, |_chunk| {
                     #[cfg(feature = "wasm-plugins")]
                     State::lock(state).chat_chunk(_chunk);
                 })
@@ -407,7 +407,7 @@ impl Turn for EspTurn<'_> {
                 text,
                 tools.definitions(),
                 tools.context(),
-                |request| std::future::ready(self.provider.complete_tools(request)),
+                &self.provider,
                 |call| std::future::ready(tools.call(&call.name, &call.arguments)),
             )
             .await

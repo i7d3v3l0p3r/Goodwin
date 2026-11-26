@@ -2,6 +2,9 @@ use goodwin_error::{Result, ensure};
 use goodwin_plugin::provider::{Capability, ModelSelection};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+pub(crate) mod chat;
+pub(crate) mod speech;
+
 #[cfg(not(target_os = "espidf"))]
 use crate::{app::Failure, plugins::Plugins, providers::Provider};
 
