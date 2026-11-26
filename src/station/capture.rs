@@ -8,7 +8,9 @@ use goodwin_plugin::wake::{Event, Frame, Model};
 
 use crate::{
     app::{ActiveTurn, App, Failure, Source, Stage},
-    voice_core::{PRE_ROLL, RecordingGain, VoiceActivity, scale_sample},
+    voice_core::{
+        FollowUpAudio, FollowUpListener, PRE_ROLL, RecordingGain, VoiceActivity, scale_sample,
+    },
     wake::{FRAME_SAMPLES as WAKE_SAMPLES, InstallError, SAMPLE_RATE as RATE, WakeModel},
     wake_catalog::Selection,
 };
@@ -28,6 +30,7 @@ pub(crate) struct Detector {
     detection_enabled: bool,
     wake_test: Option<u64>,
     recording: Option<Recording>,
+    follow_up: Option<(u64, FollowUpListener)>,
     wake_metadata: Option<Model>,
     wake_stream: u64,
     wake_index: u64,
@@ -52,6 +55,7 @@ impl Detector {
             detection_enabled: false,
             wake_test: None,
             recording: None,
+            follow_up: None,
             wake_metadata: None,
             wake_stream: 1,
             wake_index: 0,
@@ -84,6 +88,7 @@ impl Detector {
         self.detection_enabled = false;
         self.wake_test = None;
         self.recording = None;
+        self.follow_up = None;
         self.frame.clear();
     }
 
@@ -130,6 +135,47 @@ impl Detector {
     #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     fn tick(&mut self, app: &Arc<App>) {
         let active = app.active();
+        if let Some(turn) = active
+            .as_ref()
+            .filter(|turn| turn.stage == Stage::AwaitingSpeech)
+        {
+            let Some(timeout) = app.configuration().follow_up_timeout() else {
+                app.finish(turn.id, None);
+                self.follow_up = None;
+                return;
+            };
+            let gain = RecordingGain::new(turn.transcription_gain, app.default_microphone_gain);
+            let (id, listener) = self
+                .follow_up
+                .get_or_insert_with(|| (turn.id, FollowUpListener::default()));
+            if *id != turn.id {
+                *id = turn.id;
+                *listener = FollowUpListener::default();
+            }
+            match listener.listen(
+                turn.started.elapsed(),
+                timeout,
+                &self.frame,
+                gain.input_gain(),
+            ) {
+                FollowUpAudio::Waiting => {}
+                FollowUpAudio::Speech(samples) => {
+                    let mut recording = Recording::new(turn.id, false, samples, gain);
+                    for frame in recording.samples.chunks(VAD_SAMPLES) {
+                        recording.activity.push(frame, gain.input_gain(), false);
+                    }
+                    self.recording = Some(recording);
+                    app.stage(turn.id, Stage::Recording);
+                    self.follow_up = None;
+                }
+                FollowUpAudio::Expired => {
+                    app.finish(turn.id, None);
+                    self.follow_up = None;
+                }
+            }
+            return;
+        }
+        self.follow_up = None;
         if self
             .recording
             .as_ref()
@@ -155,7 +201,7 @@ impl Detector {
                 self.end_wake_stream(app);
                 self.recording = Some(Recording::new(
                     id,
-                    *source != Source::ManualTest,
+                    matches!(source, Source::Wake | Source::WakeTest),
                     Vec::new(),
                     RecordingGain::new(*transcription_gain, app.default_microphone_gain),
                 ));

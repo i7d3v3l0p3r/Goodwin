@@ -39,8 +39,7 @@ pub(crate) struct Audio<'d> {
 pub(super) enum Recording {
     Button,
     ManualTest,
-    #[cfg(feature = "wake-tflite")]
-    Wake {
+    Triggered {
         captured: Vec<i16>,
         post_trigger: usize,
     },
@@ -122,8 +121,7 @@ impl<'d> Audio<'d> {
     ) -> Result<Vec<i16>> {
         let hold = matches!(mode, Recording::Button);
         let (mut recording, pre_roll) = match mode {
-            #[cfg(feature = "wake-tflite")]
-            Recording::Wake {
+            Recording::Triggered {
                 captured,
                 post_trigger,
             } => {

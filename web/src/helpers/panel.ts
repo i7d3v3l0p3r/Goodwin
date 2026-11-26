@@ -237,6 +237,7 @@ export function createPanel() {
     stageIssue, updateProviderSettings: providerReadiness.updateProviderSettings, builtinProvider,
     pluginPackages: () => device()?.plugin_packages ?? !builtinProvider(),
     hasWakeRuntime: () => Boolean(device()?.wake_runtimes.length),
+    activationModes: () => device()?.activation ?? [],
     hasWakeCatalog: () => device()?.wake_catalog ?? !builtinProvider(),
     refresh: () => { if (builtinProvider()) connect(); },
     wakeReady: () => reachable() && wakeReady(snapshot()),

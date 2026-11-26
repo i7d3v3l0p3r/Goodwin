@@ -2,6 +2,7 @@ import type { Stage } from "./words";
 
 export type Capability = "transcription" | "chat" | "speech";
 export interface DeviceCapabilities {
+  activation?: string[];
   platform: string;
   device: string;
   wake_runtimes: string[];
@@ -58,12 +59,18 @@ export interface ModelCatalog {
 }
 
 export interface Settings {
+  dialogue?: DialogueSettings;
   assistant: AssistantSettings;
   listening: boolean;
   microphone_muted: boolean;
   sensitivity: number;
   wake_gain: number | null;
   transcription_gain: number | null;
+}
+
+export interface DialogueSettings {
+  mode: "single_turn" | "follow_up";
+  timeout_seconds: number;
 }
 
 export interface WakeModel {
@@ -82,7 +89,7 @@ export interface WakeModelCatalog {
 export interface Report {
   request_id?: number;
   stage: Stage;
-  source: "chat" | "wake" | "manual_test" | "wake_test" | "push_to_talk";
+  source: "chat" | "wake" | "follow_up" | "manual_test" | "wake_test" | "push_to_talk";
   timings: { stage: Stage; ms: number }[];
   error: string | null;
   message_id?: number;

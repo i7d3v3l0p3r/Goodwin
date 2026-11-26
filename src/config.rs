@@ -60,6 +60,8 @@ pub struct Settings {
     pub microphone_muted: bool,
     pub wake_gain: Option<f32>,
     pub transcription_gain: Option<f32>,
+    #[serde(default)]
+    pub dialogue: crate::voice_core::DialogueSettings,
 }
 
 impl Default for Settings {
@@ -71,12 +73,14 @@ impl Default for Settings {
             microphone_muted: false,
             wake_gain: None,
             transcription_gain: None,
+            dialogue: Default::default(),
         }
     }
 }
 
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        self.dialogue.validate()?;
         ensure!(
             (0.0..=1.0).contains(&self.sensitivity),
             "Invalid sensitivity"
@@ -206,6 +210,15 @@ impl ConfigStore {
             config.settings.sensitivity,
             config.settings.wake_gain,
         )
+    }
+
+    pub(crate) fn follow_up_timeout(&self) -> Option<std::time::Duration> {
+        let config = self.current();
+        config
+            .settings
+            .dialogue
+            .timeout()
+            .filter(|_| config.settings.listening)
     }
 
     pub(crate) fn update_settings(&self, settings: Settings) -> Result<()> {

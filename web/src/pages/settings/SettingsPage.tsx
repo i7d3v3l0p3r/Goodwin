@@ -15,6 +15,7 @@ import { DiagnosticLogs } from "./components/DiagnosticLogs";
 import { SystemResources } from "./components/SystemResources";
 import { WakeWordSettings } from "./components/WakeWordSettings";
 import { MicrophoneGainForm } from "./components/MicrophoneGainForm";
+import { DialogueForm } from "./components/DialogueForm";
 import { PanelAccessControls } from "./components/PanelAccessControls";
 import { SystemPromptForm } from "./components/SystemPromptForm";
 import { EmbeddedVoiceDiagnostics, isVoiceTest, VoiceCheck } from "./components/VoiceCheck";
@@ -70,6 +71,11 @@ export function SettingsPage() {
       <For each={sections()}>{section =>
         <section class={styles.section} aria-labelledby="panel-page-title" hidden={active()?.id !== section.id}>
           {section.id === "activation" && <Show when={panel.snapshot()}>{state => <>
+            <Show when={state().settings.dialogue && panel.activationModes().some(mode => mode === "wake_word" || mode === "push_to_talk")}>
+              <DialogueForm t={panel.t()} settings={state().settings} dialogue={state().settings.dialogue!}
+                activation={panel.activationModes()} save={panel.saveSettings}
+                pending={pending() || (panel.builtinProvider() && !!state().active && state().active?.stage !== "awaiting_speech")} />
+            </Show>
             <Show when={!panel.builtinProvider() || panel.hasWakeRuntime()}>
               <WakeWordSettings t={panel.t()} listening={state().settings.listening} sensitivity={state().settings.sensitivity}
                 visible={active()?.id === "activation"} currentModel={state().wake_model} modelLoaded={state().model}

@@ -113,7 +113,11 @@ export const words = {
     manual: "Start with a button", byWake: (word: string) => `Start with “${word}”`,
     lastVoiceTest: "Last voice test", startingVoiceTest: "Starting the test…", cancelVoice: "Stop voice request",
     manualTest: "Button test", wakeTest: "Wake word test",
-    lastVoiceRequest: "Last voice request", wakeRequest: "Wake word",
+    lastVoiceRequest: "Last voice request", wakeRequest: "Wake word", followUp: "Follow-up",
+    voiceDialogue: "Voice conversation", dialogueMode: "Conversation mode",
+    singleWake: "One request per wake word", singleButton: "One request per button press",
+    continuousDialogue: "Listen for follow-ups", replyTimeout: "Wait after each answer (seconds)",
+    timeoutRange: "Enter a whole number from 1 to 60.",
     transcript: "Recognized speech", voiceAnswer: "Goodwin’s reply",
     requestConfiguration: "Providers, models and playback",
     playbackModes: { streaming: "Streaming", buffered: "Buffered", announcement: "Offline announcement" },
@@ -132,7 +136,7 @@ export const words = {
     logsUnavailable: "No diagnostic logs are available.",
     logUnavailable: "This log is unavailable.", logEmpty: "This log is empty.",
     timingStages: {
-      awaiting_wake: "Waiting for the wake word", recording: "Recording", transcribing: "Speech recognition",
+      awaiting_wake: "Waiting for the wake word", awaiting_speech: "Waiting for a follow-up", recording: "Recording", transcribing: "Speech recognition",
       thinking: "Response", synthesizing: "Synthesis", playing: "Playback",
     },
     assistant: "Assistant", modelsAndVoice: "Models and voice", pipeline: "Speech recognition → answers → speech synthesis",
@@ -173,7 +177,7 @@ export const words = {
       status: { starting: "Starting", ready: "Ready", updating: "Updating", removing: "Removing", error: "Unavailable" },
     },
     stages: {
-      awaiting_wake: "Say the wake word near the Station", recording: "Listening", transcribing: "Recognizing speech",
+      awaiting_wake: "Say the wake word near the Station", awaiting_speech: "Listening for your next question", recording: "Listening", transcribing: "Recognizing speech",
       thinking: "Preparing an answer", synthesizing: "Preparing playback", playing: "Playing an answer",
     },
     errors: {
@@ -334,7 +338,11 @@ export const words = {
     manual: "Запустить кнопкой", byWake: (word: string) => `Запустить словом «${word}»`,
     lastVoiceTest: "Последняя голосовая проверка", startingVoiceTest: "Запускаем проверку…", cancelVoice: "Остановить голосовой запрос",
     manualTest: "Проверка кнопкой", wakeTest: "Проверка словом активации",
-    lastVoiceRequest: "Последний голосовой запрос", wakeRequest: "По слову активации",
+    lastVoiceRequest: "Последний голосовой запрос", wakeRequest: "По слову активации", followUp: "Продолжение диалога",
+    voiceDialogue: "Голосовой диалог", dialogueMode: "Режим разговора",
+    singleWake: "Одна реплика по слову активации", singleButton: "Одна реплика по нажатию кнопки",
+    continuousDialogue: "Диалог с продолжением", replyTimeout: "Ожидание после ответа (секунды)",
+    timeoutRange: "Введите целое число от 1 до 60.",
     transcript: "Распознанная речь", voiceAnswer: "Ответ Гудвина",
     requestConfiguration: "Провайдеры, модели и воспроизведение",
     playbackModes: { streaming: "Потоковое", buffered: "Готовый аудиоответ", announcement: "Локальное сообщение" },
@@ -353,7 +361,7 @@ export const words = {
     logsUnavailable: "Журналы диагностики недоступны.",
     logUnavailable: "Журнал недоступен.", logEmpty: "Журнал пуст.",
     timingStages: {
-      awaiting_wake: "Ожидание слова активации", recording: "Запись", transcribing: "Распознавание",
+      awaiting_wake: "Ожидание слова активации", awaiting_speech: "Ожидание следующей реплики", recording: "Запись", transcribing: "Распознавание",
       thinking: "Ответ", synthesizing: "Озвучивание", playing: "Воспроизведение",
     },
     assistant: "Ассистент", modelsAndVoice: "Модели и голос", pipeline: "Распознавание речи → ответы → озвучивание",
@@ -394,7 +402,7 @@ export const words = {
       status: { starting: "Запускается", ready: "Готов", updating: "Обновляется", removing: "Удаляется", error: "Недоступен" },
     },
     stages: {
-      awaiting_wake: "Произнесите слово активации рядом с колонкой", recording: "Слушаю", transcribing: "Распознаю речь",
+      awaiting_wake: "Произнесите слово активации рядом с колонкой", awaiting_speech: "Жду следующую реплику", recording: "Слушаю", transcribing: "Распознаю речь",
       thinking: "Готовлю ответ", synthesizing: "Готовлю озвучивание", playing: "Воспроизвожу ответ",
     },
     errors: {

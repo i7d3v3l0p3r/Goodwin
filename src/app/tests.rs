@@ -136,3 +136,47 @@ fn changing_microphone_gain_requires_a_new_voice_test() {
     assert!(!state.voice_test_current);
     assert!(state.chat_test_current);
 }
+
+#[test]
+fn silence_closes_only_the_pending_follow_up_and_preserves_the_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = test_app(dir.path());
+    assert!(app.microphone_connected(&app.microphone_mute()));
+    app.set_model(true, None);
+    let mut detector = crate::station::capture::Detector::new(None);
+    let wake = app.start(Source::Wake).unwrap();
+    app.stage(wake, Stage::Playing);
+    app.finish(wake, None);
+    let waiting = app.active().unwrap();
+    assert_eq!(waiting.stage, Stage::AwaitingSpeech);
+    assert!(!app.cancel_voice(wake));
+    let mut settings = app.config.request_settings().settings;
+    settings.dialogue.timeout_seconds = 2;
+    app.config.update_settings(settings.clone()).unwrap();
+    app.runtime().active.as_mut().unwrap().started -= std::time::Duration::from_secs(2);
+    for _ in 0..crate::station::capture::VAD_SAMPLES {
+        detector.push_sample(0, &app);
+    }
+    assert!(app.active().is_none());
+    assert!(!app.cancel_voice(waiting.id));
+    assert_eq!(
+        app.snapshot().last_voice.unwrap().report.request_id,
+        Some(wake)
+    );
+    let next = app.start(Source::Wake).unwrap();
+    app.stage(next, Stage::Playing);
+    app.finish(next, None);
+    let waiting = app.active().unwrap();
+    assert!(app.cancel_voice(waiting.id));
+    assert!(app.active().is_none());
+    assert_eq!(
+        app.snapshot().last_voice.unwrap().report.request_id,
+        Some(next)
+    );
+    settings.dialogue.mode = crate::voice_core::DialogueMode::SingleTurn;
+    app.config.update_settings(settings).unwrap();
+    let single = app.start(Source::Wake).unwrap();
+    app.stage(single, Stage::Playing);
+    app.finish(single, None);
+    assert!(app.active().is_none());
+}

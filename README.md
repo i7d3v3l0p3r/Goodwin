@@ -2,7 +2,9 @@
 
 Goodwin is an alternative voice assistant for Yandex Station Mini 3 (`bergamot`). It runs separately from Alice on a prepared Station. Say “Гудвин” followed by a question in one breath, or send a message from the web panel.
 
-The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Assistant**, select a provider and model independently for each stage. OpenRouter is selected by default. Each activation handles one voice request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
+The Station detects the wake word locally. The assistant's cascade engine transcribes the recording, generates an answer, and plays synthesized speech. In **Assistant**, select a provider and model independently for each stage. OpenRouter is selected by default.
+
+Say the wake word once to start a conversation. By default, you have eight seconds after each spoken answer to start your next question. Follow-ups use the recent exchanges in that voice conversation. If you stay quiet, Goodwin silently ends the conversation. In **Settings → Activation and microphone → Voice conversation**, change the wait time (1–60 seconds) or choose one request per wake word. Devices with a push-to-talk button also offer one request per button press. Panel microphone tests handle a single request. Numbered timer choices carry over to the next voice request. The current web conversation lives in memory and clears when you start a new chat or stop Goodwin.
 
 Download the desktop installer, Station package and plugins from [GitHub Releases](https://github.com/i7d3v3l0p3r/Goodwin/releases). See the [changelog](CHANGELOG.md) for release notes.
 

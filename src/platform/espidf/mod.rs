@@ -30,13 +30,11 @@ use esp_idf_svc::{
 };
 use goodwin_error::Result;
 
-#[cfg(feature = "wake-tflite")]
-use crate::panel_core::Stage;
 use crate::{
     builtin_assistant::State,
     model,
-    panel_core::{Failure, Source},
-    voice_core::{self, CAPTURE_HZ},
+    panel_core::{Failure, Source, Stage},
+    voice_core::{self, CAPTURE_HZ, FollowUpAudio, FollowUpListener},
 };
 
 use self::{
@@ -134,6 +132,7 @@ fn run_device() -> Result<()> {
     firmware::verify_boot(healthy)?;
     #[cfg(feature = "wake-tflite")]
     let mut wake_test = None;
+    let mut follow_up = None;
 
     log::info!("Ready for push-to-talk");
     loop {
@@ -158,6 +157,9 @@ fn run_device() -> Result<()> {
             let signals = plugins.take_signals();
             let alarm = plugins.take_timer_alarm();
             if signals != 0 || alarm.is_some() {
+                if let Some((_, _, listener)) = &mut follow_up {
+                    *listener = FollowUpListener::default();
+                }
                 worker.pause_stream(&mut audio);
                 #[cfg(feature = "wake-tflite")]
                 if let Some(detector) = &mut detector {
@@ -195,6 +197,9 @@ fn run_device() -> Result<()> {
                 Command::VoiceTest(job) => {
                     start_recording(&mut audio, Recording::ManualTest, &panel, &worker, job);
                 }
+                Command::FollowUp(job, started) => {
+                    follow_up = Some((job, started, FollowUpListener::default()));
+                }
                 #[cfg(feature = "wake-tflite")]
                 Command::WakeTest(job) => {
                     wake_test = Some((Instant::now() + Duration::from_secs(10), job));
@@ -223,6 +228,43 @@ fn run_device() -> Result<()> {
                     let _ = reply.send(result);
                 }
             }
+        }
+        if let Some((job, started, mut listener)) = follow_up.take() {
+            let request = &job.request;
+            let heard = request.check().and_then(|()| {
+                let Some(timeout) = State::lock(&panel.state).audio.dialogue.timeout() else {
+                    return Ok(FollowUpAudio::Expired);
+                };
+                if !panel.wifi_connected() {
+                    return Err(Failure::ProviderUnavailable);
+                }
+                let mut frame = [0; audio::FRAME_PAIRS];
+                audio
+                    .set_receiving(true)
+                    .and_then(|()| audio.read_mono(&mut frame))
+                    .map(|samples| {
+                        listener.listen(started.elapsed(), timeout, samples, job.gain.input_gain())
+                    })
+                    .map_err(|_| Failure::Microphone)
+            });
+            match heard {
+                Ok(FollowUpAudio::Waiting) => {
+                    follow_up = Some((job, started, listener));
+                }
+                Ok(FollowUpAudio::Speech(captured)) => {
+                    State::lock(&panel.state).stage(Stage::Recording);
+                    let mode = Recording::Triggered {
+                        post_trigger: captured.len(),
+                        captured,
+                    };
+                    start_recording(&mut audio, mode, &panel, &worker, job);
+                }
+                ended => {
+                    let _ = audio.set_receiving(false);
+                    State::lock(&panel.state).finish_voice(request, ended.err());
+                }
+            }
+            continue;
         }
         if audio.button_pressed()
             && panel.wifi_connected()

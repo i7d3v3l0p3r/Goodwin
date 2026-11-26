@@ -113,7 +113,7 @@ export function VoiceCheck(props: {
         <RequestDetails t={props.t} language={props.language} report={report()}
           stale={isVoiceTest(report()) && props.snapshot.voice_test_current === false} />
       }</Show>
-      <Show when={last()?.source === "wake" && props.snapshot.last_voice_test}>{report =>
+      <Show when={(last()?.source === "wake" || last()?.source === "follow_up") && props.snapshot.last_voice_test}>{report =>
         <Disclosure title={props.t.lastVoiceTest}>
           <RequestDetails t={props.t} language={props.language} report={report()} stale={props.snapshot.voice_test_current === false} />
         </Disclosure>
@@ -184,7 +184,7 @@ function RequestDetails(props: Omit<ReportProps, "report"> & { report: VoiceRepo
   const numberFormat = createMemo(() => new Intl.NumberFormat(props.language));
   const modes = () => ({
     wake: props.t.wakeRequest, manual_test: props.t.manualTest, wake_test: props.t.wakeTest, chat: props.t.chat,
-    push_to_talk: props.t.embedded.pushToTalk,
+    push_to_talk: props.t.embedded.pushToTalk, follow_up: props.t.followUp,
   });
   const failure = (code: string) => {
     const message = errorLabel(props.t, code);

@@ -143,14 +143,14 @@ impl<'a> Cascade<'a> {
         self.builtin.chat(question, &history, instructions)
     }
 
-    pub(super) fn reply(&self, text: &str) -> Result<String> {
+    pub(super) fn reply(&self, text: &str, history: Vec<Message>) -> Result<String> {
         let instructions = self.voice_instructions();
         #[cfg(feature = "wasm-plugins")]
         if let Some(provider) = self.plugin(goodwin_plugin::provider::Capability::Chat)? {
-            let mut request = chat::request(&instructions, text, Vec::new());
+            let mut request = chat::request(&instructions, text, history);
             return chat::answer_text(provider.complete(&mut request)?.content.unwrap_or_default());
         }
-        self.builtin.chat(text, &[], &instructions)
+        self.builtin.chat(text, &history, &instructions)
     }
 
     pub(super) fn voice_instructions(&self) -> std::borrow::Cow<'_, str> {

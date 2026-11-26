@@ -32,7 +32,7 @@ Goodwin is a voice assistant for Yandex Station Mini 3 (`bergamot`).
 
 **Recognition gain** — The input level adjustment for speech detection and recording sent to the STT stage. Goodwin can adjust this level automatically or apply a fixed multiplier.
 
-**Voice request** — A question or command spoken to Goodwin. A regular voice request follows the wake word.
+**Voice request** — A question or command spoken to Goodwin, including a follow-up in an ongoing conversation.
 
 **Test request** — A voice request used to check Goodwin from the control panel. It starts with the wake word or the panel's recording button.
 
@@ -44,7 +44,7 @@ Goodwin is a voice assistant for Yandex Station Mini 3 (`bergamot`).
 
 **Buffered playback** — Waiting for the TTS provider to return a complete audio response before playing it. Goodwin uses it when streaming is turned off or unavailable.
 
-**Voice interaction** — An exchange that starts with the wake word or the panel's recording button. Each interaction handles one voice request.
+**Voice interaction** — A conversation started with the wake word or a supported push-to-talk button. In follow-up mode, Goodwin waits a configurable time after each spoken answer (eight seconds by default). Single-turn mode and panel tests end after one request.
 
 **Station indicators** — The clock display and light ring that show the state of a voice interaction. Goodwin shows blinking eyes while recording, rotates the ring while processing, and animates the lower display segments with the audio level while speaking. The clock returns after the interaction.
 

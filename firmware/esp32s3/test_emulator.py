@@ -38,6 +38,7 @@ PASSWORD_TIMEOUT = 210
 TRANSCRIPT = "Какая погода?"
 WAKE_TRANSCRIPT = "Гудвин, " + TRANSCRIPT
 ANSWER = "Сегодня солнечно."
+FOLLOW_UP = "А завтра?"
 CHAT = "Добрый день!"
 SPEECH_RATE = 24000
 SPEECH_HZ = 660
@@ -250,6 +251,8 @@ class Provider(BaseHTTPRequestHandler):
                     assert 3200 <= frames <= 32000, frames
                     check_tone(samples, 16000, 440)
             text = WAKE_TRANSCRIPT if getattr(self.server, "wake", False) else TRANSCRIPT
+            if self.server.dialogue and self.server.requests.count(self.path) == 2:
+                text = FOLLOW_UP
             return 200, "application/json", json.dumps({"text": text}).encode()
         if self.path == "/v1/chat/completions":
             chat = json.loads(request)
@@ -258,7 +261,16 @@ class Provider(BaseHTTPRequestHandler):
                 assert chat["messages"][0]["role"] == "system"
                 assert chat["messages"][0]["content"].startswith(SYSTEM_PROMPT)
             last = chat["messages"][-1]
-            if getattr(self.server, "tools", False) and last.get("role") == "tool":
+            if last.get("content") == FOLLOW_UP:
+                history = chat["messages"][1:-1]
+                if history and history[-1]["role"] == "user":
+                    assert "pluginContext" in json.loads(history.pop()["content"])
+                assert history == [
+                    {"role": "user", "content": TRANSCRIPT},
+                    {"role": "assistant", "content": ANSWER},
+                ]
+                assert last["role"] == "user"
+            elif getattr(self.server, "tools", False) and last.get("role") == "tool":
                 assert last["tool_call_id"] == "timer-call"
                 assert json.loads(last["content"])["created"]["name"] == "Voice fixture"
             elif getattr(self.server, "tools", False) and last["content"] == TRANSCRIPT:
@@ -710,13 +722,18 @@ class Panel:
             assert monotonic() < deadline, (expected, state)
             sleep(0.1)
 
-    def configure_and_chat(self, streaming, provider_package=None, release_chat=None):
+    def configure_and_chat(self, streaming, provider_package=None, release_chat=None, dialogue=False):
         wifi = self.wait_network("connected")
         assert wifi["ssid"] == "myssid" and "password" not in wifi
         state = self.request("/api/state")
         assert not state["provider_ready"]
+        assert state["settings"]["dialogue"] == {"mode": "follow_up", "timeout_seconds": 8}
+        self.dialogue = {"mode": "follow_up" if dialogue else "single_turn", "timeout_seconds": 6}
         audio = {**state["settings"], "listening": False, "sensitivity": 0.55,
-                 "wake_gain": 1.0, "transcription_gain": 1.0}
+                 "wake_gain": 1.0, "transcription_gain": 1.0, "dialogue": self.dialogue}
+        for invalid in [0, 61]:
+            self.request("/api/settings", "PUT", {"settings": {**audio, "dialogue": {
+                **self.dialogue, "timeout_seconds": invalid}}}, 400)
         self.request("/api/settings", "PUT", {"settings": {**audio, "wake_gain": 0}}, 400)
         self.request("/api/settings", "PUT", {"settings": audio}, 204)
         self.request("/api/settings/microphone", "PUT", {"muted": True}, 204)
@@ -861,9 +878,10 @@ class Panel:
         assert report["source"] == source
         assert report["started_at_ms"] == 0
         assert report["error"] is None
-        assert report["transcript"] == (WAKE_TRANSCRIPT if source in ("wake", "wake_test") else TRANSCRIPT)
+        transcript = FOLLOW_UP if source == "follow_up" else TRANSCRIPT
+        assert report["transcript"] == (WAKE_TRANSCRIPT if source in ("wake", "wake_test") else transcript)
         assert report["answer"] == ANSWER
-        assert state["messages"][-2]["text"] == TRANSCRIPT
+        assert state["messages"][-2]["text"] == transcript
         assert report["playback"] == ("streaming" if streaming else "buffered")
         stages = [
             "recording", "transcribing", "thinking", "synthesizing", "playing"
@@ -871,6 +889,8 @@ class Panel:
         if source == "wake_test":
             stages.insert(0, "awaiting_wake")
             assert not state["settings"]["listening"]
+        if source == "follow_up":
+            stages.insert(0, "awaiting_speech")
         assert [timing["stage"] for timing in report["timings"]] == stages
         resources = self.print_resources("after voice")
         assert resources["psram"]["total_bytes"] == 8 * 1024 * 1024
@@ -890,11 +910,10 @@ class Panel:
                 "wake_max_lag_samples": metrics["wake_max_lag_samples"],
                 "wake_inference_failed": metrics["wake_inference_failed"],
             }, sort_keys=True), flush=True)
-        self.request("/api/chat/clear", "POST", {}, 204)
-        assert self.request("/api/state")["messages"] == []
+        return report
 
-    def wait_voice(self, predicate):
-        end = monotonic() + 12
+    def wait_voice(self, predicate, timeout=12):
+        end = monotonic() + timeout
         while monotonic() < end:
             state = self.request("/api/state")
             if result := predicate(state):
@@ -1011,6 +1030,7 @@ class Panel:
         audio = self.request("/api/state")["settings"]
         assert audio["listening"] == wake and audio["microphone_muted"] == microphone_muted
         assert audio["sensitivity"] == 0.55 and audio["wake_gain"] == audio["transcription_gain"] == 1.0
+        assert audio["dialogue"] == self.dialogue
 
 
 def run_emulator(args, flash, board, output, server):
@@ -1048,16 +1068,20 @@ def run_emulator(args, flash, board, output, server):
     ]
     if args.wake_audio:
         command.extend(["--part-wav-in", f"mic={args.wake_audio}"])
-    elif args.manual_test:
-        recording = args.work / "manual-input.wav"
+    elif args.manual_test or args.dialogue:
+        recording = args.work / "voice-input.wav"
         with wave.open(str(recording), "wb") as wav:
             wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
-            wav.writeframes(tone(16000, 440) + bytes(2 * 16000 * 2))
+            pause_seconds = 5 if args.dialogue else 2
+            wav.writeframes(tone(16000, 440) + bytes(pause_seconds * 16000 * 2))
+            if args.dialogue:
+                wav.writeframes(tone(16000, 440) + bytes(30 * 16000 * 2))
         command.extend(["--part-wav-in", f"mic={recording}"])
     capabilities = None
     psram_ready = False
     started = False
     played = False
+    dialogue_started = False
     persisted = False
     interrupted = False
     provision_steps = 0
@@ -1139,7 +1163,7 @@ def run_emulator(args, flash, board, output, server):
                             panel.verify_panel_contract()
                             panel.verify_asset_cache()
                             panel.set_system_prompt()
-                        panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat)
+                        panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat, args.dialogue)
                         if args.timers_package:
                             panel.install_timers(args.timers_package)
                         if args.wake_catalog_model:
@@ -1207,7 +1231,23 @@ def run_emulator(args, flash, board, output, server):
                     assert stream_alarm_started is None, "The reply ended before the timer alarm"
                     source = ("wake_test" if args.wake_test else "wake" if args.wake_audio
                               else "manual_test" if args.manual_test else "push_to_talk")
-                    panel.verify_voice(source, args.stream_speech)
+                    report = panel.verify_voice("follow_up" if dialogue_started else source, args.stream_speech)
+                    if args.dialogue and not dialogue_started:
+                        dialogue_started = True
+                        server.release_stream.clear()
+                        panel.wait_voice(lambda state: state["last_voice"]["source"] == "follow_up" or
+                                         (state["active"] and state["active"]["stage"] != "awaiting_speech"),
+                                         timeout=30)
+                        continue
+                    if dialogue_started:
+                        assert panel.request("/api/state")["active"]["stage"] == "awaiting_speech"
+                        panel.wait_voice(lambda state: not state["active"], timeout=30)
+                        assert panel.request("/api/state")["last_voice"] == report
+                        print("Verified the spoken follow-up, its context and the silent timeout")
+                    else:
+                        assert panel.request("/api/state")["active"] is None
+                    panel.request("/api/chat/clear", "POST", {}, 204)
+                    assert panel.request("/api/state")["messages"] == []
                     if args.dataset_package and args.wake_audio:
                         panel.stop_dataset(active_model)
                     if args.timers_package:
@@ -1260,6 +1300,7 @@ def main():
     activation = parser.add_mutually_exclusive_group()
     activation.add_argument("--wake-audio", type=Path, help="Use a 16 kHz mono PCM WAV containing the wake word")
     activation.add_argument("--manual-test", action="store_true", help="Start the microphone check from the panel")
+    activation.add_argument("--dialogue", action="store_true", help="Start with the button, speak a follow-up and wait for the conversation to close")
     parser.add_argument("--provision-wifi", action="store_true", help="Start with blank NVS and verify Wi-Fi setup")
     parser.add_argument("--wifi-during-alarm", action="store_true", help="Verify timer audio while changing Wi-Fi")
     parser.add_argument("--update-image", type=Path, help="Verify an OTA install and reboot using this app.bin")
@@ -1285,7 +1326,7 @@ def main():
         parser.error("--wifi-during-alarm requires --timers-package")
     if args.alarm_during_stream and (not args.timers_package or not args.stream_speech or args.voice_lifecycle):
         parser.error("--alarm-during-stream requires Timers and streamed speech without --voice-lifecycle")
-    if args.voice_lifecycle and (not args.provider_package or not args.stream_speech or args.manual_test
+    if args.voice_lifecycle and (not args.provider_package or not args.stream_speech or args.manual_test or args.dialogue
                                  or args.wake_audio or args.timer_voice_tool):
         parser.error("--voice-lifecycle requires a streaming WASM provider and push-to-talk")
     args.work.mkdir(parents=True, exist_ok=True)
@@ -1301,6 +1342,7 @@ def main():
         server.requests = []
         server.failure = None
         server.wake = bool(args.wake_audio)
+        server.dialogue = args.dialogue
         server.streaming = args.stream_speech
         server.stream_timeout = 25 if args.alarm_during_stream else 8
         server.tools = args.timer_voice_tool
@@ -1334,6 +1376,8 @@ def main():
         ]
         if args.timer_voice_tool:
             expected.insert(-1, "/v1/chat/completions")
+        if args.dialogue:
+            expected.extend(["/v1/audio/transcriptions", "/v1/chat/completions", "/v1/audio/speech"])
         if args.provider_package:
             expected.insert(0, "/v1/models")
         if args.voice_lifecycle:

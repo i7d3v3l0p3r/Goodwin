@@ -71,6 +71,7 @@ pub(super) struct Panel {
 pub(super) enum Command {
     Chat(String),
     VoiceTest(VoiceJob),
+    FollowUp(VoiceJob, std::time::Instant),
     #[cfg(feature = "wake-tflite")]
     WakeTest(VoiceJob),
     #[cfg(feature = "wake-tflite")]
@@ -237,6 +238,22 @@ impl Panel {
         [Transcription, Chat, Speech]
             .into_iter()
             .all(|capability| self.provider_ready(state, capability))
+    }
+
+    pub(super) fn start_follow_up(&self, state: &mut State) {
+        if self.firmware_busy() || self.wake_model_busy() || !self.wifi_connected() {
+            return;
+        }
+        if let Ok(job) = VoiceJob::admit(state, self, Source::FollowUp) {
+            let request = job.request.clone();
+            let command = Command::FollowUp(job, std::time::Instant::now());
+            if crate::diagnostics::Queue::Device
+                .send(&self.command, command)
+                .is_err()
+            {
+                state.finish_voice(&request, Some(crate::panel_core::Failure::Busy));
+            }
+        }
     }
 
     fn access(&self, token: Option<&str>) -> AccessState {
@@ -519,7 +536,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 return problem(request, 400, "invalid_settings");
             };
             let mut state = State::lock(&panel.state);
-            if state.busy() {
+            if state.busy() && !state.awaiting_speech() {
                 return problem(request, 409, "busy");
             }
             let audio = AudioSettings {

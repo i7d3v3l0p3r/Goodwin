@@ -3,6 +3,37 @@ use std::{fs, sync::Barrier, thread};
 use super::{Access, Config, ConfigStore, Settings};
 
 #[test]
+fn dialogue_settings_migrate_validate_and_survive_a_restart() {
+    use crate::voice_core::{DialogueMode, DialogueSettings};
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = serde_json::to_value(Settings::default()).unwrap();
+    old.as_object_mut().unwrap().remove("dialogue");
+    fs::write(
+        Config::path(dir.path()),
+        serde_json::json!({"access":{"mode":"open"}, "settings":old}).to_string(),
+    )
+    .unwrap();
+    let config = Config::load(dir.path()).unwrap();
+    let mut settings = config.settings.clone();
+    assert_eq!(settings.dialogue, DialogueSettings::default());
+    for (seconds, valid) in [(0, false), (1, true), (60, true), (61, false)] {
+        settings.dialogue.timeout_seconds = seconds;
+        assert_eq!(settings.validate().is_ok(), valid);
+    }
+    settings.dialogue = DialogueSettings {
+        mode: DialogueMode::SingleTurn,
+        timeout_seconds: 17,
+    };
+    ConfigStore::new(dir.path(), config)
+        .update_settings(settings.clone())
+        .unwrap();
+    assert_eq!(
+        Config::load(dir.path()).unwrap().settings.dialogue,
+        settings.dialogue
+    );
+}
+
+#[test]
 fn failed_save_keeps_the_active_settings_and_system_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let blocked = dir.path().join("not-a-directory");

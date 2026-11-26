@@ -4,6 +4,7 @@
 
 ### English
 
+- Mini 3 and ESP32-S3 remember recent exchanges in a voice conversation. In activation settings, choose one request per wake word or button press, or enable follow-ups with a wait of 1–60 seconds after each answer (eight by default).
 - GitHub releases now distribute Timers, OpenAI-compatible and Wake-word dataset only as WASM packages.
 - New panel passwords use PBKDF2-HMAC-SHA512 with 220,000 iterations. Existing PBKDF2 passwords continue to work, and ESP32-S3 verifies saved SHA256 hashes faster.
 - ESP32-S3 creates and verifies SHA512 panel password hashes faster and gives the watchdog time between batches of iterations.
@@ -13,6 +14,7 @@
 
 ### Русский
 
+- На Мини 3 и ESP32-S3 Гудвин помнит предыдущие реплики голосового диалога. В настройках активации можно выбрать одну реплику по слову или кнопке либо диалог с продолжением. Время ожидания после ответа настраивается от 1 до 60 секунд, по умолчанию — 8.
 - В релизах GitHub плагины таймеров, OpenAI-совместимого провайдера и датасета слова активации теперь доступны только в формате WASM.
 - Новые пароли панели используют PBKDF2-HMAC-SHA512 с 220 000 итераций. Сохранённые пароли PBKDF2 подходят, а ESP32-S3 быстрее проверяет хеши SHA256.
 - ESP32-S3 быстрее создаёт и проверяет хеши паролей SHA512 и даёт сторожевому таймеру время между пакетами итераций.

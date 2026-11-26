@@ -54,6 +54,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
         &provider,
         "Сколько минут ждать?",
         "",
+        Vec::new(),
         VoiceTools::mock(|_| panic!("A question must not call a tool")),
     )
     .await
@@ -63,6 +64,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
         &provider,
         "Отмени таймер",
         "",
+        Vec::new(),
         VoiceTools::mock(|call| {
             assert_eq!(
                 call,
@@ -113,6 +115,7 @@ async fn a_batch_with_a_duplicate_call_id_runs_no_tools() {
         &provider,
         "Отмени таймер",
         "",
+        Vec::new(),
         VoiceTools::mock(|_| panic!("An invalid batch must be rejected before running a tool")),
     )
     .await;
@@ -137,16 +140,24 @@ async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
                 "content": format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.\n{TOOL_INSTRUCTIONS}\n{CONTEXT_INSTRUCTIONS}")
             })
         );
+        assert_eq!(
+            messages[1],
+            json!({"role":"user", "content":"Какие таймеры стоят?"})
+        );
+        assert_eq!(
+            messages[2],
+            json!({"role":"assistant", "content":"Для яиц и для картошки."})
+        );
         let snapshot: Value =
-            serde_json::from_str(messages[1]["content"].as_str().unwrap()).unwrap();
+            serde_json::from_str(messages[3]["content"].as_str().unwrap()).unwrap();
         assert_eq!(
             snapshot,
             json!({"pluginContext": {"probe": {"active": [
                 {"name": "для яиц", "seconds": 120}, {"name": "для картошки", "seconds": 300}
             ]}}})
         );
-        assert_eq!(messages[2]["content"], "Отмени таймер картошка");
-        let message = if messages.len() == 3 {
+        assert_eq!(messages[4]["content"], "Отмени таймер картошка");
+        let message = if messages.len() == 5 {
             json!({"role": "assistant", "tool_calls": [{
                 "type": "function", "id": "cancel",
                 "function": {"name": "probe__example", "arguments": json!({"name": "для картошки"}).to_string()}
@@ -173,8 +184,27 @@ async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
             {"name": "для яиц", "seconds": 120}, {"name": "для картошки", "seconds": 300}
         ]})
     });
-    let result = reply_with_tools(&provider, "Отмени таймер картошка", PROMPT, tools)
-        .await
-        .unwrap();
+    let result = reply_with_tools(
+        &provider,
+        "Отмени таймер картошка",
+        PROMPT,
+        vec![
+            crate::panel_core::Message {
+                id: 2,
+                role: "assistant",
+                text: "Для яиц и для картошки.".into(),
+                error: None,
+            },
+            crate::panel_core::Message {
+                id: 1,
+                role: "user",
+                text: "Какие таймеры стоят?".into(),
+                error: None,
+            },
+        ],
+        tools,
+    )
+    .await
+    .unwrap();
     assert_eq!(result, "Таймер для картошки отменён.");
 }

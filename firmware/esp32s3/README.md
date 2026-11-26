@@ -24,6 +24,11 @@ The adapter uses 16 kHz I²S with 32-bit stereo slots. The cloud receives 16-bit
 mono WAV. The provider's 24 kHz mono PCM is resampled to the I²S rate.
 
 Say «Гудвин» and ask a question, or hold the GPIO 4 button while speaking.
+By default, you have eight seconds after each answer to start a follow-up without
+saying the wake word or pressing the button again. Silence ends the conversation.
+In **Activation and microphone → Voice conversation**, choose a wait of 1–60
+seconds or switch to a single request per button press or wake word. Button-only
+builds offer push-to-talk and follow-up modes.
 Wake activation preserves audio from before detection and ends the recording
 after a pause. Recordings are limited to 16 seconds and synthesized replies to
 30 seconds. Use **Activation and microphone** to pause wake activation or
@@ -164,6 +169,8 @@ python firmware/esp32s3/test_emulator.py \
   --update-image target/esp32s3/emulator/app.bin --stream-speech
 ```
 
+Use `--dialogue` to exercise a button-initiated conversation with two spoken
+questions, verify the context sent to the provider and check the idle timeout.
 The emulator test uses a local provider fixture and checks password setup,
 chat, the requested audio formats, voice report timings, memory usage and an
 audible response. With `--provision-wifi` it also tests a failed Wi-Fi attempt

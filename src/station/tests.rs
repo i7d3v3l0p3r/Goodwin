@@ -142,6 +142,85 @@ async fn wait_for(mut check: impl FnMut() -> bool) {
 }
 
 #[tokio::test]
+async fn one_wake_allows_multiple_questions_and_a_new_wake_starts_fresh() {
+    use std::cell::Cell;
+    let dir = tempfile::tempdir().unwrap();
+    let sink = TestSink::default();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::recording_to(sink.clone()),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let index = Cell::new(0);
+    let questions = [
+        "Гудвин, кто написал Гамлета?",
+        "А когда?",
+        "И где?",
+        "Гудвин, начнём заново",
+    ];
+    let answers = ["Шекспир", "Около 1600 года", "В Англии", "Хорошо"];
+    app.plugins.mock_provider(crate::assistant::DEFAULT_PROVIDER, Process::mock_rpc(move |method, body| {
+        let turn = index.get();
+        Ok(match method {
+            "provider.transcribe" => json!({"text": questions[turn]}),
+            "provider.complete" => {
+                let messages = body["messages"].as_array().unwrap();
+                let first = if turn == 3 { 3 } else { 0 };
+                assert_eq!(messages.len(), (turn - first) * 2 + 2);
+                for (offset, i) in (first..=turn).enumerate() {
+                    let question = questions[i].trim_start_matches("Гудвин, ");
+                    assert_eq!(messages[1 + offset * 2], json!({"role": "user", "content": question}));
+                    if i < turn {
+                        assert_eq!(messages[2 + offset * 2], json!({"role": "assistant", "content": answers[i]}));
+                    }
+                }
+                json!({"message": {"role":"assistant", "content": answers[turn]}})
+            }
+            "provider.synthesize" => {
+                index.set(turn + 1);
+                json!({"pcmBase64": STANDARD.encode([1, 0, 1, 0]), "sampleRate": 16000, "channels": 1})
+            }
+            _ => panic!("Unexpected method {method}"),
+        })
+    }));
+    let mic = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let capture = tokio::spawn(run_microphone(app.clone(), mic.local_addr().unwrap()));
+    let (mut socket, _) = mic.accept().await.unwrap();
+    let len = socket.read_u32_le().await.unwrap();
+    socket.read_exact(&mut vec![0; len as usize]).await.unwrap();
+    write_samples(&mut socket, 0, 1).await;
+    wait_for(|| serde_json::to_value(app.snapshot()).unwrap()["microphone"] == true).await;
+    app.set_model(true, None);
+    for turn in 0..4 {
+        if turn == 0 || turn == 3 {
+            app.start(Source::Wake).unwrap();
+        } else {
+            sleep(Duration::from_millis(150)).await;
+        }
+        write_samples(&mut socket, 500, 8).await;
+        write_samples(&mut socket, 0, 36).await;
+        wait_for(|| {
+            sink.lock().unwrap().len() == turn + 1
+                && app
+                    .active()
+                    .is_some_and(|turn| turn.stage == Stage::AwaitingSpeech)
+        })
+        .await;
+        if turn == 2 {
+            assert!(app.cancel_voice(app.active().unwrap().id));
+        }
+    }
+    app.set_microphone_muted(true).unwrap();
+    assert!(app.active().is_none());
+    capture.abort();
+}
+
+#[tokio::test]
 async fn panel_mute_closes_capture_and_blocks_voice_until_reenabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {

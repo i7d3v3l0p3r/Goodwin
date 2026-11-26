@@ -336,7 +336,10 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
                         job.wake_word.as_deref(),
                     ))
                 });
-            State::lock(state).finish_voice(&job.request, result.err());
+            let mut state = State::lock(state);
+            if state.finish_voice(&job.request, result.err()) {
+                panel.start_follow_up(&mut state);
+            }
             match result {
                 Ok(()) => log::info!("Voice turn complete"),
                 Err(Failure::Cancelled) => log::info!("Voice turn cancelled"),
@@ -398,6 +401,7 @@ impl Turn for EspTurn<'_> {
 
     async fn reply(&mut self, text: &str) -> Result<String, Failure> {
         self.transcript = text.to_owned();
+        let history = State::lock(self.state).voice_history();
         #[cfg(feature = "wasm-plugins")]
         if let Some(tools) = &self.tools
             && tools.definitions().len() != 0
@@ -405,6 +409,7 @@ impl Turn for EspTurn<'_> {
             return voice_core::tools::complete(
                 &self.provider.voice_instructions(),
                 text,
+                history,
                 tools.definitions(),
                 tools.context(),
                 &self.provider,
@@ -413,7 +418,7 @@ impl Turn for EspTurn<'_> {
             .await
             .map_err(provider_failure);
         }
-        self.provider.reply(text).map_err(provider_failure)
+        self.provider.reply(text, history).map_err(provider_failure)
     }
 
     async fn synthesize(&mut self, answer: String) -> Result<Speech, Failure> {

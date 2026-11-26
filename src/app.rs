@@ -84,6 +84,7 @@ struct Runtime {
     next_id: u64,
     next_message: u64,
     voice_turn: u64,
+    voice_history_after: u64,
     active: Option<Turn>,
     last: Option<Report>,
     last_chat_test: Option<Report>,
@@ -327,7 +328,11 @@ impl App {
             self.changes.send_replace(());
         }
         if let Some(id) = runtime.active.as_ref().and_then(|turn| {
-            matches!(turn.report.stage, Stage::AwaitingWake | Stage::Recording).then_some(turn.id)
+            matches!(
+                turn.report.stage,
+                Stage::AwaitingWake | Stage::AwaitingSpeech | Stage::Recording
+            )
+            .then_some(turn.id)
         }) {
             self.finish_turn(runtime, id, Some(error));
         }
@@ -389,7 +394,10 @@ impl App {
             return false;
         };
         request.cancel(Failure::Cancelled);
-        if matches!(turn.report.stage, Stage::AwaitingWake | Stage::Recording) {
+        if matches!(
+            turn.report.stage,
+            Stage::AwaitingWake | Stage::AwaitingSpeech | Stage::Recording
+        ) {
             self.finish_turn(&mut runtime, id, Some(Failure::Cancelled));
             self.wake_models.changed.notify_one();
         }
@@ -405,8 +413,16 @@ impl App {
     }
 
     fn start_turn(&self, source: Source, chat_test: bool) -> Result<u64, Failure> {
+        self.admit_turn(&mut self.runtime(), source, chat_test)
+    }
+
+    fn admit_turn(
+        &self,
+        runtime: &mut Runtime,
+        source: Source,
+        chat_test: bool,
+    ) -> Result<u64, Failure> {
         let request = self.config.request_settings();
-        let mut runtime = self.runtime();
         if source != Source::Chat && *self.microphone_mute.borrow() {
             return Err(Failure::MicrophoneMuted);
         }
@@ -422,8 +438,14 @@ impl App {
         if matches!(source, Source::Wake | Source::WakeTest) && !runtime.model {
             return Err(Failure::Model);
         }
-        if source == Source::Wake && !request.settings.listening {
+        if matches!(source, Source::Wake | Source::FollowUp) && !request.settings.listening {
             return Err(Failure::Busy);
+        }
+        if source == Source::FollowUp && request.settings.dialogue.timeout().is_none() {
+            return Err(Failure::Busy);
+        }
+        if source != Source::FollowUp {
+            runtime.voice_history_after = runtime.next_message;
         }
         runtime.next_id += 1;
         let id = runtime.next_id;
@@ -448,7 +470,7 @@ impl App {
                 }),
                 tested_configuration: (chat_test
                     || matches!(source, Source::ManualTest | Source::WakeTest))
-                .then(|| self.test_configuration(source, &request, &runtime)),
+                .then(|| self.test_configuration(source, &request, runtime)),
             },
             voice: (source != Source::Chat)
                 .then(|| VoiceDetails::new(&request.settings.assistant.pipeline)),
@@ -505,6 +527,12 @@ impl App {
                 .as_ref()
                 .and_then(VoiceRequest::failure)
                 .or(error);
+            // No request was spoken during this window. Keep the last real report.
+            if turn.report.stage == Stage::AwaitingSpeech {
+                self.indicators.finish(turn.report.source);
+                self.changes.send_replace(());
+                return;
+            }
             turn.record_timing();
             turn.report.error = error;
             let source = turn.report.source;
@@ -519,7 +547,7 @@ impl App {
                     Stage::Transcribing => Some(Capability::Transcription),
                     Stage::Thinking => Some(Capability::Chat),
                     Stage::Synthesizing | Stage::Playing => Some(Capability::Speech),
-                    Stage::AwaitingWake | Stage::Recording => None,
+                    Stage::AwaitingWake | Stage::AwaitingSpeech | Stage::Recording => None,
                 };
                 let provider = capability.map_or("-", |capability| {
                     turn.request
@@ -536,7 +564,6 @@ impl App {
             } else {
                 log::info!("Request completed id={id} source={source:?} elapsed_ms={elapsed_ms}");
             }
-            self.indicators.finish(turn.report.source);
             if turn.report.stage == Stage::AwaitingWake {
                 self.wake_models.changed.notify_one();
             }
@@ -566,7 +593,13 @@ impl App {
             if turn.report.chat_test.is_some() {
                 runtime.last_chat_test = Some(turn.report.clone());
             }
+            let continue_dialogue = error.is_none()
+                && turn.report.stage == Stage::Playing
+                && matches!(source, Source::Wake | Source::FollowUp);
             runtime.last = Some(turn.report);
+            if !continue_dialogue || self.admit_turn(runtime, Source::FollowUp, false).is_err() {
+                self.indicators.finish(source);
+            }
             self.changes.send_replace(());
         }
     }

@@ -47,6 +47,7 @@ pub(crate) fn normalize_system_prompt(prompt: &str) -> goodwin_error::Result<Str
 pub enum Source {
     Chat,
     Wake,
+    FollowUp,
     ManualTest,
     WakeTest,
     #[cfg(target_os = "espidf")]
@@ -58,6 +59,7 @@ pub enum Source {
 #[cfg_attr(target_os = "espidf", allow(dead_code))]
 pub enum Stage {
     AwaitingWake,
+    AwaitingSpeech,
     Recording,
     Transcribing,
     Thinking,

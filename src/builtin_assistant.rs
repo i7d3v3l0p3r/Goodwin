@@ -29,6 +29,8 @@ pub(crate) struct AudioSettings {
     pub sensitivity: f64,
     pub wake_gain: Option<f64>,
     pub transcription_gain: Option<f64>,
+    #[serde(default)]
+    pub dialogue: crate::voice_core::DialogueSettings,
 }
 
 impl Default for AudioSettings {
@@ -39,12 +41,14 @@ impl Default for AudioSettings {
             sensitivity: 0.5,
             wake_gain: None,
             transcription_gain: None,
+            dialogue: Default::default(),
         }
     }
 }
 
 impl AudioSettings {
     pub fn validate(self) -> Result<Self> {
+        self.dialogue.validate()?;
         ensure!(
             (0.0..=1.0).contains(&self.sensitivity),
             "Invalid wake sensitivity"
@@ -73,6 +77,7 @@ pub(super) struct State {
     last_voice: Option<VoiceReport>,
     messages: VecDeque<Message>,
     next_message: u64,
+    voice_history_after: u64,
     next_request: u64,
 }
 
@@ -98,6 +103,12 @@ impl State {
 
     pub fn busy(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub fn awaiting_speech(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.report.stage == Stage::AwaitingSpeech)
     }
 
     pub(crate) fn wake_loaded(&self) -> bool {
@@ -139,6 +150,9 @@ impl State {
 
     pub fn start_voice(&mut self, source: Source) -> VoiceRequest {
         use goodwin_plugin::provider::Capability;
+        if source != Source::FollowUp {
+            self.voice_history_after = self.next_message;
+        }
         let started_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -214,21 +228,48 @@ impl State {
 
     pub fn mute_capture(&self) {
         if let Some(active) = &self.active
-            && matches!(active.report.stage, Stage::AwaitingWake | Stage::Recording)
+            && matches!(
+                active.report.stage,
+                Stage::AwaitingWake | Stage::AwaitingSpeech | Stage::Recording
+            )
             && let Some(request) = &active.voice_request
         {
             request.cancel(Failure::MicrophoneMuted);
         }
     }
 
-    pub fn finish_voice(&mut self, request: &VoiceRequest, error: Option<Failure>) {
-        if self
+    pub fn finish_voice(&mut self, request: &VoiceRequest, error: Option<Failure>) -> bool {
+        let Some(active) = self
             .active
             .as_ref()
-            .is_some_and(|active| active.report.request_id == Some(request.id))
-        {
-            self.finish(request.failure().or(error));
+            .filter(|active| active.report.request_id == Some(request.id))
+        else {
+            return false;
+        };
+        if active.report.stage == Stage::AwaitingSpeech {
+            self.active = None;
+            return false;
         }
+        let error = request.failure().or(error);
+        let continue_dialogue = error.is_none()
+            && active.report.stage == Stage::Playing
+            && matches!(
+                active.report.source,
+                Source::Wake | Source::FollowUp | Source::PushToTalk
+            )
+            && !self.audio.microphone_muted
+            && self.audio.dialogue.timeout().is_some();
+        self.finish(error);
+        continue_dialogue
+    }
+
+    pub fn voice_history(&self) -> Vec<Message> {
+        recent_chat(
+            self.messages
+                .iter()
+                .rev()
+                .take_while(|message| message.id > self.voice_history_after),
+        )
     }
 
     pub fn transcript(&mut self, text: String) {
@@ -387,6 +428,7 @@ impl State {
                 "listening": self.audio.listening, "microphone_muted": self.audio.microphone_muted,
                 "sensitivity": self.audio.sensitivity, "wake_gain": self.audio.wake_gain,
                 "transcription_gain": self.audio.transcription_gain,
+                "dialogue": self.audio.dialogue,
             },
             "provider_ready": self.provider.configured(),
             "system_prompt": self.system_prompt, "microphone": true, "default_microphone_gain": 1,

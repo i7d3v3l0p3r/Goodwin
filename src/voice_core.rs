@@ -13,10 +13,92 @@ use std::{
 use crate::panel_core::{Failure, Source, Stage};
 
 pub(crate) fn first_voice_stage(source: Source) -> Stage {
-    if source == Source::WakeTest {
-        Stage::AwaitingWake
-    } else {
-        Stage::Recording
+    match source {
+        Source::WakeTest => Stage::AwaitingWake,
+        Source::FollowUp => Stage::AwaitingSpeech,
+        _ => Stage::Recording,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DialogueMode {
+    SingleTurn,
+    FollowUp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DialogueSettings {
+    pub mode: DialogueMode,
+    pub timeout_seconds: u8,
+}
+
+impl Default for DialogueSettings {
+    fn default() -> Self {
+        Self {
+            mode: DialogueMode::FollowUp,
+            timeout_seconds: 8,
+        }
+    }
+}
+
+impl DialogueSettings {
+    pub(crate) fn validate(self) -> goodwin_error::Result<()> {
+        goodwin_error::ensure!(
+            (1..=60).contains(&self.timeout_seconds),
+            "Follow-up timeout must be between 1 and 60 seconds"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn timeout(self) -> Option<std::time::Duration> {
+        (self.mode == DialogueMode::FollowUp)
+            .then(|| std::time::Duration::from_secs(self.timeout_seconds.into()))
+    }
+}
+
+/// Keeps only a short raw lead-in until sustained speech starts after playback.
+#[derive(Default)]
+pub(crate) struct FollowUpListener {
+    lead_in: std::collections::VecDeque<i16>,
+    voiced: usize,
+}
+
+pub(crate) enum FollowUpAudio {
+    Waiting,
+    Speech(Vec<i16>),
+    Expired,
+}
+
+impl FollowUpListener {
+    pub(crate) fn listen(
+        &mut self,
+        elapsed: std::time::Duration,
+        timeout: std::time::Duration,
+        frame: &[i16],
+        gain: f32,
+    ) -> FollowUpAudio {
+        if elapsed >= timeout {
+            return FollowUpAudio::Expired;
+        }
+        // Let the tail of the speaker output clear before retaining microphone audio.
+        if elapsed < std::time::Duration::from_millis(120) {
+            return FollowUpAudio::Waiting;
+        }
+        const LEAD_IN: usize = CAPTURE_HZ as usize / 4;
+        self.lead_in.extend(frame);
+        let overflow = self.lead_in.len().saturating_sub(LEAD_IN);
+        self.lead_in.drain(..overflow);
+        if is_voiced(frame, gain) {
+            self.voiced += frame.len();
+        } else {
+            self.voiced = 0;
+        }
+        if self.voiced >= CAPTURE_HZ as usize * 3 / 50 {
+            FollowUpAudio::Speech(std::mem::take(&mut self.lead_in).into())
+        } else {
+            FollowUpAudio::Waiting
+        }
     }
 }
 
@@ -181,13 +263,8 @@ pub(crate) struct VoiceActivity {
 impl VoiceActivity {
     pub(crate) fn push(&mut self, frame: &[i16], gain: f32, has_pre_roll: bool) -> Option<bool> {
         const RATE: usize = CAPTURE_HZ as usize;
-        const SPEECH_RMS: i64 = 100;
         self.elapsed += frame.len();
-        let energy: i64 = frame
-            .iter()
-            .map(|&sample| i64::from(scale_sample(sample, gain)).pow(2))
-            .sum();
-        if energy >= SPEECH_RMS * SPEECH_RMS * frame.len() as i64 {
+        if is_voiced(frame, gain) {
             self.voiced += frame.len();
             self.silence = 0;
         } else {
@@ -203,6 +280,15 @@ impl VoiceActivity {
         }
         None
     }
+}
+
+fn is_voiced(frame: &[i16], gain: f32) -> bool {
+    const SPEECH_RMS: i64 = 100;
+    let energy: i64 = frame
+        .iter()
+        .map(|&sample| i64::from(scale_sample(sample, gain)).pow(2))
+        .sum();
+    energy >= SPEECH_RMS * SPEECH_RMS * frame.len() as i64
 }
 
 pub(crate) trait Turn {
@@ -294,6 +380,44 @@ pub(crate) fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn follow_up_keeps_the_onset_and_ignores_echo_and_isolated_noise() {
+        use std::time::Duration;
+        let mut listener = FollowUpListener::default();
+        let frame = [75; CAPTURE_HZ as usize / 50];
+        let tick = Duration::from_millis(20);
+        let timeout = Duration::from_secs(8);
+        for n in 0..6 {
+            assert!(matches!(
+                listener.listen(tick * n, timeout, &[2000; 320], 1.0),
+                FollowUpAudio::Waiting
+            ));
+        }
+        for n in 6..397 {
+            let samples = if n % 2 == 1 { &frame[..] } else { &[0; 320] };
+            assert!(matches!(
+                listener.listen(tick * n, timeout, samples, 2.0),
+                FollowUpAudio::Waiting
+            ));
+        }
+        // At the end of the window only sustained speech opens a recording.
+        for n in [397, 398] {
+            assert!(matches!(
+                listener.listen(tick * n, timeout, &frame, 2.0),
+                FollowUpAudio::Waiting
+            ));
+        }
+        let FollowUpAudio::Speech(samples) = listener.listen(tick * 399, timeout, &frame, 2.0)
+        else {
+            panic!("missing follow-up");
+        };
+        assert_eq!(samples.len(), CAPTURE_HZ as usize / 4);
+        assert!(samples.ends_with(&[75; 960]));
+        assert!(matches!(
+            FollowUpListener::default().listen(timeout, timeout, &frame, 2.0),
+            FollowUpAudio::Expired
+        ));
+    }
     #[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
     #[test]
     fn wake_pre_roll_survives_the_32_bit_sample_boundary() {

@@ -72,7 +72,7 @@ impl Indicators {
         }
         match stage {
             Stage::AwaitingWake | Stage::Playing => {}
-            Stage::Recording => self.send(Scene::Listening),
+            Stage::AwaitingSpeech | Stage::Recording => self.send(Scene::Listening),
             Stage::Transcribing | Stage::Thinking | Stage::Synthesizing => {
                 self.send(Scene::Thinking);
             }

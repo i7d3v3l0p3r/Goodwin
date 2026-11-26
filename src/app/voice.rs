@@ -1,6 +1,7 @@
 use goodwin_error::Result;
 
 use crate::{
+    panel_core::{Message, recent_chat},
     plugins::VoiceTools,
     providers::{Provider, SpeechStream},
     station::{RecordingGain, playback_failure},
@@ -134,16 +135,25 @@ impl Turn for StationTurn<'_> {
     }
 
     async fn reply(&mut self, text: &str) -> Result<String, Failure> {
-        self.app.push("user", text.to_owned());
-        let voice_turn = {
+        let (voice_turn, history) = {
             let mut runtime = self.app.runtime();
+            let history = recent_chat(
+                runtime
+                    .messages
+                    .iter()
+                    .rev()
+                    .take_while(|message| message.id > runtime.voice_history_after),
+            );
+            runtime.push_message("user", text.to_owned());
             runtime.voice_turn += 1;
-            runtime.voice_turn
+            (runtime.voice_turn, history)
         };
+        self.app.changes.send_replace(());
         reply_with_tools(
             &self.providers.chat,
             text,
             self.system_prompt,
+            history,
             self.app.plugins.voice_tools(voice_turn),
         )
         .await
@@ -206,13 +216,14 @@ async fn reply_with_tools(
     provider: &Provider,
     text: &str,
     system_prompt: &str,
+    history: Vec<Message>,
     tools: VoiceTools,
 ) -> Result<String> {
     let voice_instructions = voice_core::instructions(system_prompt);
     let definitions = tools.definitions();
     if definitions.len() == 0 {
         return provider
-            .reply(text, &voice_instructions, Vec::new(), None)
+            .reply(text, &voice_instructions, history, None)
             .await;
     }
     let context = tools.context().await;
@@ -220,6 +231,7 @@ async fn reply_with_tools(
     crate::voice_core::tools::complete(
         &voice_instructions,
         text,
+        history,
         definitions,
         context,
         provider,

@@ -180,7 +180,7 @@ impl Detector {
                                 .copied()
                                 .collect();
                             self.reset();
-                            return Ok(Some(Recording::Wake {
+                            return Ok(Some(Recording::Triggered {
                                 captured,
                                 post_trigger: lag as usize,
                             }));

@@ -4,6 +4,15 @@ use goodwin_plugin::provider::{ChatMessage, ChatRequest, ChatRole, Completion, M
 use crate::panel_core::Message;
 
 pub(crate) fn request(instructions: &str, text: &str, history: Vec<Message>) -> ChatRequest {
+    request_with_context(instructions, text, history, None)
+}
+
+pub(crate) fn request_with_context(
+    instructions: impl Into<String>,
+    text: &str,
+    history: Vec<Message>,
+    context: Option<ChatMessage>,
+) -> ChatRequest {
     // recent_chat takes the newest messages first to enforce the context limit.
     let history = history.into_iter().rev().map(|message| {
         let role = if message.role == "assistant" {
@@ -13,16 +22,9 @@ pub(crate) fn request(instructions: &str, text: &str, history: Vec<Message>) -> 
         };
         ChatMessage::text(role, message.text)
     });
-    request_with_context(instructions, text, history)
-}
-
-pub(crate) fn request_with_context(
-    instructions: impl Into<String>,
-    text: &str,
-    context: impl ExactSizeIterator<Item = ChatMessage>,
-) -> ChatRequest {
-    let mut messages = Vec::with_capacity(context.len() + 2);
+    let mut messages = Vec::with_capacity(history.len() + usize::from(context.is_some()) + 2);
     messages.push(ChatMessage::text(ChatRole::System, instructions));
+    messages.extend(history);
     messages.extend(context);
     messages.push(ChatMessage::text(ChatRole::User, text));
     ChatRequest {
