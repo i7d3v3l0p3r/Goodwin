@@ -153,7 +153,7 @@ GOODWIN_WAKE_REFERENCE_DIR="$PWD/target/wake-reference" \
 
 ## Publish a release
 
-Set the release version in the Goodwin and installer Cargo manifests and lockfiles. Add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, plugin archives and desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
+Set the release version in the Goodwin and installer Cargo manifests and lockfiles. Add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, WASM plugin archives and desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.
 
 To start the workflow manually for an existing release tag, run `gh workflow run release.yml --ref v<version>`.
 

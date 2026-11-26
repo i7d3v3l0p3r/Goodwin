@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### English
+
+- GitHub releases now distribute Timers, OpenAI-compatible and Wake-word dataset only as WASM packages.
+
+### Русский
+
+- В релизах GitHub плагины таймеров, OpenAI-совместимого провайдера и датасета слова активации теперь доступны только в формате WASM.
+
 ## [0.5.0] - 2026-11-26
 
 ### English

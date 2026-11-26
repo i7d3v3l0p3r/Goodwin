@@ -77,20 +77,14 @@ jobs:
           python scripts/build-wake-tflite.py --target aarch64-musl
           target=aarch64-unknown-linux-musl
           linker="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
-          # Keep Rust's Cortex-A53 erratum workaround when linking the Station binaries.
+          # Keep Rust's Cortex-A53 erratum workaround when linking the Station binary.
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C linker=$linker -C linker-flavor=ld.lld" \
-            cargo zigbuild --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins \
+            cargo zigbuild --locked -p goodwin --bin goodwin --features wake-tflite,wasm-plugins \
               --config 'profile.release.package.goodwin.strip="symbols"' --release --target "$target"
 
           python scripts/package-station.py --output target/release-assets/goodwin-mini3-aarch64.tar.gz
-          python scripts/package-plugin.py plugins/timers "target/$target/release/goodwin-timers" \
-            linux-aarch64 target/release-assets/timers-linux-aarch64.tar.gz
           python scripts/package-plugin.py plugins/timers target/wasm32-unknown-unknown/release/goodwin-timers.wasm \
             wasm32 target/release-assets/timers-wasm32.tar.gz --wasm-state-file timers.json
-          python scripts/package-plugin.py plugins/openai-compatible "target/$target/release/goodwin-openai-compatible" \
-            linux-aarch64 target/release-assets/openai-compatible-linux-aarch64.tar.gz
-          python scripts/package-plugin.py plugins/wake-dataset "target/$target/release/goodwin-wake-dataset" \
-            linux-aarch64 target/release-assets/wake-dataset-linux-aarch64.tar.gz
           for plugin in openai-compatible wake-dataset; do
             python scripts/package-plugin.py "plugins/$plugin" "target/wasm32-unknown-unknown/release/goodwin-$plugin.wasm" \
               wasm32 "target/release-assets/$plugin-wasm32.tar.gz"
@@ -188,8 +182,7 @@ jobs:
           tag="$GITHUB_REF_NAME"
           installers=(goodwin-installer-windows-x64.exe goodwin-installer-linux-x64.tar.gz
             goodwin-installer-macos-arm64.tar.gz goodwin-installer-macos-x64.tar.gz)
-          assets=(goodwin-mini3-aarch64.tar.gz timers-linux-aarch64.tar.gz timers-wasm32.tar.gz openai-compatible-linux-aarch64.tar.gz
-            wake-dataset-linux-aarch64.tar.gz openai-compatible-wasm32.tar.gz wake-dataset-wasm32.tar.gz
+          assets=(goodwin-mini3-aarch64.tar.gz timers-wasm32.tar.gz openai-compatible-wasm32.tar.gz wake-dataset-wasm32.tar.gz
             "${installers[@]}" SHA256SUMS)
           sha256sum -- "${installers[@]}" >> SHA256SUMS
           sha256sum -c SHA256SUMS
