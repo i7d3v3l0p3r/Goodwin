@@ -65,7 +65,7 @@ impl Runtime {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct Selection {
     pub id: String,
     pub wake_word: String,

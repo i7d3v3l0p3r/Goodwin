@@ -92,6 +92,7 @@ struct Runtime {
     microphone: bool,
     model: bool,
     wake_model: Option<Selection>,
+    wake_model_switching: bool,
     messages: VecDeque<Message>,
     chat_draft: Option<Message>,
 }
@@ -349,10 +350,18 @@ impl App {
             return None;
         }
         let pending = self.wake_models.take_pending()?;
-        runtime.model = true;
-        runtime.wake_model = Some(pending.selection.clone());
-        self.changes.send_replace(());
+        runtime.wake_model_switching = true;
         Some(pending)
+    }
+
+    pub(crate) fn finish_wake_model_switch(&self, selection: Option<&Selection>) {
+        let mut runtime = self.runtime();
+        runtime.wake_model_switching = false;
+        if let Some(selection) = selection {
+            runtime.model = true;
+            runtime.wake_model = Some(selection.clone());
+            self.changes.send_replace(());
+        }
     }
 
     pub(crate) fn active(&self) -> Option<ActiveTurn> {
@@ -402,6 +411,9 @@ impl App {
             return Err(Failure::MicrophoneMuted);
         }
         if runtime.active.is_some() {
+            return Err(Failure::Busy);
+        }
+        if matches!(source, Source::Wake | Source::WakeTest) && runtime.wake_model_switching {
             return Err(Failure::Busy);
         }
         if source != Source::Chat && !runtime.microphone {

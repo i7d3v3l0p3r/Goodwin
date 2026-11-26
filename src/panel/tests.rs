@@ -14,6 +14,68 @@ use crate::{
 };
 
 #[tokio::test]
+async fn wake_model_ticket_reports_pending_and_then_the_active_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (ticket, expected) = app.wake_models.stage_fixture("fixture");
+    let (panel, task) = serve(router(app.clone())).await;
+    let client = reqwest::Client::new();
+    let result = || {
+        client
+            .post(format!("{panel}/api/wake-models/result"))
+            .json(&json!({"operation": ticket}))
+    };
+    let pending = result().send().await.unwrap();
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        pending.json::<Value>().await.unwrap(),
+        json!({"pending": true})
+    );
+    assert_eq!(
+        client
+            .put(format!("{panel}/api/wake-models"))
+            .json(&json!({"tag":"v1","id":"fixture"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+
+    crate::station::capture::Detector::new(None).apply_pending_model(&app);
+    for _ in 0..2 {
+        let ready = result().send().await.unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        assert_eq!(
+            ready
+                .json::<crate::wake_catalog::Selection>()
+                .await
+                .unwrap(),
+            expected
+        );
+    }
+    let state: Value = client
+        .get(format!("{panel}/api/state"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(state["wake_model"]["id"], expected.id);
+    task.abort();
+}
+
+#[tokio::test]
 async fn panel_state_includes_declared_plugin_page_icons() {
     let dir = tempfile::tempdir().unwrap();
     let app = App::new(

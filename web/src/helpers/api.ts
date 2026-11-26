@@ -228,11 +228,20 @@ export async function apiOperation<T>(
   const start = await api<T | { operation: string }>(route, method, body, timeout);
   if (typeof start !== "object" || !start || !("operation" in start)) return start as T;
   if (typeof start.operation !== "string") throw new ApiError("internal");
-  const ticket = { operation: start.operation };
+  return waitForOperation<T>(resultRoute, start.operation, deadline);
+}
+
+export async function waitForOperation<T>(
+  resultRoute: string, operation: string, deadline: number, retryConnection = false,
+): Promise<T> {
   let remaining: number;
   while ((remaining = deadline - performance.now()) > 0) {
-    const result = await api<T | { pending: true }>(resultRoute, "POST", ticket, Math.min(10_000, Math.ceil(remaining)));
-    if (typeof result !== "object" || !result || !("pending" in result)) return result as T;
+    try {
+      const result = await api<T | { pending: true }>(resultRoute, "POST", { operation }, Math.min(10_000, Math.ceil(remaining)));
+      if (typeof result !== "object" || !result || !("pending" in result)) return result as T;
+    } catch (failure) {
+      if (!retryConnection || !(failure instanceof ApiError) || failure.code !== "connection") throw failure;
+    }
     await new Promise(resolve => window.setTimeout(resolve, 750));
   }
   throw new ApiError("connection");

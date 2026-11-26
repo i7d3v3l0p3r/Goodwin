@@ -9,7 +9,7 @@ use goodwin_plugin::wake::{Event, Frame, Model};
 use crate::{
     app::{ActiveTurn, App, Failure, Source, Stage},
     voice_core::{PRE_ROLL, RecordingGain, VoiceActivity, scale_sample},
-    wake::{FRAME_SAMPLES as WAKE_SAMPLES, SAMPLE_RATE as RATE, WakeModel},
+    wake::{FRAME_SAMPLES as WAKE_SAMPLES, InstallError, SAMPLE_RATE as RATE, WakeModel},
     wake_catalog::Selection,
 };
 
@@ -96,15 +96,26 @@ impl Detector {
             self.reset_wake(app);
         }
         if let Some(pending) = app.take_pending_wake_model() {
+            let previous = self.model.replace(pending.model);
+            if let Err(error) = app.wake_models.commit_selection(pending.manifest) {
+                self.model = previous;
+                app.finish_wake_model_switch(None);
+                app.wake_models.fail_install(InstallError::Failed);
+                log::warn!("Save active wake model: {error:#}");
+                return;
+            }
             log::info!("Wake model activated id={}", pending.selection.id);
             self.end_wake_stream(app);
-            self.wake_metadata = Some(wake_metadata(&pending.model, Some(&pending.selection)));
-            self.model = Some(pending.model);
+            self.wake_metadata = self
+                .model
+                .as_ref()
+                .map(|model| wake_metadata(model, Some(&pending.selection)));
             self.wake_frame.clear();
             self.history.clear();
             self.detection_enabled = false;
             self.wake_test = None;
-            let _ = pending.activated.send(());
+            app.finish_wake_model_switch(Some(&pending.selection));
+            app.wake_models.finish_install(pending.selection);
         }
     }
 

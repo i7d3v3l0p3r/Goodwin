@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     extract::State,
@@ -7,7 +7,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::time::timeout;
 
 use crate::{
     wake::{InstallError, runtimes},
@@ -45,29 +44,56 @@ pub(super) async fn install(State(panel): State<Panel>, Json(install): Json<Inst
         return problem(StatusCode::BAD_REQUEST, "invalid_wake_model");
     }
     let app = Arc::clone(&panel.app);
-    match tokio::task::spawn_blocking(move || app.wake_models.install(&install.tag, &install.id))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        let operation = app.wake_models.start_install()?;
+        tokio::spawn(async move {
+            let worker = Arc::clone(&app);
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                worker.wake_models.install(&install.tag, &install.id);
+            })
+            .await
+            {
+                log::error!("Wake model installation task failed: {error}");
+                app.wake_models.fail_install(InstallError::Failed);
+            }
+        });
+        Ok(operation)
+    })
+    .await
     {
-        Ok(Ok((selection, activated))) => match timeout(Duration::from_secs(15), activated).await {
-            Ok(Ok(())) => Json(selection).into_response(),
-            _ => problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "wake_model_activation_pending",
-            ),
-        },
-        Ok(Err(InstallError::Busy)) => problem(StatusCode::CONFLICT, "wake_model_busy"),
-        Ok(Err(InstallError::CatalogChanged)) => {
-            problem(StatusCode::CONFLICT, "wake_catalog_changed")
+        Ok(Ok(operation)) => {
+            (StatusCode::ACCEPTED, Json(json!({"operation": operation}))).into_response()
         }
-        Ok(Err(InstallError::Unknown)) => problem(StatusCode::NOT_FOUND, "invalid_wake_model"),
-        Ok(Err(InstallError::Unavailable(error))) => {
-            log::warn!("Could not get the wake model catalog: {error:#}");
-            problem(StatusCode::BAD_GATEWAY, "wake_catalog_unavailable")
-        }
-        Ok(Err(InstallError::Failed(error))) => {
-            log::error!("Could not install the wake model: {error:#}");
-            problem(StatusCode::INTERNAL_SERVER_ERROR, "wake_model_failed")
-        }
-        Err(_) => problem(StatusCode::INTERNAL_SERVER_ERROR, "wake_model_failed"),
+        Ok(Err(error)) => install_problem(error),
+        Err(_) => install_problem(InstallError::Failed),
     }
+}
+
+#[derive(Deserialize)]
+pub(super) struct InstallTicket {
+    operation: String,
+}
+
+pub(super) async fn install_result(
+    State(panel): State<Panel>,
+    Json(ticket): Json<InstallTicket>,
+) -> Response {
+    match panel.app.wake_models.install_result(&ticket.operation) {
+        Some(Ok(Some(selection))) => Json(selection).into_response(),
+        Some(Ok(None)) => (StatusCode::ACCEPTED, Json(json!({"pending": true}))).into_response(),
+        Some(Err(error)) => install_problem(error),
+        None => problem(StatusCode::NOT_FOUND, "wake_model_failed"),
+    }
+}
+
+fn install_problem(error: InstallError) -> Response {
+    let (status, code) = match error {
+        InstallError::Busy => (StatusCode::CONFLICT, "wake_model_busy"),
+        InstallError::CatalogChanged => (StatusCode::CONFLICT, "wake_catalog_changed"),
+        InstallError::Unknown => (StatusCode::NOT_FOUND, "invalid_wake_model"),
+        InstallError::Unavailable => (StatusCode::BAD_GATEWAY, "wake_catalog_unavailable"),
+        InstallError::Failed => (StatusCode::INTERNAL_SERVER_ERROR, "wake_model_failed"),
+        InstallError::Interrupted => (StatusCode::CONFLICT, "wake_model_interrupted"),
+    };
+    problem(status, code)
 }

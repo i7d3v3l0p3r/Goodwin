@@ -4,39 +4,15 @@ use std::{
     task::Poll,
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use tokio::io::{AsyncReadExt, duplex};
 
 use crate::{
     app::{Source, Stage},
     config::{Access, Config, DEFAULT_MICROPHONE_GAIN, Settings},
     station::Player,
-    wake::WakeModel,
-    wake_catalog::Selection,
 };
 
 use super::*;
-
-fn queue_model(app: &App) -> tokio::sync::oneshot::Receiver<()> {
-    // A small ONNX graph with a single Identity node from chunk to score.
-    let encoded = concat!(
-        "CAg6VwoYCgVjaHVuaxIFc2NvcmUiCElkZW50aXR5EgdmaXh0dXJl",
-        "WhgKBWNodW5rEg8KDQgBEgkKAggBCgMIgApiGAoFc2NvcmUSDwoNCAESCQoCCAEKAwiACkICEA0=",
-    );
-    let path = app.dir.join("fixture.onnx");
-    std::fs::write(&path, STANDARD.decode(encoded).unwrap()).unwrap();
-    app.wake_models.queue_model(
-        Selection {
-            id: "egor-standard".into(),
-            wake_word: "Егор".into(),
-            tier: "standard".into(),
-            sha256: "0".repeat(64),
-            runtime: crate::wake_catalog::Runtime::Micro,
-            score_threshold: None,
-        },
-        WakeModel::load(&path).unwrap(),
-    )
-}
 
 fn app(dir: &std::path::Path) -> Arc<App> {
     App::new(
@@ -76,9 +52,12 @@ async fn switches_during_a_chat_without_waiting_for_or_discarding_audio() {
         ));
         poll_pending(audio.as_mut()).await;
 
-        let mut activated = queue_model(&app);
+        let (ticket, _) = app.wake_models.stage_fixture("egor-standard");
         poll_pending(audio.as_mut()).await;
-        assert!(activated.try_recv().is_ok());
+        assert!(matches!(
+            app.wake_models.install_result(&ticket),
+            Some(Ok(Some(_)))
+        ));
         assert_eq!(app.active().unwrap().id, turn);
         assert_eq!(
             serde_json::to_value(app.snapshot()).unwrap()["wake_model"]["id"],
@@ -96,21 +75,56 @@ async fn a_wake_test_keeps_its_model_until_it_starts_recording() {
     let temp = tempfile::tempdir().unwrap();
     let app = app(temp.path());
     assert!(app.microphone_connected(&app.microphone_mute()));
-    app.set_model(true, None);
-    let turn = app.start(Source::WakeTest).ok().unwrap();
     let mut detector = Detector::new(None);
+    let (_, previous) = app.wake_models.stage_fixture("previous");
+    detector.apply_pending_model(&app);
+    let turn = app.start(Source::WakeTest).ok().unwrap();
     let mut audio = pin!(with_model_updates(&app, &mut detector, pending::<()>()));
 
-    let mut activated = queue_model(&app);
+    let (ticket, selected) = app.wake_models.stage_fixture("new-selection");
     poll_pending(audio.as_mut()).await;
     assert!(matches!(
-        activated.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        app.wake_models.install_result(&ticket),
+        Some(Ok(None))
     ));
-    assert!(serde_json::to_value(app.snapshot()).unwrap()["wake_model"].is_null());
+    assert_eq!(
+        serde_json::to_value(app.snapshot()).unwrap()["wake_model"]["id"],
+        previous.id
+    );
+    let manifest = temp.path().join("wake-model.json");
+    let read_model =
+        || serde_json::from_slice::<serde_json::Value>(&std::fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(read_model()["id"], previous.id);
 
     app.stage(turn, Stage::Recording);
     poll_pending(audio.as_mut()).await;
-    assert!(activated.try_recv().is_ok());
+    assert!(
+        matches!(app.wake_models.install_result(&ticket), Some(Ok(Some(model))) if model == selected)
+    );
+    assert_eq!(read_model()["id"], selected.id);
     assert!(app.active().unwrap().stage == Stage::Recording);
+}
+
+#[test]
+fn a_failed_manifest_rename_keeps_the_previous_detector() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = app(temp.path());
+    let mut detector = Detector::new(None);
+    let (_, previous) = app.wake_models.stage_fixture("previous");
+    detector.apply_pending_model(&app);
+    let (ticket, _) = app.wake_models.stage_fixture("candidate");
+
+    let manifest = temp.path().join("wake-model.json");
+    std::fs::rename(&manifest, temp.path().join("backup.json")).unwrap();
+    std::fs::create_dir(&manifest).unwrap();
+    detector.apply_pending_model(&app);
+    assert!(matches!(
+        app.wake_models.install_result(&ticket),
+        Some(Err(crate::wake::InstallError::Failed))
+    ));
+    assert_eq!(
+        serde_json::to_value(app.snapshot()).unwrap()["wake_model"]["id"],
+        previous.id
+    );
+    assert!(app.wake_models.start_install().is_ok());
 }

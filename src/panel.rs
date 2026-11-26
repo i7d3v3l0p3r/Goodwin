@@ -75,6 +75,7 @@ pub fn router(app: Arc<App>) -> Router {
             "/api/wake-models",
             get(wake_models::catalog).put(wake_models::install),
         )
+        .route("/api/wake-models/result", post(wake_models::install_result))
         .route("/api/chat", post(chat))
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))

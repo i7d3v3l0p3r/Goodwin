@@ -1,11 +1,13 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { Button } from "../../../components/ui-kit/Button";
 import { Switch } from "../../../components/ui-kit/Switch";
-import { apiOperation, ApiError, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
+import { api, apiOperation, ApiError, waitForOperation, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
 import { protectDraft } from "../../../helpers/drafts";
 import { errorLabel, type Words } from "../../../helpers/words";
 import { isSettingsPath } from "../sections";
 import styles from "./WakeWordSettings.module.css";
+
+const operationKey = "goodwin-wake-model-operation";
 
 export function WakeWordSettings(props: {
   t: Words;
@@ -26,6 +28,7 @@ export function WakeWordSettings(props: {
   const [id, setId] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   const [installing, setInstalling] = createSignal(false);
+  const [operation, setOperation] = createSignal(sessionStorage.getItem(operationKey));
   const [installed, setInstalled] = createSignal(false);
   const [catalogFailed, setCatalogFailed] = createSignal(false);
   const [error, setError] = createSignal<string>();
@@ -66,23 +69,43 @@ export function WakeWordSettings(props: {
 
   createEffect(() => props.visible && props.hasCatalog, visible => {
     if (visible && !catalog()) void loadCatalog();
+    if (visible && operation()) void install();
   });
 
-  async function install(event: SubmitEvent) {
-    event.preventDefault();
+  function rememberOperation(ticket: string | null) {
+    setOperation(ticket);
+    if (ticket) sessionStorage.setItem(operationKey, ticket);
+    else sessionStorage.removeItem(operationKey);
+  }
+
+  async function install(event?: SubmitEvent) {
+    event?.preventDefault();
     const release = catalog();
     const model = selected();
-    if (!release || !model || installing()) return;
+    let ticket = operation();
+    if (installing() || (!ticket && (!release || !model))) return;
     setInstalling(true);
     setInstalled(false);
     setError(undefined);
     try {
-      await apiOperation<WakeModel>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
+      const deadline = performance.now() + 210_000;
+      if (!ticket && release && model) {
+        const started = await api<WakeModel | { operation: string }>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
+        if (started && "operation" in started) {
+          if (typeof started.operation !== "string") throw new ApiError("internal");
+          ticket = started.operation;
+          rememberOperation(ticket);
+        }
+      }
+      if (ticket) await waitForOperation<WakeModel>("wake-models/result", ticket, deadline, true);
+      rememberOperation(null);
       props.onModelInstalled();
       setInstalled(true);
       setId("");
     } catch (failure) {
-      setError(failure instanceof ApiError ? failure.code : "wake_model_failed");
+      const code = failure instanceof ApiError ? failure.code : "wake_model_failed";
+      if (code !== "connection" && code !== "login_required") rememberOperation(null);
+      setError(code);
       if (failure instanceof ApiError && failure.code === "wake_catalog_changed") void loadCatalog();
     } finally {
       setInstalling(false);
@@ -118,7 +141,7 @@ export function WakeWordSettings(props: {
       <p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
         ? modelLabel(props.currentModel)
         : props.modelLoaded ? props.t.localWakeModel : props.t.noWakeModel}</p>
-      <select id="wake-model" value={id()} disabled={loading() || installing() || props.pending || !catalog()?.models.length}
+      <select id="wake-model" value={id()} disabled={loading() || installing() || Boolean(operation()) || props.pending || !catalog()?.models.length}
         onChange={event => { setId(event.currentTarget.value); setInstalled(false); setError(undefined); }}>
         <option value="" selected={!id()}>{props.t.chooseWakeModel}</option>
         <For each={catalog()?.models}>{model =>
@@ -126,8 +149,8 @@ export function WakeWordSettings(props: {
         }</For>
       </select>
       <div class={styles.modelActions}>
-        <Button variant="primary" type="submit" disabled={installing() || loading() || props.pending || !canInstall()}>
-          {installing() ? props.t.installingWakeModel : props.t.installWakeModel}
+        <Button variant="primary" type="submit" disabled={installing() || props.pending || (!operation() && (loading() || !canInstall()))}>
+          {installing() ? props.t.installingWakeModel : operation() ? props.t.checkWakeInstall : props.t.installWakeModel}
         </Button>
         <Show when={catalogFailed()}>
           <Button type="button" disabled={props.pending} onClick={() => void loadCatalog()}>{props.t.retryWakeCatalog}</Button>
