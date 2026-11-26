@@ -1,5 +1,7 @@
 import solid from "@solidjs/vite-plugin";
 import { defineConfig } from "vite";
+import { compression, defineAlgorithm } from "vite-plugin-compression2";
+import { gzipEtags } from "./vite-plugin-etags.ts";
 
 const runtime = "src/helpers/plugin-runtime.ts";
 const runtimeName = "plugin-runtime-v1";
@@ -7,6 +9,13 @@ const runtimeName = "plugin-runtime-v1";
 export default defineConfig({
   plugins: [
     solid(),
+    compression({
+      algorithms: [defineAlgorithm("gzip", { level: 9 })],
+      include: /./,
+      exclude: /\.(gz|etag)$/,
+      skipIfLargerOrEqual: false,
+    }),
+    gzipEtags(),
     {
       name: "goodwin-plugin-runtime",
       apply: "serve",
@@ -17,6 +26,7 @@ export default defineConfig({
   ],
   build: {
     assetsInlineLimit: 64_000,
+    reportCompressedSize: false,
     license: { fileName: "panel-licenses.md" },
     rolldownOptions: {
       input: { panel: "index.html", [runtimeName]: runtime },

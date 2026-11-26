@@ -3,6 +3,7 @@ use std::io::Read;
 use axum::http::{StatusCode, header};
 use flate2::read::GzDecoder;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::router;
 use crate::{
@@ -326,6 +327,8 @@ async fn panel_serves_precompressed_assets_at_their_original_urls() {
                 crate::panel_core::ASSET_CACHE_CONTROL
             );
             let tag = response.headers()[header::ETAG].to_str().unwrap();
+            let hash = crate::checksum::hex(&Sha256::digest(compressed));
+            assert_eq!(tag, format!("\"{hash}\""), "{path}");
             let cached = client
                 .get(format!("{panel}{path}"))
                 .header(header::IF_NONE_MATCH, format!("W/{tag}"))
