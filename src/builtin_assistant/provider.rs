@@ -1,11 +1,12 @@
 use goodwin_error::{Context, Result, ensure};
+use goodwin_plugin::provider::PcmFormat;
 use serde::{Deserialize, Serialize};
 
 use crate::panel_core::Message;
 
 use super::ProviderSettings;
 
-pub(crate) const SPEECH_HZ: u32 = 24_000;
+pub(crate) const SPEECH_HZ: u32 = PcmFormat::DEFAULT_RATE;
 
 pub(crate) trait HttpTransport {
     fn post(
@@ -192,26 +193,33 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
             voice: &self.settings.voice,
             response_format: "pcm",
         })?;
+        let mut bytes_received = 0;
         self.post(
             "/audio/speech",
             "application/json",
             &[&body],
             SPEECH_LIMIT,
             |content_type, bytes| {
-                let media_type = content_type
-                    .unwrap_or_default()
-                    .split(';')
-                    .next()
-                    .unwrap_or_default();
-                ensure!(
-                    ["audio/pcm", "audio/x-pcm", "application/octet-stream"]
-                        .iter()
-                        .any(|value| media_type.eq_ignore_ascii_case(value)),
-                    "Expected raw 24 kHz PCM from /audio/speech"
-                );
+                if bytes_received == 0 {
+                    let format = content_type.and_then(PcmFormat::from_content_type);
+                    ensure!(
+                        format
+                            == Some(PcmFormat {
+                                sample_rate: SPEECH_HZ,
+                                channels: 1
+                            }),
+                        "Expected signed 16-bit little-endian mono PCM at 24 kHz from /audio/speech"
+                    );
+                }
+                bytes_received += bytes.len();
                 consume(bytes)
             },
-        )
+        )?;
+        ensure!(
+            bytes_received > 0 && bytes_received.is_multiple_of(2),
+            "Invalid PCM length"
+        );
+        Ok(())
     }
 
     fn response(

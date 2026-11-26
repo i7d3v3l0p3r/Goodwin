@@ -89,6 +89,49 @@ async fn speech_emits_complete_pcm_frames_before_the_http_body_ends() {
 }
 
 #[tokio::test]
+async fn buffered_and_streamed_speech_reject_incompatible_pcm_before_emitting_audio() {
+    let router = axum::Router::new().route(
+        "/v1/audio/speech",
+        axum::routing::post(|| async {
+            (
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "audio/pcm;rate=24000;bits=24",
+                )],
+                [1_u8, 2, 3, 4],
+            )
+        }),
+    );
+    let (address, server) = test_support::serve(router).await;
+    tokio::task::spawn_blocking(move || {
+        let upstream = Upstream::new(Protocol::OpenAi).unwrap();
+        let config = Config {
+            base_url: format!("{address}/v1"),
+            speech_model: "fixture".into(),
+            ..Config::default()
+        };
+        let request = || SpeechRequest {
+            text: "Проверка".into(),
+            selection: Default::default(),
+        };
+        assert!(upstream.synthesize(&config, request()).is_err());
+        let error = upstream
+            .synthesize_stream(&config, request(), &mut |_| {
+                panic!("incompatible PCM must not reach playback");
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("valid signed 16-bit little-endian PCM")
+        );
+    })
+    .await
+    .unwrap();
+    server.abort();
+}
+
+#[tokio::test]
 async fn chat_emits_visible_text_before_the_server_finishes_and_reports_a_stream_error() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = Config {

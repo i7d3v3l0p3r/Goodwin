@@ -150,6 +150,78 @@ fn save_connection_fixture(data: &Path, endpoint: &str, key: &str) {
 }
 
 #[tokio::test]
+async fn provider_catalog_larger_than_esp_guest_memory_is_processed_incrementally() {
+    use goodwin_plugin::provider::{MODELS_METHOD, ModelCatalog, ModelsRequest};
+
+    let router = Router::new().route(
+        "/v1/models",
+        get(|| async {
+            let prefix =
+                stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"{\"data\":[")) });
+            let models = stream::iter((0..180).map(|id| {
+                let separator = if id == 0 { "" } else { "," };
+                Ok(Bytes::from(format!(
+                    r#"{separator}{{"id":"test-{id}","description":"{}"}}"#,
+                    "x".repeat(20 * 1024)
+                )))
+            }));
+            let suffix = stream::once(async { Ok(Bytes::from_static(b"]}")) });
+            Response::new(Body::from_stream(prefix.chain(models).chain(suffix)))
+        }),
+    );
+    let (server, task) = crate::test_support::serve(router).await;
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    fs::create_dir(&data).unwrap();
+    let manifest = install(
+        root.path(),
+        serde_json::from_str(include_str!(
+            "../../../../plugins/openai-compatible/manifest.json"
+        ))
+        .unwrap(),
+        wasm!("openai-compatible"),
+    );
+    save_connection_fixture(&data, &format!("{server}/v1"), "");
+    let host = services::Host::new(data, &manifest).unwrap();
+    let instance = Instance::open_with_host(
+        root.path().join(&manifest.executable),
+        Some(host),
+        3 * 1024 * 1024,
+    )
+    .await
+    .unwrap();
+    instance
+        .call(json!({"id":1,"method":"initialize","params":{"apiVersion":1}}))
+        .await
+        .unwrap();
+    let (reply, _): Reply = instance
+        .invoke(
+            plugin_rpc::Request {
+                jsonrpc: "2.0",
+                id: 2,
+                method: MODELS_METHOD,
+                params: ModelsRequest {
+                    capability: Capability::Chat,
+                },
+                now: None,
+            },
+            Some(ProviderTarget::Connection("fixture".into())),
+            CallLimits::STANDARD,
+            None,
+            CallGuards::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let catalog: ModelCatalog =
+        serde_json::from_value(response(reply, 2).unwrap().unwrap()).unwrap();
+    assert!(catalog.available);
+    assert_eq!(catalog.models.len(), 180);
+    assert_eq!(catalog.models[179].id, "test-179");
+    task.abort();
+}
+
+#[tokio::test]
 async fn wasm_providers_use_host_http_for_transcription_models_and_live_streams() {
     for router_protocol in [false, true] {
         let first_chat = Arc::new(Notify::new());

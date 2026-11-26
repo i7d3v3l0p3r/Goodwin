@@ -7,13 +7,14 @@ use goodwin_plugin::{
     provider::{
         Capability, ChatCompletion, ChatPayload, ChatRequest, ChatRole, Completion, MAX_CHAT_BYTES,
         MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MAX_SPEECH_CHUNK_BYTES, Model, ModelCatalog,
-        SpeechAudio, SpeechRequest, Transcription, TranscriptionRequest,
+        PcmFormat, SpeechAudio, SpeechRequest, Transcription, TranscriptionRequest,
     },
 };
 use serde::{Deserialize, Serialize};
 
 use super::Config;
 
+mod catalog;
 mod chat_stream;
 mod transport;
 use transport::{Client, Method, RequestBuilder, Response, send};
@@ -29,37 +30,6 @@ pub enum Protocol {
 pub struct Upstream {
     client: Client,
     protocol: Protocol,
-}
-
-#[derive(Deserialize)]
-struct UpstreamCatalog {
-    data: Vec<UpstreamModel>,
-}
-
-#[derive(Deserialize)]
-struct UpstreamModel {
-    id: String,
-    name: Option<String>,
-    #[serde(default)]
-    output_modalities: Vec<OutputModality>,
-}
-
-#[derive(Deserialize)]
-struct OutputModality {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    supported_parameters: Option<SpeechOptions>,
-}
-
-#[derive(Deserialize)]
-struct SpeechOptions {
-    response_format: Option<Options>,
-    voice: Option<Options>,
-}
-
-#[derive(Deserialize)]
-struct Options {
-    values: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -229,16 +199,16 @@ impl Upstream {
 
     pub fn synthesize(&self, config: &Config, request: SpeechRequest) -> Result<SpeechAudio> {
         let response = send(self.speech_request(config, request)?)?;
-        let (sample_rate, channels) = speech_format(&response)?;
+        let format = speech_format(&response)?;
         let data = read(response, MAX_SPEECH_BYTES)?;
         ensure!(
-            !data.is_empty() && data.len().is_multiple_of(2 * usize::from(channels)),
+            !data.is_empty() && data.len().is_multiple_of(format.frame_bytes()),
             "Invalid PCM length"
         );
         Ok(SpeechAudio {
             pcm_base64: STANDARD.encode(data),
-            sample_rate,
-            channels,
+            sample_rate: format.sample_rate,
+            channels: format.channels,
         })
     }
 
@@ -252,8 +222,8 @@ impl Upstream {
             transport::accept(self.speech_request(config, request)?, "audio/pcm")
                 .timeout(Duration::from_secs(180)),
         )?;
-        let (sample_rate, channels) = speech_format(&response)?;
-        let frame_bytes = 2 * usize::from(channels);
+        let format = speech_format(&response)?;
+        let frame_bytes = format.frame_bytes();
         let mut buffer = [0_u8; MAX_SPEECH_CHUNK_BYTES];
         let mut pending = 0;
         let mut total = 0;
@@ -275,8 +245,8 @@ impl Upstream {
             if aligned != 0 {
                 emit(SpeechAudio {
                     pcm_base64: STANDARD.encode(&buffer[..aligned]),
-                    sample_rate,
-                    channels,
+                    sample_rate: format.sample_rate,
+                    channels: format.channels,
                 })?;
             }
             buffer.copy_within(aligned..available, 0);
@@ -357,57 +327,7 @@ impl Upstream {
             };
             request = request.query(&[("endpoints", endpoint)]);
         }
-        let catalog: UpstreamCatalog = json_codec::from_slice(&read(send(request)?, 8_000_000)?)?;
-        let mut ids = std::collections::HashSet::new();
-        let mut bytes = 0;
-        Ok(catalog
-            .data
-            .into_iter()
-            .filter_map(|model| {
-                if model.id.trim() != model.id
-                    || model.id.is_empty()
-                    || model.id.len() > 256
-                    || model.id.chars().any(char::is_control)
-                    || !ids.insert(model.id.clone())
-                {
-                    return None;
-                }
-                let speech_options = model
-                    .output_modalities
-                    .into_iter()
-                    .find(|item| item.kind.as_deref() == Some("speech"));
-                let parameters = speech_options.and_then(|item| item.supported_parameters);
-                if parameters
-                    .as_ref()
-                    .and_then(|params| params.response_format.as_ref())
-                    .and_then(|options| options.values.as_ref())
-                    .is_some_and(|formats| !formats.iter().any(|format| format == "pcm"))
-                {
-                    return None;
-                }
-                let voices = parameters
-                    .and_then(|params| params.voice)
-                    .and_then(|options| options.values)
-                    .into_iter()
-                    .flatten()
-                    .filter(|voice| voice.len() <= 100 && !voice.chars().any(char::is_control))
-                    .take(100)
-                    .collect();
-                Some(Model {
-                    id: model.id,
-                    name: model
-                        .name
-                        .filter(|name| name.len() <= 256 && !name.chars().any(char::is_control)),
-                    voices,
-                })
-            })
-            .take(750)
-            .take_while(|model| {
-                bytes += goodwin_plugin::json_codec::to_vec(model)
-                    .map_or(512 * 1024, |value| value.len() + 1);
-                bytes < 450 * 1024
-            })
-            .collect())
+        catalog::read(send(request)?)
     }
 
     fn inference(&self, config: &Config, endpoint: &[&str]) -> Result<RequestBuilder> {
@@ -465,32 +385,8 @@ fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
     Ok(body)
 }
 
-fn pcm_format(content_type: &str) -> Result<(u32, u16)> {
-    let mut parts = content_type.split(';').map(str::trim);
-    ensure!(
-        parts
-            .next()
-            .is_some_and(|mime| mime.eq_ignore_ascii_case("audio/pcm")
-                || mime.eq_ignore_ascii_case("application/octet-stream")),
-        "Provider did not return raw PCM"
-    );
-    let mut rate = 24_000;
-    let mut channels = 1;
-    for (name, value) in parts.filter_map(|part| part.split_once('=')) {
-        let value = value.trim().trim_matches('"');
-        match name.trim().to_ascii_lowercase().as_str() {
-            "rate" => rate = value.parse()?,
-            "channels" => channels = value.parse()?,
-            _ => {}
-        }
-    }
-    ensure!(
-        (8_000..=96_000).contains(&rate) && (1..=2).contains(&channels),
-        "Invalid PCM format"
-    );
-    Ok((rate, channels))
-}
-
-fn speech_format(response: &Response) -> Result<(u32, u16)> {
-    pcm_format(transport::content_type(response).unwrap_or_default())
+fn speech_format(response: &Response) -> Result<PcmFormat> {
+    transport::content_type(response)
+        .and_then(PcmFormat::from_content_type)
+        .context("Provider did not return valid signed 16-bit little-endian PCM")
 }

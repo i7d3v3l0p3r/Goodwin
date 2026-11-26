@@ -13,6 +13,10 @@ For OpenAI-compatible connections, the plugin sends multipart WAV to `audio/tran
 
 For streaming voice playback on an OpenAI-compatible connection, the plugin sends `Accept: audio/pcm` and forwards complete PCM frames as the HTTP body arrives. OpenRouter speech uses buffered playback. The WASM package uses Goodwin's shared HTTP client.
 
+The speech endpoints must return signed 16-bit little-endian PCM. Goodwin accepts one or two channels and sample rates from 8 to 96 kHz. With an unspecified rate and channel count it uses mono at 24 kHz. The plugin rejects conflicting rate or channel declarations, and rejects explicit metadata that describes a different sample encoding.
+
+Goodwin reads model catalogs incrementally. The provider response may contain up to 8,000,000 bytes, and each model entry may contain up to 32 KiB. The plugin retains at most 750 compatible models within its reply size limit.
+
 The native package configures a single OpenAI-compatible server through declarative plugin settings. To package that variant for a Windows development instance, build the panel first, then run these commands from the repository root.
 
 ```powershell
