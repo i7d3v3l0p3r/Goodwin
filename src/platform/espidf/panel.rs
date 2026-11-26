@@ -24,7 +24,6 @@ use crate::{
         SetupPassword, Source, UpdateMicrophone, UpdateSystemPrompt, same_origin, session_cookie,
         session_token, valid_password_length,
     },
-    password,
 };
 
 use super::{
@@ -34,16 +33,22 @@ use super::{
     settings::Store,
 };
 
+mod jobs;
+mod password_jobs;
 #[cfg(feature = "wasm-plugins")]
 mod plugins;
 #[cfg(feature = "wake-tflite")]
 mod wake_models;
+
+use jobs::{Jobs, Outcome, Ticket};
+use password_jobs::Operation;
 
 const BODY_LIMIT: usize = 16_384;
 
 pub(super) struct Panel {
     pub state: Mutex<State>,
     credentials: Mutex<(Auth, Store)>,
+    password_jobs: Jobs<String>,
     pub wifi: Mutex<WifiStatus>,
     pub reboot: AtomicBool,
     firmware_busy: AtomicBool,
@@ -52,6 +57,8 @@ pub(super) struct Panel {
     wake_catalog: bool,
     #[cfg(feature = "wake-tflite")]
     wake_model_busy: AtomicBool,
+    #[cfg(feature = "wake-tflite")]
+    wake_jobs: Jobs<wake_models::Completion>,
     #[cfg(feature = "wasm-plugins")]
     pub(super) plugins: std::sync::OnceLock<Arc<super::plugins::Plugins>>,
 }
@@ -127,6 +134,7 @@ impl Panel {
         Ok(Self {
             state: Mutex::new(state),
             credentials: Mutex::new((auth, store)),
+            password_jobs: Jobs::default(),
             wifi: Mutex::new(WifiStatus::Connecting),
             reboot: AtomicBool::new(false),
             firmware_busy: AtomicBool::new(false),
@@ -135,6 +143,8 @@ impl Panel {
             wake_catalog,
             #[cfg(feature = "wake-tflite")]
             wake_model_busy: AtomicBool::new(false),
+            #[cfg(feature = "wake-tflite")]
+            wake_jobs: Jobs::default(),
             #[cfg(feature = "wasm-plugins")]
             plugins: std::sync::OnceLock::new(),
         })
@@ -252,7 +262,7 @@ pub(super) fn serve(panel: Arc<Panel>) -> Result<EspHttpServer<'static>> {
     Ok(server)
 }
 
-fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Result<()> {
+fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) -> Result<()> {
     let method = request.method();
     let uri = request.uri();
     let path = uri.split('?').next().unwrap_or("/");
@@ -331,35 +341,30 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
             if data.password != data.confirmation {
                 return problem(request, 400, "password_mismatch");
             }
-            let Ok(hash) = password::hash(&data.password) else {
-                return problem(request, 500, "password_save_failed");
-            };
-            let mut credentials = panel.credentials.lock().expect("panel credentials");
-            if !credentials.0.access(None).setup_required {
-                return problem(request, 409, "setup_complete");
-            }
-            if credentials.1.save_password(&hash).is_err() {
-                return problem(request, 500, "password_save_failed");
-            }
-            credentials.0.set_password(hash);
-            let cookie = credentials.0.create_session();
-            drop(credentials);
-            return send_session(request, cookie);
+            return send_ticket(
+                request,
+                password_jobs::submit(panel, Operation::Setup(data.password)),
+            );
         }
         (Method::Post, "/api/login") => {
             let Ok(data) = read_json::<Login>(&mut request) else {
                 return problem(request, 400, "invalid_password");
             };
-            let hash = panel
-                .credentials
-                .lock()
-                .expect("panel credentials")
-                .0
-                .reserve_login();
-            return match hash
-                .and_then(|hash| Auth::verify_login(&hash, &data.password).map(|()| hash))
-            {
-                Ok(hash) => {
+            return send_ticket(
+                request,
+                password_jobs::submit(panel, Operation::Login(data.password)),
+            );
+        }
+        (Method::Post, "/api/auth/result") => {
+            let Ok(ticket) = read_json::<Ticket>(&mut request) else {
+                return problem(request, 400, "invalid_request");
+            };
+            let result = panel
+                .password_jobs
+                .take(&ticket.operation, "auth_result_expired");
+            return match result {
+                Ok(None) => send_pending(request),
+                Ok(Some(hash)) => {
                     let mut credentials = panel.credentials.lock().expect("panel credentials");
                     if !credentials.0.uses_hash(&hash) {
                         drop(credentials);
@@ -369,13 +374,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
                     drop(credentials);
                     send_session(request, cookie)
                 }
-                Err("setup_required") => problem(request, 409, "setup_required"),
-                Err("password_reprovision_required") => {
-                    problem(request, 409, "password_reprovision_required")
-                }
-                Err("login_retry") => problem(request, 429, "login_retry"),
-                Err("wrong_password") => problem(request, 401, "wrong_password"),
-                Err(_) => problem(request, 500, "internal"),
+                Err((status, code)) => problem(request, status, code),
             };
         }
         (Method::Post, "/api/logout") => {
@@ -409,6 +408,8 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
     match (method, path) {
         #[cfg(feature = "wake-tflite")]
         (Method::Get | Method::Put, "/api/wake-models") => wake_models::handle(request, panel),
+        #[cfg(feature = "wake-tflite")]
+        (Method::Post, "/api/wake-models/result") => wake_models::result(request, panel),
         (Method::Get, "/api/network") => {
             let wifi = panel.wifi.lock().expect("Wi-Fi status").clone();
             send_json(request, &wifi)
@@ -739,10 +740,38 @@ fn send_session(
     }
 }
 
-fn send_json(request: Request<&mut EspHttpConnection<'_>>, value: &impl Serialize) -> Result<()> {
+fn send_ticket(
+    request: Request<&mut EspHttpConnection<'_>>,
+    ticket: Outcome<String>,
+) -> Result<()> {
+    match ticket {
+        Ok(id) => send_json_status(request, 202, &json!({"operation": id})),
+        Err((status, code)) => problem(request, status, code),
+    }
+}
+
+fn send_pending(request: Request<&mut EspHttpConnection<'_>>) -> Result<()> {
     send(
         request,
-        200,
+        202,
+        "application/json",
+        br#"{"pending":true}"#,
+        &[],
+    )
+}
+
+fn send_json(request: Request<&mut EspHttpConnection<'_>>, value: &impl Serialize) -> Result<()> {
+    send_json_status(request, 200, value)
+}
+
+fn send_json_status(
+    request: Request<&mut EspHttpConnection<'_>>,
+    status: u16,
+    value: &impl Serialize,
+) -> Result<()> {
+    send(
+        request,
+        status,
         "application/json",
         &goodwin_json::to_vec(value)?,
         &[],

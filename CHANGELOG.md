@@ -5,6 +5,7 @@
 ### English
 
 - Changing audio settings on ESP32-S3 preserves the current microphone mute state.
+- The ESP32-S3 panel can answer other requests while checking a password or downloading a wake model. API clients can poll `/api/auth/result` or `/api/wake-models/result` with the operation ID returned by the initial request.
 - ESP32-S3 can process due timers while waiting for a voice provider's response.
 - Mini 3 tests the installed wake model with the incoming binary before replacing the service. Stations with `flock` can recover an interrupted installation on the next attempt.
 - Cancelling streamed speech lets native plugins finish the RPC briefly, then restarts them if the stream stays open.
@@ -14,6 +15,7 @@
 ### Русский
 
 - Изменение аудионастроек на ESP32-S3 сохраняет текущее состояние переключателя микрофона.
+- Панель ESP32-S3 отвечает на другие запросы во время проверки пароля или загрузки модели активации. Клиенты API получают ID операции и запрашивают результат через `/api/auth/result` или `/api/wake-models/result`.
 - ESP32-S3 может обрабатывать таймеры, пока ждёт ответа голосового провайдера.
 - Мини 3 проверяет установленную модель активации новой сборкой перед заменой службы. На Станциях с `flock` следующая попытка установки восстанавливает состояние после прерывания.
 - После отмены потоковой озвучки нативный плагин получает короткую паузу на завершение запроса. Если поток остаётся открыт, Goodwin перезапускает плагин.

@@ -219,3 +219,20 @@ export async function api<T>(route: string, method = "GET", body?: unknown, time
   if (response.headers.get("content-type")?.includes("application/json")) return response.json();
   return undefined as T;
 }
+
+export async function apiOperation<T>(
+  route: string, method: string, body: unknown, timeout: number, resultRoute = `${route}/result`,
+): Promise<T> {
+  const deadline = performance.now() + timeout;
+  const start = await api<T | { operation: string }>(route, method, body, timeout);
+  if (typeof start !== "object" || !start || !("operation" in start)) return start as T;
+  if (typeof start.operation !== "string") throw new ApiError("internal");
+  const ticket = { operation: start.operation };
+  let remaining: number;
+  while ((remaining = deadline - performance.now()) > 0) {
+    const result = await api<T | { pending: true }>(resultRoute, "POST", ticket, Math.min(10_000, Math.ceil(remaining)));
+    if (typeof result !== "object" || !result || !("pending" in result)) return result as T;
+    await new Promise(resolve => window.setTimeout(resolve, 750));
+  }
+  throw new ApiError("connection");
+}

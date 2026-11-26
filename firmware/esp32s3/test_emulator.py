@@ -133,6 +133,10 @@ class Provider(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             elif self.server.wake_catalog and self.path == WAKE_CATALOG_LOCATION:
+                if self.server.wake_catalog_requests == 0:
+                    self.server.catalog_request_started.set()
+                    assert self.server.release_catalog.wait(15), "Panel did not respond during catalog download"
+                self.server.wake_catalog_requests += 1
                 body = self.server.wake_catalog[0]
             else:
                 assert self.server.wake_catalog and self.path == f"/wake/download/{WAKE_TAG}/{WAKE_ID}.tflite"
@@ -324,13 +328,16 @@ class Panel:
         except HTTPError as error:
             reply = error
         with reply:
-            assert reply.code == status, (route, reply.code, reply.read())
+            allowed = status if isinstance(status, tuple) else (status,)
+            assert reply.code in allowed, (route, reply.code, reply.read())
             data = reply.read()
             if reply.headers.get("Content-Encoding") == "gzip":
-                return gzip.decompress(data)
-            if not data:
-                return None
-            return json.loads(data) if reply.headers.get_content_type() == "application/json" else data
+                data = gzip.decompress(data)
+            elif not data:
+                data = None
+            elif reply.headers.get_content_type() == "application/json":
+                data = json.loads(data)
+            return (reply.code, data) if isinstance(status, tuple) else data
 
     def install_timers(self, path):
         assert all(plugin["id"] != "timers" for plugin in self.request("/api/plugins"))
@@ -420,20 +427,31 @@ class Panel:
             assert any(wav.readframes(wav.getnframes())), "Captured wake audio was silent"
         print("Verified Wake-word dataset metadata and recorded PCM")
 
-    def install_wake_model(self):
+    def install_wake_model(self, catalog_sync):
         path = "/api/wake-models"
-        catalog = self.request(path)
+        result = path + "/result"
+        ticket = self.request(path, status=202, timeout=5)
+
+        def check_panel_while_fetching():
+            started, release = catalog_sync
+            assert started.wait(5), "The device did not start the catalog download"
+            assert self.request("/api/access", timeout=5)["authorized"]
+            assert self.request(path, status=409, timeout=5) == {"error": "wake_model_busy"}
+            release.set()
+
+        catalog = self.wait_operation(result, ticket, 200, 95, check_panel_while_fetching)
         assert catalog["tag"] == WAKE_TAG
         assert [model["id"] for model in catalog["models"]] == [WAKE_ID], catalog
         current = self.request("/api/state")["wake_model"]
         assert current["id"] == "goodwin-micro-int8"
         payload = {"id": WAKE_ID, "tag": WAKE_TAG}
-        assert self.request(path, "PUT", dict(payload, tag="v0.0.1"), 409) == {
-            "error": "wake_catalog_changed",
-        }
-        assert self.request(path, "PUT", payload, 502, timeout=100) == {"error": "wake_model_failed"}
+        ticket = self.request(path, "PUT", dict(payload, tag="v0.0.1"), 202, timeout=5)
+        assert self.wait_operation(result, ticket, 409, 100) == {"error": "wake_catalog_changed"}
+        ticket = self.request(path, "PUT", payload, 202, timeout=5)
+        assert self.wait_operation(result, ticket, 502, 100) == {"error": "wake_model_failed"}
         assert self.request("/api/state")["wake_model"] == current
-        installed = self.request(path, "PUT", payload, timeout=100)
+        ticket = self.request(path, "PUT", payload, 202, timeout=5)
+        installed = self.wait_operation(result, ticket, 200, 100)
         assert installed == catalog["models"][0]
         assert self.request("/api/state")["wake_model"] == installed
         self.print_resources("after changing the wake model")
@@ -487,8 +505,39 @@ class Panel:
         setup = {"password": password, "confirmation": password}
         assert self.request("/api/setup", "POST", setup, 403,
                             {"Origin": "https://example.invalid"}) == {"error": "origin"}
-        self.request("/api/setup", "POST", setup, 204, timeout=PASSWORD_TIMEOUT)
+        self.submit_password("/api/setup", setup)
         assert self.request("/api/access")["authorized"]
+
+    def submit_password(self, route, body):
+        ticket = self.request(route, "POST", body, 202, timeout=5)
+        assert self.request("/api/access", timeout=5)["authorized"] is False
+        result = "/api/auth/result"
+        assert self.request(result, "POST", ticket, 403, {
+            "Origin": "https://example.invalid",
+        }) == {"error": "origin"}
+        assert self.request(result, "POST", {"operation": "unknown"}, 404) == {
+            "error": "auth_result_expired",
+        }
+        def check_panel_while_hashing():
+            assert self.request("/api/access", timeout=5)["authorized"] is False
+            assert self.request(route, "POST", body, 429, timeout=5) == {"error": "login_retry"}
+
+        self.wait_operation(result, ticket, 204, PASSWORD_TIMEOUT, check_panel_while_hashing)
+        assert self.request(result, "POST", ticket, 404) == {"error": "auth_result_expired"}
+
+    def wait_operation(self, route, ticket, expected, timeout, while_pending=None):
+        deadline = monotonic() + timeout
+        while monotonic() < deadline:
+            status, data = self.request(route, "POST", ticket, (202, expected), timeout=5)
+            if status == expected:
+                assert while_pending is None, f"{route} did not expose a pending state"
+                return data
+            assert data == {"pending": True}
+            if while_pending is not None:
+                while_pending()
+                while_pending = None
+            sleep(0.75)
+        raise AssertionError(f"{route} did not finish")
 
     def wait_network(self, expected):
         deadline = monotonic() + 15
@@ -615,7 +664,7 @@ class Panel:
 
     def install_firmware(self, image):
         assert self.request("/api/firmware", status=401) == {"error": "login_required"}
-        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=PASSWORD_TIMEOUT)
+        self.submit_password("/api/login", {"password": "goodwin-fixture"})
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
         assert self.request("/api/firmware", "POST", bytes(4096), 400) == {"error": "invalid_firmware"}
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
@@ -626,7 +675,7 @@ class Panel:
         assert self.request("/api/access") == {
             "protected": True, "authorized": False, "setup_required": False
         }
-        self.request("/api/login", "POST", {"password": "goodwin-fixture"}, 204, timeout=PASSWORD_TIMEOUT)
+        self.submit_password("/api/login", {"password": "goodwin-fixture"})
         assert self.wait_network("connected")["ssid"] == "myssid"
         assert self.request("/api/settings/provider") == {
             "base_url": BASE_URL, "has_key": False, "stt_model": "fixture-stt",
@@ -638,7 +687,7 @@ class Panel:
         assert audio["sensitivity"] == 0.55 and audio["wake_gain"] == audio["transcription_gain"] == 1.0
 
 
-def run_emulator(args, flash, board, output, release_stream, release_chat=None):
+def run_emulator(args, flash, board, output, release_stream, release_chat=None, catalog_sync=None):
     with flash.open("rb") as flash_file:
         flash_file.seek(0x8000)
         table = flash_file.read(0xC00)
@@ -734,7 +783,7 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None):
                         if args.timers_package:
                             panel.install_timers(args.timers_package)
                         if args.wake_catalog_model:
-                            selection = panel.install_wake_model()
+                            selection = panel.install_wake_model(catalog_sync)
                             active_model = selection["id"]
                         if args.dataset_package:
                             panel.start_dataset(args.dataset_package)
@@ -864,12 +913,16 @@ def main():
         server.panel_settings = args.panel_settings
         server.wake_catalog = wake_catalog(args.wake_catalog_model) if args.wake_catalog_model else None
         server.wake_downloads = 0
+        server.wake_catalog_requests = 0
+        server.catalog_request_started = Event()
+        server.release_catalog = Event()
         server.release_stream = Event()
         server.release_chat = Event()
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            run_emulator(args, flash, board, output, server.release_stream, server.release_chat)
+            run_emulator(args, flash, board, output, server.release_stream, server.release_chat,
+                         (server.catalog_request_started, server.release_catalog))
         finally:
             server.shutdown()
             thread.join()

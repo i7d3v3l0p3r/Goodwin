@@ -1,7 +1,7 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { Button } from "../../../components/ui-kit/Button";
 import { Switch } from "../../../components/ui-kit/Switch";
-import { api, ApiError, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
+import { apiOperation, ApiError, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
 import { protectDraft } from "../../../helpers/drafts";
 import { errorLabel, type Words } from "../../../helpers/words";
 import { isSettingsPath } from "../sections";
@@ -56,7 +56,7 @@ export function WakeWordSettings(props: {
     setLoading(true);
     setCatalogFailed(false);
     try {
-      setCatalog(await api<WakeModelCatalog>("wake-models", "GET", undefined, 95_000));
+      setCatalog(await apiOperation<WakeModelCatalog>("wake-models", "GET", undefined, 95_000));
     } catch {
       setCatalogFailed(true);
     } finally {
@@ -77,7 +77,7 @@ export function WakeWordSettings(props: {
     setInstalled(false);
     setError(undefined);
     try {
-      await api<WakeModel>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
+      await apiOperation<WakeModel>("wake-models", "PUT", { id: model.id, tag: release.tag }, 210_000);
       props.onModelInstalled();
       setInstalled(true);
       setId("");

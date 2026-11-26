@@ -1,23 +1,32 @@
-use std::{
-    sync::{atomic::Ordering, mpsc},
-    time::Duration,
-};
+use std::sync::{Arc, atomic::Ordering, mpsc};
+
+use serde::{Deserialize, Serialize};
 
 use super::{
-    Command, EspHttpConnection, Method, Panel, Request, Result, State, json, problem, read_json,
-    send_json,
+    Command, EspHttpConnection, Method, Panel, Request, Result, State, Ticket, jobs::Outcome,
+    problem, read_json, send_json, send_pending, send_ticket,
 };
-use crate::{platform::espidf::wake_models, wake_catalog::valid_model_id};
+use crate::{
+    platform::espidf::wake_models,
+    wake_catalog::{Selection, valid_model_id},
+};
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 struct Install {
     id: String,
     tag: String,
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum Completion {
+    Catalog { tag: String, models: Vec<Selection> },
+    Installed(Selection),
+}
+
 pub(super) fn handle(
     mut request: Request<&mut EspHttpConnection<'_>>,
-    panel: &Panel,
+    panel: &Arc<Panel>,
 ) -> Result<()> {
     if !panel.wake_catalog {
         return problem(request, 404, "not_found");
@@ -33,35 +42,61 @@ pub(super) fn handle(
     } else {
         None
     };
-    let catalog = match wake_models::catalog() {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            log::warn!("Fetch wake model catalog: {error:#}");
-            return problem(request, 502, "wake_catalog_unavailable");
-        }
+    let ticket = panel.wake_jobs.submit(
+        "goodwin-wake-model",
+        20 * 1024,
+        (409, "wake_model_busy"),
+        || {
+            let panel = Arc::clone(panel);
+            Ok(move || process(&panel, install))
+        },
+    );
+    send_ticket(request, ticket)
+}
+
+pub(super) fn result(
+    mut request: Request<&mut EspHttpConnection<'_>>,
+    panel: &Panel,
+) -> Result<()> {
+    let Ok(ticket) = read_json::<Ticket>(&mut request) else {
+        return problem(request, 400, "invalid_request");
     };
+    match panel.wake_jobs.take(&ticket.operation, "wake_model_failed") {
+        Ok(None) => send_pending(request),
+        Ok(Some(completion)) => send_json(request, &completion),
+        Err((status, code)) => problem(request, status, code),
+    }
+}
+
+fn process(panel: &Panel, install: Option<Install>) -> Outcome<Completion> {
+    let catalog = wake_models::catalog().map_err(|error| {
+        log::warn!("Fetch wake model catalog: {error:#}");
+        (502, "wake_catalog_unavailable")
+    })?;
     let Some(install) = install else {
-        let models: Vec<_> = catalog
-            .models
-            .into_iter()
-            .map(|model| model.selection)
-            .collect();
-        return send_json(request, &json!({"tag": catalog.tag, "models": models}));
+        return Ok(Completion::Catalog {
+            tag: catalog.tag,
+            models: catalog
+                .models
+                .into_iter()
+                .map(|model| model.selection)
+                .collect(),
+        });
     };
     if catalog.tag != install.tag {
-        return problem(request, 409, "wake_catalog_changed");
+        return Err((409, "wake_catalog_changed"));
     }
     let candidate = match wake_models::download(&catalog, &install.id) {
         Ok(Some(candidate)) => candidate,
-        Ok(None) => return problem(request, 404, "wake_model_invalid"),
+        Ok(None) => return Err((404, "wake_model_invalid")),
         Err(error) => {
             log::warn!("Download wake model: {error:#}");
-            return problem(request, 502, "wake_model_failed");
+            return Err((502, "wake_model_failed"));
         }
     };
     let state = State::lock(&panel.state);
     if state.busy() || panel.firmware_busy() || panel.wake_model_busy.swap(true, Ordering::AcqRel) {
-        return problem(request, 409, "wake_model_busy");
+        return Err((409, "wake_model_busy"));
     }
     let (reply, receive) = mpsc::channel();
     let sent = panel
@@ -70,17 +105,17 @@ pub(super) fn handle(
     drop(state);
     if sent.is_err() {
         panel.finish_wake_model_change();
-        return problem(request, 409, "wake_model_busy");
+        return Err((409, "wake_model_busy"));
     }
-    match receive.recv_timeout(Duration::from_secs(25)) {
-        Ok(Ok(selection)) => send_json(request, &selection),
+    match receive.recv() {
+        Ok(Ok(selection)) => Ok(Completion::Installed(selection)),
         Ok(Err(error)) => {
             log::warn!("Activate wake model: {error:#}");
-            problem(request, 500, "wake_model_failed")
+            Err((500, "wake_model_failed"))
         }
         Err(error) => {
             log::warn!("Await wake model activation: {error}");
-            problem(request, 503, "wake_model_failed")
+            Err((503, "wake_model_failed"))
         }
     }
 }

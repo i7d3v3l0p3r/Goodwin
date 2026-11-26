@@ -1,5 +1,5 @@
 import { createContext, createEffect, createSignal, onSettled, useContext } from "solid-js";
-import { ApiError, api, type Access, type DeviceCapabilities, type Message, type Settings, type Snapshot } from "./api";
+import { ApiError, api, apiOperation, type Access, type DeviceCapabilities, type Message, type Settings, type Snapshot } from "./api";
 import { initialLanguage, words, type Language } from "./words";
 import { capabilities, createProviderReadiness, wakeReady } from "./readiness";
 
@@ -19,7 +19,7 @@ export function createPanel() {
   const t = () => words[language()];
   const providerReadiness = createProviderReadiness(snapshot, reachable);
   const builtinProvider = () => device()?.provider_configuration === "builtin";
-  const passwordTimeout = () => builtinProvider() ? 150_000 : undefined;
+  const passwordTimeout = () => builtinProvider() ? 150_000 : 10_000;
   const stageIssue = (stage: Parameters<typeof providerReadiness.stageIssue>[0]) =>
     builtinProvider()
       ? snapshot()?.provider_ready ? undefined : { kind: "configure" as const, href: "/settings/assistant" }
@@ -232,9 +232,9 @@ export function createPanel() {
     microphonePending, microphoneError,
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
-      action(() => api("setup", "POST", { password, confirmation }, passwordTimeout()),
+      action(() => apiOperation<void>("setup", "POST", { password, confirmation }, passwordTimeout(), "auth/result"),
         { recheckAccess: true }),
-    login: (password: string) => action(() => api("login", "POST", { password }, passwordTimeout()),
+    login: (password: string) => action(() => apiOperation<void>("login", "POST", { password }, passwordTimeout(), "auth/result"),
       { recheckAccess: true }),
     logout: () => action(async () => {
       await api("logout", "POST", {});
