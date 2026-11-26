@@ -25,7 +25,7 @@
 - The ESP32-S3 panel can answer other requests while checking a password or downloading a wake model. API clients can poll `/api/auth/result` or `/api/wake-models/result` with the operation ID returned by the initial request.
 - ESP32-S3 streams firmware and WASM package uploads in a background task. The panel can answer other requests while receiving either upload.
 - ESP32-S3 can process due timers while waiting for a voice provider's response.
-- Mini 3 tests the installed wake model with the incoming binary before replacing the service. The desktop installer recovers interrupted installations on Stations with `flock` before selecting a wake model for the next attempt.
+- Mini 3 tests the installed wake model with the incoming binary before replacing the service. On Stations with `flock`, the desktop installer recovers interrupted installations before selecting a wake model for the next attempt, even if the interruption occurs before the journal is created.
 - Cancelling streamed speech lets native plugins finish the RPC briefly, then restarts them if the stream stays open.
 - The wake-word dataset has a configurable storage limit and displays the space used. Lowering the limit preserves existing recordings.
 - The panel reuses cached gzip assets when their contents match the device's current build.
@@ -53,7 +53,7 @@
 - Панель ESP32-S3 отвечает на другие запросы во время проверки пароля или загрузки модели активации. Клиенты API получают ID операции и запрашивают результат через `/api/auth/result` или `/api/wake-models/result`.
 - ESP32-S3 принимает прошивку и WASM-пакеты порциями в фоновой задаче. Во время загрузки панель отвечает на другие запросы.
 - ESP32-S3 может обрабатывать таймеры, пока ждёт ответа голосового провайдера.
-- Мини 3 проверяет установленную модель активации новой сборкой перед заменой службы. При повторной попытке установщик восстанавливает прерванную установку на Станции с `flock` до выбора модели активации.
+- Мини 3 проверяет установленную модель активации новой сборкой перед заменой службы. На Станциях с `flock` установщик обрабатывает прерывание до создания журнала и восстанавливает установку до выбора модели для следующей попытки.
 - После отмены потоковой озвучки нативный плагин получает короткую паузу на завершение запроса. Если поток остаётся открыт, Goodwin перезапускает плагин.
 - В датасете слова активации можно задать лимит хранилища и видеть занятый объём. Уменьшение лимита сохраняет существующие записи.
 - Панель повторно использует gzip-файлы из кэша, если их содержимое совпадает с текущей сборкой устройства.

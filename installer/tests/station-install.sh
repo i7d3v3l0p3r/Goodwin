@@ -29,15 +29,41 @@ fi
 EOF
 real_mv=$(command -v mv)
 export real_mv
+real_ln=$(command -v ln)
+export real_ln
+real_rmdir=$(command -v rmdir)
+export real_rmdir
+lock=$TEST_ROOT/data/opt/.goodwin-install-lock
+guard=$TEST_ROOT/data/opt/.goodwin-install-guard
+transaction=$TEST_ROOT/data/opt/.goodwin-install-transaction
+export lock transaction
+cat > "$TEST_ROOT/tools/ln" <<'EOF'
+#!/bin/sh
+set -eu
+"$real_ln" "$@"
+if [ -f "$TEST_ROOT/interrupt-lock" ] && [ "${3:-}" = "$lock" ]; then
+    rm "$TEST_ROOT/interrupt-lock"
+    kill -KILL "$PPID"
+fi
+EOF
+cat > "$TEST_ROOT/tools/rmdir" <<'EOF'
+#!/bin/sh
+set -eu
+"$real_rmdir" "$@"
+if [ -f "$TEST_ROOT/interrupt-cleanup" ] && [ "$1" = "$transaction" ]; then
+    rm "$TEST_ROOT/interrupt-cleanup"
+    kill -KILL "$PPID"
+fi
+EOF
 cat > "$TEST_ROOT/tools/mv" <<'EOF'
 #!/bin/sh
 set -eu
 "$real_mv" "$@"
-if [ -f "$TEST_ROOT/interrupt-model" ] && [ "$1" = "$TEST_ROOT/data/opt/.goodwin-install-lock/stage/new-catalog-selection" ]; then
+if [ -f "$TEST_ROOT/interrupt-model" ] && [ "$1" = "$transaction/stage/new-catalog-selection" ]; then
     rm "$TEST_ROOT/interrupt-model"
     kill -KILL "$PPID"
 fi
-if [ -f "$TEST_ROOT/interrupt-fresh" ] && [ "$1" = "$TEST_ROOT/data/opt/.goodwin-install-lock/stage/new-data" ]; then
+if [ -f "$TEST_ROOT/interrupt-fresh" ] && [ "$1" = "$transaction/stage/new-data" ]; then
     rm "$TEST_ROOT/interrupt-fresh"
     kill -KILL "$PPID"
 fi
@@ -128,20 +154,43 @@ EOF
     cd "$TEST_ROOT"
 }
 
+package interrupted-lock egor-micro catalog
+touch "$TEST_ROOT/interrupt-lock"
+if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/interrupted-lock.out" 2>&1; then
+    echo 'The lock creation was not interrupted' >&2
+    exit 1
+fi
+test "$lock" -ef "$guard"
+test ! -e "$transaction"
+sh "$TEST_ROOT/install-test.sh" --recover
+test ! -e "$lock"
+
+mkdir "$lock"
+if sh "$TEST_ROOT/install-test.sh" --recover > "$TEST_ROOT/legacy-lock.out" 2>&1; then
+    echo 'An unowned legacy lock was removed' >&2
+    exit 1
+fi
+grep 'GOODWIN_INSTALL_ERROR locked' "$TEST_ROOT/legacy-lock.out"
+test -d "$lock"
+printf '%s\n' 'preparing update keep 0 1' > "$lock/journal"
+sh "$TEST_ROOT/install-test.sh" --recover
+test ! -e "$lock"
+
 package interrupted-fresh egor-micro catalog
 touch "$TEST_ROOT/interrupt-fresh"
 if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/interrupted-fresh.out" 2>&1; then
     echo 'The first installation was not interrupted' >&2
     exit 1
 fi
-grep 'mutating fresh catalog 0 1' "$TEST_ROOT/data/opt/.goodwin-install-lock/journal"
+grep 'mutating fresh catalog 0 1' "$transaction/journal"
 test -f "$TEST_ROOT/data/opt/etc/goodwin/config.json"
 test ! -e "$TEST_ROOT/data/init.d/S96goodwin"
 sh -s -- --recover < "$TEST_ROOT/install-test.sh" > "$TEST_ROOT/recovered-fresh.out" 2>&1
 grep 'GOODWIN_INSTALL_RECOVERY_OK' "$TEST_ROOT/recovered-fresh.out"
 test ! -e "$TEST_ROOT/data/opt/etc/goodwin"
 test ! -e "$TEST_ROOT/data/opt/bin/goodwin"
-test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
+test ! -e "$lock"
+test ! -e "$transaction"
 test ! -e "$TEST_ROOT/running"
 
 initial_init=$upload/init.sh
@@ -207,7 +256,7 @@ if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/interrupted.o
     echo 'The forced interruption did not stop the installation' >&2
     exit 1
 fi
-grep 'mutating update catalog 1 1' "$TEST_ROOT/data/opt/.goodwin-install-lock/journal"
+grep 'mutating update catalog 1 1' "$transaction/journal"
 grep 'goodwin-micro' "$data/wake-model.json"
 test "$("$TEST_ROOT/data/opt/bin/goodwin" --version)" = interrupted
 
@@ -310,5 +359,19 @@ rm "$data/goodwin.onnx"
 package model-free-update
 sh "$TEST_ROOT/install-test.sh" "$upload" keep
 test "$(cat "$TEST_ROOT/running")" = model-free-update
+
+package interrupted-cleanup
+touch "$TEST_ROOT/interrupt-cleanup"
+if sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/interrupted-cleanup.out" 2>&1; then
+    echo 'Transaction cleanup was not interrupted' >&2
+    exit 1
+fi
+grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/interrupted-cleanup.out"
+test "$lock" -ef "$guard"
+test ! -e "$transaction"
+sh "$TEST_ROOT/install-test.sh" --recover
+test ! -e "$lock"
+test "$(cat "$TEST_ROOT/running")" = interrupted-cleanup
+test "$("$TEST_ROOT/data/opt/bin/goodwin" --version)" = interrupted-cleanup
 
 printf '%s\n' 'Catalog installs, web updates and rollback passed.'

@@ -33,9 +33,9 @@ bin=/data/opt/bin/goodwin
 data=/data/opt/etc/goodwin
 hook=/data/init.d/S96goodwin
 lock=/data/opt/.goodwin-install-lock
+guard=/data/opt/.goodwin-install-guard
+guarded_transaction=/data/opt/.goodwin-install-transaction
 payload=$upload/payload
-stage=$lock/stage
-journal=$lock/journal
 kernel_lock=0
 mode=fresh
 changed=0
@@ -43,6 +43,12 @@ was_running=0
 
 exists() {
     [ -e "$1" ] || [ -L "$1" ]
+}
+
+use_transaction() {
+    transaction=$1
+    stage=$transaction/stage
+    journal=$transaction/journal
 }
 
 rollback() {
@@ -83,8 +89,8 @@ rollback() {
 }
 
 write_journal() {
-    printf '%s %s %s %s %s\n' "$1" "$mode" "$choice" "$was_running" "$kernel_lock" > "$lock/journal.tmp" &&
-        mv -f "$lock/journal.tmp" "$journal"
+    printf '%s %s %s %s %s\n' "$1" "$mode" "$choice" "$was_running" "$kernel_lock" > "$transaction/journal.tmp" &&
+        mv -f "$transaction/journal.tmp" "$journal"
 }
 
 finish_transaction() {
@@ -93,7 +99,15 @@ finish_transaction() {
 }
 
 remove_transaction() {
-    rm -rf "$stage" && rm -f "$journal" "$lock/journal.tmp" && rmdir "$lock"
+    if exists "$transaction"; then
+        [ -d "$transaction" ] && [ ! -L "$transaction" ] &&
+            rm -rf "$stage" && rm -f "$journal" "$transaction/journal.tmp" &&
+            rmdir "$transaction" || return 1
+    fi
+    if [ "$transaction" != "$lock" ]; then
+        # Keep ownership visible until removing the transaction is durable.
+        sync && rm -f "$lock" || return 1
+    fi
 }
 
 cleanup() {
@@ -123,9 +137,25 @@ locked() {
 }
 
 recover_transaction() {
-    # A previous installer that used the directory lock alone may still be running.
-    [ "$kernel_lock" = 1 ] && [ -f "$journal" ] || return 1
-    read -r phase mode choice was_running previous_kernel_lock < "$journal" || return 1
+    [ "$kernel_lock" = 1 ] || return 1
+    if [ ! -L "$lock" ] && [ "$lock" -ef "$guard" ]; then
+        use_transaction "$guarded_transaction"
+        if exists "$transaction"; then
+            [ -d "$transaction" ] && [ ! -L "$transaction" ] || return 1
+        fi
+        if ! exists "$journal"; then
+            # This marker belongs to a flock user. Without a journal, the
+            # transaction stopped before starting or after durable completion.
+            remove_transaction
+            return
+        fi
+    else
+        # A legacy installer may still own the directory lock without flock.
+        [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
+        use_transaction "$lock"
+    fi
+    [ -f "$journal" ] && [ ! -L "$journal" ] &&
+        read -r phase mode choice was_running previous_kernel_lock < "$journal" || return 1
     [ "$previous_kernel_lock" = 1 ] || return 1
     case "$mode:$choice:$was_running" in
         fresh:catalog:0|update:catalog:[01]|update:keep:[01]|update:core:[01]) ;;
@@ -134,7 +164,7 @@ recover_transaction() {
     esac
     case "$phase" in
         mutating)
-            [ -d "$stage" ] || return 1
+            [ -d "$stage" ] && [ ! -L "$stage" ] || return 1
             echo 'Recovering an interrupted Goodwin installation…' >&2
             rollback && finish_transaction || return 1
             ;;
@@ -146,11 +176,11 @@ recover_transaction() {
 
 # Keep the guard inode across runs so all flock users lock the same file.
 if command -v flock >/dev/null 2>&1; then
-    exec 9>>/data/opt/.goodwin-install-guard
+    exec 9>>"$guard"
     flock -n 9 || locked
     kernel_lock=1
 elif command -v busybox >/dev/null 2>&1 && busybox --list | grep -qx flock; then
-    exec 9>>/data/opt/.goodwin-install-guard
+    exec 9>>"$guard"
     busybox flock -n 9 || locked
     kernel_lock=1
 fi
@@ -161,16 +191,27 @@ if [ "$upload" = --recover ]; then
     exit 0
 fi
 
-if ! mkdir "$lock"; then
-    requested_choice=$choice
-    recover_transaction || locked
-    choice=$requested_choice
-    mode=fresh
-    was_running=0
+requested_choice=$choice
+if exists "$lock"; then recover_transaction || locked; fi
+choice=$requested_choice
+mode=fresh
+was_running=0
+if [ "$kernel_lock" = 1 ]; then
+    use_transaction "$guarded_transaction"
+    ! exists "$transaction" || locked
+    # Old installers use mkdir on this path. A hard link excludes them
+    # atomically and identifies the owners that use the same flock guard.
+    ln -T "$guard" "$lock" || locked
+else
+    use_transaction "$lock"
     mkdir "$lock" || locked
 fi
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
+if [ "$transaction" != "$lock" ]; then
+    sync
+    mkdir "$transaction"
+fi
 mkdir "$stage"
 write_journal preparing
 if [ "$choice" = core ]; then
