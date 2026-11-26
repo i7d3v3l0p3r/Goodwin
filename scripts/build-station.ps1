@@ -27,6 +27,7 @@ function Get-PanelBuildStamp {
     $files = @(
         Get-ChildItem -LiteralPath 'web' -File
         Get-ChildItem -LiteralPath 'web/src' -File -Recurse
+        Get-Item -LiteralPath 'shared/language-codes.txt'
         if (Test-Path -LiteralPath 'web/public') {
             Get-ChildItem -LiteralPath 'web/public' -File -Recurse
         }

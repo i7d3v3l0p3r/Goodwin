@@ -9,7 +9,6 @@ use crate::{
     journal, model, panel, password,
     plugins::Plugins,
     station::Player,
-    voice_core::VOICE_INSTRUCTIONS,
     wake, wake_catalog, wav,
 };
 
@@ -236,12 +235,20 @@ async fn answer_wav(dir: PathBuf, input: PathBuf, output: PathBuf) -> Result<()>
         let chat = resolve(Capability::Chat)?;
         let speech = resolve(Capability::Speech)?;
         let text = transcription
-            .transcribe(&recording)
+            .transcribe(&recording, config.settings.languages.transcription.as_str())
             .await
             .context("Transcribe recording")?;
         ensure!(!text.is_empty(), "No speech was transcribed");
         let reply = chat
-            .reply(&text, VOICE_INSTRUCTIONS, Vec::new(), None)
+            .reply(
+                &text,
+                &config
+                    .settings
+                    .languages
+                    .voice_instructions(&config.system_prompt),
+                Vec::new(),
+                None,
+            )
             .await
             .context("Generate an answer")?;
         let wav = speech

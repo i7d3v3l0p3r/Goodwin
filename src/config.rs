@@ -62,6 +62,8 @@ pub struct Settings {
     pub transcription_gain: Option<f32>,
     #[serde(default)]
     pub dialogue: crate::voice_core::DialogueSettings,
+    #[serde(default)]
+    pub languages: crate::voice_core::AssistantLanguages,
 }
 
 impl Default for Settings {
@@ -74,6 +76,7 @@ impl Default for Settings {
             wake_gain: None,
             transcription_gain: None,
             dialogue: Default::default(),
+            languages: Default::default(),
         }
     }
 }

@@ -31,6 +31,8 @@ pub(crate) struct AudioSettings {
     pub transcription_gain: Option<f64>,
     #[serde(default)]
     pub dialogue: crate::voice_core::DialogueSettings,
+    #[serde(default)]
+    pub languages: crate::voice_core::AssistantLanguages,
 }
 
 impl Default for AudioSettings {
@@ -42,6 +44,7 @@ impl Default for AudioSettings {
             wake_gain: None,
             transcription_gain: None,
             dialogue: Default::default(),
+            languages: Default::default(),
         }
     }
 }
@@ -429,6 +432,7 @@ impl State {
                 "sensitivity": self.audio.sensitivity, "wake_gain": self.audio.wake_gain,
                 "transcription_gain": self.audio.transcription_gain,
                 "dialogue": self.audio.dialogue,
+                "languages": self.audio.languages,
             },
             "provider_ready": self.provider.configured(),
             "system_prompt": self.system_prompt, "microphone": true, "default_microphone_gain": 1,

@@ -95,13 +95,19 @@ fn concurrent_settings_updates_keep_the_committed_preferences_and_system_prompt(
 #[test]
 fn configuration_without_a_system_prompt_uses_defaults() {
     let dir = tempfile::tempdir().unwrap();
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "access": {"mode": "open"},
         "settings": Settings::default(),
     });
+    config["settings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("languages");
     fs::write(Config::path(dir.path()), config.to_string()).unwrap();
     let config = Config::load(dir.path()).unwrap();
     assert!(config.system_prompt.is_empty());
+    assert_eq!(config.settings.languages.transcription.as_str(), "ru");
+    assert_eq!(config.settings.languages.reply.as_str(), "ru");
     assert!(!config.settings.microphone_muted);
     assert_eq!(
         config.settings.assistant.pipeline.chat.provider,

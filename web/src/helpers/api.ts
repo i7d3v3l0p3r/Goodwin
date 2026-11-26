@@ -59,6 +59,7 @@ export interface ModelCatalog {
 }
 
 export interface Settings {
+  languages: AssistantLanguages;
   dialogue?: DialogueSettings;
   assistant: AssistantSettings;
   listening: boolean;
@@ -66,6 +67,11 @@ export interface Settings {
   sensitivity: number;
   wake_gain: number | null;
   transcription_gain: number | null;
+}
+
+export interface AssistantLanguages {
+  transcription: string;
+  reply: string;
 }
 
 export interface DialogueSettings {

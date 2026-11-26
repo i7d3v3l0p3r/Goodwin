@@ -5,10 +5,12 @@ use crate::{
     plugins::{Process, VoiceTools},
     providers::Provider,
     voice_core::{
-        VOICE_INSTRUCTIONS, strip_wake_word,
+        strip_wake_word,
         tools::{CONTEXT_INSTRUCTIONS, TOOL_INSTRUCTIONS},
     },
 };
+
+const INSTRUCTIONS: &str = "Answer in English.";
 
 #[tokio::test]
 async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
@@ -22,7 +24,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
             messages[0],
             json!({
                 "role": "system",
-                "content": format!("{VOICE_INSTRUCTIONS}\n{TOOL_INSTRUCTIONS}")
+                "content": format!("{INSTRUCTIONS}\n{TOOL_INSTRUCTIONS}")
             })
         );
         let last = messages.last().unwrap();
@@ -53,7 +55,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
     let result = reply_with_tools(
         &provider,
         "Сколько минут ждать?",
-        "",
+        INSTRUCTIONS,
         Vec::new(),
         VoiceTools::mock(|_| panic!("A question must not call a tool")),
     )
@@ -63,7 +65,7 @@ async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {
     let result = reply_with_tools(
         &provider,
         "Отмени таймер",
-        "",
+        INSTRUCTIONS,
         Vec::new(),
         VoiceTools::mock(|call| {
             assert_eq!(
@@ -114,7 +116,7 @@ async fn a_batch_with_a_duplicate_call_id_runs_no_tools() {
     let result = reply_with_tools(
         &provider,
         "Отмени таймер",
-        "",
+        INSTRUCTIONS,
         Vec::new(),
         VoiceTools::mock(|_| panic!("An invalid batch must be rejected before running a tool")),
     )
@@ -137,7 +139,7 @@ async fn voice_model_can_use_saved_timer_names_before_its_first_tool_call() {
             messages[0],
             json!({
                 "role": "system",
-                "content": format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.\n{TOOL_INSTRUCTIONS}\n{CONTEXT_INSTRUCTIONS}")
+                "content": format!("{PROMPT}\n{TOOL_INSTRUCTIONS}\n{CONTEXT_INSTRUCTIONS}")
             })
         );
         assert_eq!(

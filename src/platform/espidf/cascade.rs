@@ -14,6 +14,7 @@ pub(super) struct Cascade<'a> {
     settings: &'a ProviderSettings,
     builtin: Provider<'a, HttpClient<'a>>,
     prompt: &'a str,
+    languages: crate::voice_core::AssistantLanguages,
     #[cfg(feature = "wasm-plugins")]
     pub(super) plugins: Option<&'a super::plugins::Plugins>,
     #[cfg(feature = "wasm-plugins")]
@@ -29,12 +30,14 @@ impl<'a> Cascade<'a> {
     pub(super) fn new(
         settings: &'a ProviderSettings,
         prompt: &'a str,
+        languages: crate::voice_core::AssistantLanguages,
         request: Option<&'a VoiceRequest>,
     ) -> Self {
         Self {
             settings,
             builtin: Provider::new(settings, HttpClient(request)),
             prompt,
+            languages,
             #[cfg(feature = "wasm-plugins")]
             plugins: None,
             #[cfg(feature = "wasm-plugins")]
@@ -113,11 +116,12 @@ impl<'a> Cascade<'a> {
     }
 
     pub(super) fn transcribe(&self, wav: &[u8]) -> Result<String> {
+        let language = self.languages.transcription.as_str();
         #[cfg(feature = "wasm-plugins")]
         if let Some(provider) = self.plugin(goodwin_plugin::provider::Capability::Transcription)? {
-            return provider.transcribe(wav);
+            return provider.transcribe(wav, language);
         }
-        self.builtin.transcribe(wav)
+        self.builtin.transcribe(wav, language)
     }
 
     pub(super) fn chat(
@@ -126,21 +130,17 @@ impl<'a> Cascade<'a> {
         history: Vec<Message>,
         consume: impl FnMut(&str),
     ) -> Result<String> {
-        let instructions = if self.prompt.is_empty() {
-            crate::panel_core::CHAT_INSTRUCTIONS
-        } else {
-            self.prompt
-        };
+        let instructions = self.languages.chat_instructions(self.prompt);
         #[cfg(feature = "wasm-plugins")]
         if let Some(provider) = self.plugin(goodwin_plugin::provider::Capability::Chat)? {
-            let mut request = chat::request(instructions, question, history);
+            let mut request = chat::request(&instructions, question, history);
             if provider.streaming(goodwin_plugin::provider::Capability::Chat) {
                 return provider.stream_chat(&mut request, consume);
             }
             return chat::answer_text(provider.complete(&mut request)?.content.unwrap_or_default());
         }
         let _ = consume;
-        self.builtin.chat(question, &history, instructions)
+        self.builtin.chat(question, &history, &instructions)
     }
 
     pub(super) fn reply(&self, text: &str, history: Vec<Message>) -> Result<String> {
@@ -153,8 +153,8 @@ impl<'a> Cascade<'a> {
         self.builtin.chat(text, &history, &instructions)
     }
 
-    pub(super) fn voice_instructions(&self) -> std::borrow::Cow<'_, str> {
-        crate::voice_core::instructions(self.prompt)
+    pub(super) fn voice_instructions(&self) -> String {
+        self.languages.voice_instructions(self.prompt)
     }
 
     pub(super) fn synthesize(&self, answer: &str) -> Result<Vec<u8>> {

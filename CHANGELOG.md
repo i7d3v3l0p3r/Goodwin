@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### English
+
+- Choose speech recognition and reply languages independently in the Mini 3 and ESP32-S3 panels. Both default to Russian, including on upgrade. The reply language applies to voice and text chat.
+
+### Русский
+
+- На Мини 3 и ESP32-S3 в панели можно отдельно выбрать язык распознавания речи и язык ответов. По умолчанию, в том числе после обновления, оба языка — русский. Язык ответа действует в голосовом диалоге и текстовом чате.
+
 ## [0.6.0] - 2026-11-27
 
 ### English

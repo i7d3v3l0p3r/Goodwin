@@ -96,6 +96,8 @@ the complete voice path with or without the wake word, inspect the last
 request, and read the current boot's protected diagnostic log.
 Enable **Streaming playback** to play PCM as it arrives.
 
+Under **Provider → Assistant languages**, select the speech recognition language and the language for spoken and text replies. Both default to Russian. The wake word is set by the installed wake-word model.
+
 ## Add-ons
 
 Sign in and upload the same `*-wasm32.tar.gz` packages used on Mini 3 under

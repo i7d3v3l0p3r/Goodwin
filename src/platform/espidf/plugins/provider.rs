@@ -352,6 +352,7 @@ impl Provider<'_> {
     pub(in crate::platform::espidf) fn transcribe(
         &self,
         wav: &[u8],
+        language: &str,
     ) -> goodwin_error::Result<String> {
         use goodwin_plugin::provider::{Transcription, TranscriptionRequest};
 
@@ -359,7 +360,7 @@ impl Provider<'_> {
             Capability::Transcription,
             TranscriptionRequest {
                 wav_base64: STANDARD.encode(wav),
-                language: "ru".into(),
+                language: language.into(),
                 selection: self.settings.selection.clone(),
             },
         )?;

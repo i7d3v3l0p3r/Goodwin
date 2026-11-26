@@ -102,6 +102,7 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
     let original = app.configuration().request_settings().settings.clone();
     let mut next = original.clone();
     next.assistant.pipeline.chat.provider = "another-provider".into();
+    next.languages = serde_json::from_value(json!({"transcription":"fr","reply":"de"})).unwrap();
     next.assistant.pipeline.speech.selection.model = Some("another-voice".into());
     app.configuration().update_settings(next).unwrap();
     app.voice(id, vec![1000; 1024], false, RecordingGain::Automatic(4.0))
@@ -324,11 +325,11 @@ async fn panel_mute_closes_capture_and_blocks_voice_until_reenabled() {
 }
 
 #[tokio::test]
-async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
+async fn requests_use_the_gain_and_languages_saved_in_the_panel() {
     const PROMPT: &str = "Ты домашний помощник.\nОтвечай дружелюбно.";
     let provider = Process::mock_rpc(|method, body| match method {
         "provider.transcribe" => {
-            assert_eq!(body["language"], "ru");
+            assert_eq!(body["language"], "de");
             let wav = STANDARD
                 .decode(body["wavBase64"].as_str().unwrap())
                 .unwrap();
@@ -351,12 +352,17 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
             }
             assert_eq!(messages[0]["role"], "system");
             if text == "Что ты умеешь?" {
-                assert_eq!(messages[0]["content"], PROMPT);
+                assert_eq!(
+                    messages[0]["content"],
+                    format!("{PROMPT}\n\nReply in the language with ISO 639-1 code \"en\".")
+                );
             } else {
                 assert_eq!(text, "Сколько будет два плюс два?");
                 assert_eq!(
                     messages[0]["content"],
-                    format!("{PROMPT}\n\nUse plain text suitable for speaking aloud.")
+                    format!(
+                        "{PROMPT}\n\nReply in the language with ISO 639-1 code \"en\". Use concise plain text suitable for speaking aloud."
+                    )
                 );
             }
             Ok(json!({"message": {"content": "Четыре"}}))
@@ -441,6 +447,7 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
     let mut settings = serde_json::to_value(app.snapshot()).unwrap()["settings"].clone();
     settings["wake_gain"] = json!(0.1);
     settings["transcription_gain"] = json!(2.5);
+    settings["languages"] = json!({"transcription":"de", "reply":"en"});
     let saved = client
         .put(format!("{panel}/api/settings"))
         .json(&json!({"settings": settings}))
@@ -454,7 +461,18 @@ async fn voice_request_uses_the_transcription_gain_saved_in_the_panel() {
         .unwrap();
     assert_eq!(saved["settings"]["wake_gain"], 0.1);
     assert_eq!(saved["settings"]["transcription_gain"], 2.5);
+    assert_eq!(saved["settings"]["languages"], settings["languages"]);
+    settings["languages"]["reply"] = json!("invalid");
+    let rejected = client
+        .put(format!("{panel}/api/settings"))
+        .json(&json!({"settings": settings}))
+        .send()
+        .await
+        .unwrap();
+    assert!(rejected.status().is_client_error());
     let stored = Config::load(dir.path()).unwrap();
+    assert_eq!(stored.settings.languages.transcription.as_str(), "de");
+    assert_eq!(stored.settings.languages.reply.as_str(), "en");
     assert_eq!(stored.settings.wake_gain, Some(0.1));
     assert_eq!(stored.settings.transcription_gain, Some(2.5));
 
@@ -592,7 +610,21 @@ async fn wake_word_without_a_transcribed_question_plays_a_local_retry_prompt() {
     assert_eq!(state["last_voice"]["error_stage"], "transcribing");
     assert_eq!(state["last_voice"]["playback"], "announcement");
     assert_eq!(state["messages"], json!([]));
-    let played = sink.lock().unwrap();
-    assert_eq!(played.len(), 1);
-    assert_eq!(played[0], include_bytes!("../../assets/no-speech-ru.wav"));
+    {
+        let played = sink.lock().unwrap();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0], include_bytes!("../../assets/no-speech-ru.wav"));
+    }
+
+    let mut settings = app.configuration().request_settings().settings;
+    settings.languages = serde_json::from_value(json!({"reply":"fr"})).unwrap();
+    app.configuration().update_settings(settings).unwrap();
+    let id = app.start(Source::Wake).expect("start second wake request");
+    app.stage(id, Stage::Transcribing);
+    app.voice(id, vec![128; 320], true, RecordingGain::Automatic(4.0))
+        .await;
+    assert_eq!(
+        sink.lock().unwrap()[1],
+        include_bytes!("../../assets/request-error.wav")
+    );
 }

@@ -12,7 +12,7 @@ npm run build --prefix web
 cargo build --locked --release
 ```
 
-The panel is compressed with gzip during the build and embedded in the binary alongside the Russian offline error announcement.
+The build compresses the panel with gzip and embeds it in the binary. When a Mini 3 cannot reach the provider or hears only the wake word, it plays a local recording for Russian replies and a short tone for other reply languages.
 
 Start Goodwin on the loopback address.
 
@@ -103,7 +103,7 @@ The installer is a separate Rust project and builds without the Goodwin web pane
 
 ## Check the voice pipeline with a recording
 
-Use a data directory with configured provider plugins and supply a Russian WAV recording. Stop the Goodwin service before running the CLI against its data directory.
+Use a data directory with configured provider plugins and supply a WAV recording in the speech recognition language selected in the panel. The CLI uses the same recognition and reply languages as the speaker. Stop the Goodwin service before running the CLI against its data directory.
 
 ```sh
 goodwin wav question.wav answer.wav goodwin-data

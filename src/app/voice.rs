@@ -16,12 +16,17 @@ mod tests;
 
 impl App {
     pub(crate) async fn voice(&self, id: u64, samples: Vec<i16>, woke: bool, gain: RecordingGain) {
-        let Some(request) = self
+        let Some((request, reply_language)) = self
             .runtime()
             .active
             .as_ref()
             .filter(|turn| turn.id == id)
-            .and_then(|turn| turn.voice_request.clone())
+            .and_then(|turn| {
+                Some((
+                    turn.voice_request.clone()?,
+                    turn.request.settings.languages.reply,
+                ))
+            })
         else {
             return;
         };
@@ -35,7 +40,12 @@ impl App {
             }
             _ => None,
         };
-        if let Some(wav) = announcement {
+        if let Some(russian_announcement) = announcement {
+            let wav = if reply_language.as_str() == "ru" {
+                russian_announcement
+            } else {
+                include_bytes!("../../assets/request-error.wav")
+            };
             self.update_voice(id, |details, stage| {
                 details.error_stage.get_or_insert(stage);
                 details.playback = Some(PlaybackMode::Announcement);
@@ -61,7 +71,7 @@ impl App {
         gain: RecordingGain,
     ) -> Result<(), Failure> {
         let id = request.id;
-        let (providers, system_prompt, speech_streaming, wake_word) = self
+        let (providers, system_prompt, languages, speech_streaming, wake_word) = self
             .runtime()
             .active
             .as_mut()
@@ -70,6 +80,7 @@ impl App {
                 Some((
                     turn.voice_providers.take()?,
                     turn.request.system_prompt.clone(),
+                    turn.request.settings.languages,
                     turn.request.settings.assistant.pipeline.speech_streaming,
                     turn.wake_word.take(),
                 ))
@@ -92,6 +103,7 @@ impl App {
                 id,
                 providers,
                 system_prompt: &system_prompt,
+                languages,
                 speech_streaming,
             },
             wav,
@@ -106,6 +118,7 @@ struct StationTurn<'a> {
     id: u64,
     providers: VoiceProviders<Provider>,
     system_prompt: &'a str,
+    languages: voice_core::AssistantLanguages,
     speech_streaming: bool,
 }
 
@@ -125,7 +138,7 @@ impl Turn for StationTurn<'_> {
         let text = self
             .providers
             .transcription
-            .transcribe(wav)
+            .transcribe(wav, self.languages.transcription.as_str())
             .await
             .map_err(Provider::failure)?;
         self.app.update_voice(self.id, |details, _| {
@@ -152,7 +165,7 @@ impl Turn for StationTurn<'_> {
         reply_with_tools(
             &self.providers.chat,
             text,
-            self.system_prompt,
+            &self.languages.voice_instructions(self.system_prompt),
             history,
             self.app.plugins.voice_tools(voice_turn),
         )
@@ -215,21 +228,18 @@ impl Turn for StationTurn<'_> {
 async fn reply_with_tools(
     provider: &Provider,
     text: &str,
-    system_prompt: &str,
+    instructions: &str,
     history: Vec<Message>,
     tools: VoiceTools,
 ) -> Result<String> {
-    let voice_instructions = voice_core::instructions(system_prompt);
     let definitions = tools.definitions();
     if definitions.len() == 0 {
-        return provider
-            .reply(text, &voice_instructions, history, None)
-            .await;
+        return provider.reply(text, instructions, history, None).await;
     }
     let context = tools.context().await;
     let tools = &tools;
     crate::voice_core::tools::complete(
-        &voice_instructions,
+        instructions,
         text,
         history,
         definitions,

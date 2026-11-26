@@ -7,6 +7,7 @@ import { errorLabel, type Language } from "../../helpers/words";
 import { capabilities, setupPath, stationPath } from "../../helpers/readiness";
 import { pluginSettingsPath } from "../../helpers/plugins";
 import { AssistantForm } from "./components/AssistantForm";
+import { AssistantLanguagesForm } from "./components/AssistantLanguagesForm";
 import { BuiltinProviderForm } from "./components/BuiltinProviderForm";
 import { WifiForm } from "./components/WifiForm";
 import { CoreUpdate } from "./components/CoreUpdate";
@@ -127,6 +128,11 @@ export function SettingsPage() {
                 </Show>
               }</Show>
             </Show>
+          </Show>}
+          {section.id === "assistant" && <Show when={assistantVisited() && panel.snapshot()?.settings.languages}>
+            <AssistantLanguagesForm t={panel.t()} language={panel.language()} settings={panel.snapshot()!.settings}
+              pending={pending() || (panel.builtinProvider() && !!panel.snapshot()?.active && panel.snapshot()?.active?.stage !== "awaiting_speech")}
+              save={panel.saveSettings} />
           </Show>}
           {section.id === "network" && <Show when={active()?.id === "network"}><WifiForm /></Show>}
           {section.id === "diagnostics" && <Show when={active()?.id === "diagnostics"}>

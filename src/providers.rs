@@ -106,14 +106,14 @@ impl Provider {
         Failure::ProviderFailed
     }
 
-    pub(crate) async fn transcribe(&self, wav: &[u8]) -> Result<String> {
+    pub(crate) async fn transcribe(&self, wav: &[u8], language: &str) -> Result<String> {
         ensure!(wav.len() <= MAX_RECORDING_BYTES, "Recording is too large");
         let result: Transcription = self
             .call(
                 Capability::Transcription,
                 TranscriptionRequest {
                     wav_base64: STANDARD.encode(wav),
-                    language: "ru".into(),
+                    language: language.into(),
                     selection: self.selection.clone(),
                 },
             )

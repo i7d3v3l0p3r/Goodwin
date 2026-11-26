@@ -5,9 +5,9 @@
 [![Latest release](guides/images/release-en.svg)](https://github.com/i7d3v3l0p3r/Goodwin/releases/latest)
 [![MIT license](guides/images/mit.svg)](LICENSE)
 
-Goodwin is an open-source, Russian-speaking voice assistant for the **Yandex Station Mini 3** and for speakers you build with an **ESP32-S3**. The speaker listens locally for “Гудвин”, then answers out loud using the models you choose. On the Mini 3, Alice still answers to her own name.
+Goodwin is an open-source voice assistant for the **Yandex Station Mini 3** and for speakers you build with an **ESP32-S3**. The speaker detects its wake word locally and answers out loud using the models you choose. The default wake word is “Гудвин” (Goodwin). On the Mini 3, Alice still answers to her own name.
 
-Ask in Russian why sunsets look red on Earth. After the spoken answer, you can follow up with **«А на Марсе?»** (“What about on Mars?”). Goodwin remembers the earlier exchange, so you can keep talking without repeating the wake word.
+Ask why sunsets look red on Earth, then follow up with **“What about on Mars?”** Goodwin remembers the earlier exchange, so you can keep talking without repeating the wake word.
 
 ## Try Goodwin
 
@@ -18,6 +18,8 @@ Ask in Russian why sunsets look red on Earth. After the spoken answer, you can f
 ## Choose your models and voice
 
 ![Speech recognition → Language model → Speech synthesis](guides/images/voice-en.webp)
+
+Under **Assistant languages** in the panel, choose the language you speak and the language Goodwin uses for voice and chat replies. Both default to Russian. For example, you can ask in English and get an answer in French if your models and chosen voice support those languages. To change the wake word itself, select or train a different wake-word model. [Wake-word guide](guides/wake-words.md)
 
 In the Mini 3 panel, you can use a home server to transcribe your question, ask a model on OpenRouter for the answer and have KittenTTS read it aloud. Each stage has its own connection and model. Set a voice and speaking rate, or use a system prompt to give Goodwin a role and tone of its own. You can also type to the same chat model in your browser. [Configure providers](plugins/openai-compatible/README.md)
 

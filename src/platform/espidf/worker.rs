@@ -28,6 +28,7 @@ pub(super) struct Worker {
 pub(super) struct RequestContext {
     provider: ProviderSettings,
     prompt: String,
+    languages: voice_core::AssistantLanguages,
     #[cfg(feature = "wasm-plugins")]
     assistant: Option<crate::assistant::AssistantSettings>,
 }
@@ -103,13 +104,14 @@ impl RequestContext {
         Self {
             provider: state.provider.clone(),
             prompt: state.system_prompt.clone(),
+            languages: state.audio.languages,
             #[cfg(feature = "wasm-plugins")]
             assistant: state.assistant.clone(),
         }
     }
 
     fn provider<'a>(&'a self, _panel: &'a Panel, request: Option<&'a VoiceRequest>) -> Cascade<'a> {
-        let provider = Cascade::new(&self.provider, &self.prompt, request);
+        let provider = Cascade::new(&self.provider, &self.prompt, self.languages, request);
         #[cfg(feature = "wasm-plugins")]
         let provider = provider.with_plugins(
             _panel.plugins.get().map(Arc::as_ref),

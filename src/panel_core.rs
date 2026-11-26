@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) const CHAT_INSTRUCTIONS: &str =
-    "You are Goodwin, a home assistant. Reply concisely in the user's language.";
-
 #[derive(Deserialize)]
 pub(crate) struct UpdateMicrophone {
     pub muted: bool,

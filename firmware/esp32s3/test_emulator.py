@@ -44,6 +44,7 @@ SPEECH_RATE = 24000
 SPEECH_HZ = 660
 CHAT_PREFIX = ANSWER.split()[0]
 SYSTEM_PROMPT = "Goodwin ESP fixture system prompt."
+LANGUAGES = {"transcription": "en", "reply": "de"}
 PANEL_CONTRACT = Path(__file__).resolve().parents[2] / "tests/fixtures/panel_contract.json"
 
 
@@ -238,8 +239,7 @@ class Provider(BaseHTTPRequestHandler):
                       for part in form.iter_parts()}
             model, audio = fields["model"], fields["file"]
             assert model.get_payload(decode=True) == b"fixture-stt"
-            if getattr(self.server, "plugin_provider", False):
-                assert fields["language"].get_payload(decode=True) == b"ru"
+            assert fields["language"].get_payload(decode=True).decode() == LANGUAGES["transcription"]
             with wave.open(io.BytesIO(audio.get_payload(decode=True))) as wav:
                 assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
                 frames = wav.getnframes()
@@ -257,6 +257,7 @@ class Provider(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             chat = json.loads(request)
             assert chat["model"] == "fixture-chat"
+            assert f'ISO 639-1 code "{LANGUAGES["reply"]}"' in chat["messages"][0]["content"]
             if getattr(self.server, "panel_settings", False):
                 assert chat["messages"][0]["role"] == "system"
                 assert chat["messages"][0]["content"].startswith(SYSTEM_PROMPT)
@@ -727,14 +728,18 @@ class Panel:
         assert wifi["ssid"] == "myssid" and "password" not in wifi
         state = self.request("/api/state")
         assert not state["provider_ready"]
+        assert state["settings"]["languages"] == {"transcription": "ru", "reply": "ru"}
         assert state["settings"]["dialogue"] == {"mode": "follow_up", "timeout_seconds": 8}
         self.dialogue = {"mode": "follow_up" if dialogue else "single_turn", "timeout_seconds": 6}
         audio = {**state["settings"], "listening": False, "sensitivity": 0.55,
-                 "wake_gain": 1.0, "transcription_gain": 1.0, "dialogue": self.dialogue}
+                 "wake_gain": 1.0, "transcription_gain": 1.0, "dialogue": self.dialogue,
+                 "languages": LANGUAGES}
         for invalid in [0, 61]:
             self.request("/api/settings", "PUT", {"settings": {**audio, "dialogue": {
                 **self.dialogue, "timeout_seconds": invalid}}}, 400)
         self.request("/api/settings", "PUT", {"settings": {**audio, "wake_gain": 0}}, 400)
+        self.request("/api/settings", "PUT", {"settings": {**audio, "languages": {
+            **LANGUAGES, "transcription": "xx"}}}, 400)
         self.request("/api/settings", "PUT", {"settings": audio}, 204)
         self.request("/api/settings/microphone", "PUT", {"muted": True}, 204)
         assert self.request("/api/test", "POST", {"mode": "manual"}, 409) == {
@@ -1031,6 +1036,7 @@ class Panel:
         assert audio["listening"] == wake and audio["microphone_muted"] == microphone_muted
         assert audio["sensitivity"] == 0.55 and audio["wake_gain"] == audio["transcription_gain"] == 1.0
         assert audio["dialogue"] == self.dialogue
+        assert audio["languages"] == LANGUAGES
 
 
 def run_emulator(args, flash, board, output, server):

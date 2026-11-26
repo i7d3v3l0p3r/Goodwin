@@ -8,8 +8,7 @@ use std::{
 use goodwin_plugin::provider::Capability;
 
 use crate::panel_core::{
-    CHAT_INSTRUCTIONS, ChatTest, Message, PlaybackMode, Report, VoiceDetails, VoiceModel,
-    VoiceReport, recent_chat,
+    ChatTest, Message, PlaybackMode, Report, VoiceDetails, VoiceModel, VoiceReport, recent_chat,
 };
 pub use crate::panel_core::{Failure, Source, Stage};
 use serde::Serialize;
@@ -271,7 +270,12 @@ impl App {
             let providers = self
                 .plugins
                 .provider_revisions([(&pipeline.chat.provider, Capability::Chat)]);
-            goodwin_json::to_vec(&(&pipeline.chat, &request.system_prompt, providers))
+            goodwin_json::to_vec(&(
+                &pipeline.chat,
+                settings.languages.reply,
+                &request.system_prompt,
+                providers,
+            ))
         } else {
             let providers = self.plugins.provider_revisions([
                 (&pipeline.transcription.provider, Capability::Transcription),
@@ -674,11 +678,10 @@ impl App {
             self.changes.send_replace(());
             (request, context)
         };
-        let instructions = if request.system_prompt.is_empty() {
-            CHAT_INSTRUCTIONS
-        } else {
-            &request.system_prompt
-        };
+        let instructions = request
+            .settings
+            .languages
+            .chat_instructions(&request.system_prompt);
         let provider = match request
             .settings
             .assistant
@@ -693,7 +696,7 @@ impl App {
         let answer = provider
             .reply(
                 &text,
-                instructions,
+                &instructions,
                 context,
                 Some(&mut |text| self.append_chat(id, text)),
             )

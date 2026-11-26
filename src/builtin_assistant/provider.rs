@@ -36,7 +36,7 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         }
     }
 
-    pub(crate) fn transcribe(&self, wav: &[u8]) -> Result<String> {
+    pub(crate) fn transcribe(&self, wav: &[u8], language: &str) -> Result<String> {
         let mut random = [0_u8; 8];
         getrandom::fill(&mut random)
             .map_err(|_| goodwin_error::report!("Generate recording boundary"))?;
@@ -45,6 +45,7 @@ impl<'a, T: HttpTransport> Provider<'a, T> {
         let content_type = format!("multipart/form-data; boundary={boundary}");
         let prefix = format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{language}\r\n\
              --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n\
              Content-Type: audio/wav\r\n\r\n"
         );

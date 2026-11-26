@@ -12,6 +12,9 @@ use std::{
 
 use crate::panel_core::{Failure, Source, Stage};
 
+mod languages;
+pub(crate) use languages::AssistantLanguages;
+
 pub(crate) fn first_voice_stage(source: Source) -> Stage {
     match source {
         Source::WakeTest => Stage::AwaitingWake,
@@ -243,15 +246,6 @@ pub(crate) fn retained_wake_pre_roll(first: u64, end: u64) -> Option<u64> {
 }
 pub(crate) const FIRST_SPEECH_TIMEOUT: usize = CAPTURE_HZ as usize * 7 / 2;
 pub(crate) const END_SILENCE: usize = CAPTURE_HZ as usize * 7 / 10;
-pub(crate) const VOICE_INSTRUCTIONS: &str = "You are Goodwin, a voice assistant. Reply in Russian in concise plain text suitable for speaking aloud.";
-
-pub(crate) fn instructions(prompt: &str) -> std::borrow::Cow<'_, str> {
-    if prompt.is_empty() {
-        VOICE_INSTRUCTIONS.into()
-    } else {
-        format!("{prompt}\n\nUse plain text suitable for speaking aloud.").into()
-    }
-}
 
 #[derive(Default)]
 pub(crate) struct VoiceActivity {
