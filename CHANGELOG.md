@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
 ### English
 
 - The project overview is available in English and Russian, with panel screenshots in both languages and guides for each platform.
