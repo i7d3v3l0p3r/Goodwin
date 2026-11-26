@@ -13,11 +13,16 @@ use crate::{
     voice_core::{self, RecordingGain, RecordingWav, Turn, VoiceRequest},
 };
 
-use super::{audio::Audio, cascade::Cascade, panel::Panel};
+use super::{
+    audio::{Audio, Playback},
+    cascade::Cascade,
+    panel::Panel,
+};
 
 pub(super) struct Worker {
     jobs: mpsc::SyncSender<Job>,
     playback: mpsc::Receiver<PlaybackRequest>,
+    streaming: Option<StreamingPlayback>,
 }
 
 pub(super) struct RequestContext {
@@ -133,6 +138,60 @@ enum Chunk {
     End,
 }
 
+struct StreamingPlayback {
+    request: VoiceRequest,
+    chunks: mpsc::Receiver<Chunk>,
+    done: mpsc::Sender<Result<()>>,
+    audio: Playback,
+    started: bool,
+    last_chunk: Instant,
+}
+
+enum StreamProgress {
+    PlayedChunk,
+    Waiting,
+    Finished,
+}
+
+impl StreamingPlayback {
+    fn play_ready(
+        &mut self,
+        audio: &mut Audio<'_>,
+        state: &Mutex<State>,
+    ) -> Result<StreamProgress> {
+        if self.request.failure().is_some() {
+            return Ok(StreamProgress::Finished);
+        }
+        let mut output = self.audio.output(audio, Some(&self.request));
+        match self.chunks.try_recv() {
+            Ok(Chunk::Pcm(pcm)) => {
+                self.last_chunk = Instant::now();
+                if !self.started {
+                    State::lock(state).playing(PlaybackMode::Streaming);
+                }
+                output.push(&pcm)?;
+                if !self.started {
+                    self.started = true;
+                    log::info!("Streamed playback started");
+                }
+                Ok(StreamProgress::PlayedChunk)
+            }
+            Ok(Chunk::End) => {
+                output.finish()?;
+                Ok(StreamProgress::Finished)
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Ok(StreamProgress::Finished),
+            Err(mpsc::TryRecvError::Empty) => {
+                ensure!(
+                    self.last_chunk.elapsed() < Duration::from_secs(20),
+                    "Wait for speech audio: timeout"
+                );
+                Ok(StreamProgress::Waiting)
+            }
+        }
+    }
+}
+
 impl Worker {
     pub(super) fn start(panel: Arc<Panel>) -> Result<Self> {
         let (jobs, incoming) = mpsc::sync_channel(1);
@@ -146,7 +205,11 @@ impl Worker {
                 }
             })
             .context("Start Goodwin provider task")?;
-        Ok(Self { jobs, playback })
+        Ok(Self {
+            jobs,
+            playback,
+            streaming: None,
+        })
     }
 
     pub(super) fn chat(&self, message: String, panel: &Panel) {
@@ -171,59 +234,62 @@ impl Worker {
     }
 
     /// The device loop is the only owner of the I²S driver.
-    pub(super) fn play_ready(&self, audio: &mut Audio<'_>, panel: &Panel) {
-        match self.playback.try_recv() {
-            Ok(PlaybackRequest::Buffered(request, pcm, done)) => {
-                let result = (|| {
-                    if request.failure().is_some() {
-                        return Ok(());
-                    }
-                    State::lock(&panel.state).playing(PlaybackMode::Buffered);
-                    let mut playback = audio.playback(Some(&request));
-                    playback.push(&pcm)?;
-                    playback.finish()
-                })();
-                let _ = done.send(result);
+    pub(super) fn play_ready(&mut self, audio: &mut Audio<'_>, panel: &Panel) -> bool {
+        if self.streaming.is_none() {
+            match self.playback.try_recv() {
+                Ok(PlaybackRequest::Buffered(request, pcm, done)) => {
+                    let result = if request.failure().is_none() {
+                        State::lock(&panel.state).playing(PlaybackMode::Buffered);
+                        audio.play_pcm(&pcm, Some(&request))
+                    } else {
+                        Ok(())
+                    };
+                    let _ = done.send(result);
+                }
+                Ok(PlaybackRequest::Streaming(request, chunks, done)) => {
+                    self.streaming = Some(StreamingPlayback {
+                        request,
+                        chunks,
+                        done,
+                        audio: Playback::new(),
+                        started: false,
+                        last_chunk: Instant::now(),
+                    });
+                }
+                Err(_) => {}
             }
-            Ok(PlaybackRequest::Streaming(request, chunks, done)) => {
-                let result = play_stream(audio, &panel.state, &chunks, &request);
-                let _ = done.send(result);
-            }
-            Err(_) => {}
+        }
+        let Some(streaming) = &mut self.streaming else {
+            return false;
+        };
+        match streaming.play_ready(audio, &panel.state) {
+            Ok(StreamProgress::PlayedChunk) => return true,
+            Ok(StreamProgress::Waiting) => {}
+            Ok(StreamProgress::Finished) => self.finish_stream(audio, Ok(())),
+            Err(error) => self.finish_stream(audio, Err(error)),
+        }
+        false
+    }
+
+    #[cfg(feature = "wasm-plugins")]
+    pub(super) fn pause_stream(&mut self, audio: &mut Audio<'_>) {
+        if let Some(streaming) = &mut self.streaming
+            && let Err(error) = streaming
+                .audio
+                .output(audio, Some(&streaming.request))
+                .drain()
+        {
+            self.finish_stream(audio, Err(error));
         }
     }
-}
 
-fn play_stream(
-    audio: &mut Audio<'_>,
-    state: &Mutex<State>,
-    chunks: &mpsc::Receiver<Chunk>,
-    request: &VoiceRequest,
-) -> Result<()> {
-    let mut playback = audio.playback(Some(request));
-    let mut started = false;
-    let mut last_chunk = std::time::Instant::now();
-    loop {
-        if request.failure().is_some() {
-            return Ok(());
-        }
-        match chunks.recv_timeout(Duration::from_millis(50)) {
-            Ok(Chunk::Pcm(pcm)) => {
-                last_chunk = std::time::Instant::now();
-                if !started {
-                    State::lock(state).playing(PlaybackMode::Streaming);
-                }
-                playback.push(&pcm)?;
-                if !started {
-                    started = true;
-                    log::info!("Streamed playback started");
-                }
-            }
-            Ok(Chunk::End) => return playback.finish(),
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-            Err(mpsc::RecvTimeoutError::Timeout)
-                if last_chunk.elapsed() < Duration::from_secs(20) => {}
-            Err(error) => return Err(error).context("Wait for speech audio"),
+    fn finish_stream(&mut self, audio: &mut Audio<'_>, result: Result<()>) {
+        if let Some(mut streaming) = self.streaming.take() {
+            streaming
+                .audio
+                .output(audio, Some(&streaming.request))
+                .stop();
+            let _ = streaming.done.send(result);
         }
     }
 }

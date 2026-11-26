@@ -4,6 +4,7 @@
 
 ### English
 
+- ESP32-S3 plays due timer alarms during pauses in streamed speech and then resumes the reply.
 - Mini 3 packages cross-compiled on Windows consistently link the patched WAMR runtime.
 - ESP32-S3 can play timer alarms while Wi-Fi reconnects or applies new settings.
 - Mini 3 can be built with only the Micro INT8 wake runtime. On a fresh installation from this package, the installer selects the Micro INT8 model by default.
@@ -29,6 +30,7 @@
 
 ### Русский
 
+- ESP32-S3 воспроизводит сигналы таймеров в паузах потоковой озвучки и затем продолжает ответ.
 - При сборке пакетов Мини 3 на Windows в исполняемый файл попадает WAMR с исправлениями.
 - ESP32-S3 воспроизводит сигналы таймеров во время переподключения Wi-Fi и применения новых сетевых настроек.
 - Мини 3 можно собрать только с движком активации Micro INT8. При первой установке из такого пакета установщик по умолчанию выбирает модель Micro INT8.

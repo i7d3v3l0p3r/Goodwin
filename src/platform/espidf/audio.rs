@@ -171,38 +171,59 @@ impl<'d> Audio<'d> {
 
     #[cfg(feature = "wasm-plugins")]
     pub(super) fn play_timer_signal(&mut self) -> Result<()> {
-        let mut playback = self.playback(None);
-        playback.push(&crate::voice_core::timer_signal_pcm(SPEECH_HZ))?;
-        playback.finish()
+        self.play_pcm(&crate::voice_core::timer_signal_pcm(SPEECH_HZ), None)
     }
 
-    pub(super) fn playback<'a>(
-        &'a mut self,
-        request: Option<&'a VoiceRequest>,
-    ) -> Playback<'a, 'd> {
-        Playback {
-            i2s: &mut self.i2s,
-            request,
-            input: [0; 6],
-            pending: 0,
-            frame: [0; FRAME_PAIRS * 8],
-            used: 0,
-            enabled: false,
-        }
+    pub(super) fn play_pcm(&mut self, pcm: &[u8], request: Option<&VoiceRequest>) -> Result<()> {
+        let mut playback = Playback::new();
+        let mut output = playback.output(self, request);
+        let result = output.push(pcm).and_then(|()| output.finish());
+        output.stop();
+        result
     }
 }
 
-pub(super) struct Playback<'a, 'd> {
-    i2s: &'a mut I2sDriver<'d, I2sBiDir>,
-    request: Option<&'a VoiceRequest>,
+pub(super) struct Playback {
     input: [u8; 6],
     pending: usize,
     frame: [u8; FRAME_PAIRS * 8],
     used: usize,
     enabled: bool,
+    wrote_audio: bool,
 }
 
-impl Playback<'_, '_> {
+impl Playback {
+    pub(super) fn new() -> Self {
+        Self {
+            input: [0; 6],
+            pending: 0,
+            frame: [0; FRAME_PAIRS * 8],
+            used: 0,
+            enabled: false,
+            wrote_audio: false,
+        }
+    }
+
+    pub(super) fn output<'a, 'd>(
+        &'a mut self,
+        audio: &'a mut Audio<'d>,
+        request: Option<&'a VoiceRequest>,
+    ) -> Output<'a, 'd> {
+        Output {
+            i2s: &mut audio.i2s,
+            playback: self,
+            request,
+        }
+    }
+}
+
+pub(super) struct Output<'a, 'd> {
+    i2s: &'a mut I2sDriver<'d, I2sBiDir>,
+    playback: &'a mut Playback,
+    request: Option<&'a VoiceRequest>,
+}
+
+impl Output<'_, '_> {
     fn check(&self) -> Result<()> {
         ensure!(
             self.request
@@ -216,55 +237,70 @@ impl Playback<'_, '_> {
         self.check()?;
         // HTTP chunk boundaries may fall inside a little-endian sample.
         while !pcm.is_empty() {
-            let count = pcm.len().min(self.input.len() - self.pending);
-            self.input[self.pending..self.pending + count].copy_from_slice(&pcm[..count]);
-            self.pending += count;
+            let pending = self.playback.pending;
+            let count = pcm.len().min(self.playback.input.len() - pending);
+            self.playback.input[pending..pending + count].copy_from_slice(&pcm[..count]);
+            self.playback.pending += count;
             pcm = &pcm[count..];
-            if self.pending == self.input.len() {
+            if self.playback.pending == self.playback.input.len() {
                 self.resample()?;
-                self.pending = 0;
+                self.playback.pending = 0;
             }
         }
         Ok(())
     }
 
-    pub(super) fn finish(mut self) -> Result<()> {
+    pub(super) fn finish(&mut self) -> Result<()> {
         self.check()?;
-        ensure!(self.pending % 2 == 0, "Incomplete 16-bit PCM sample");
-        if self.pending != 0 {
+        ensure!(
+            self.playback.pending % 2 == 0,
+            "Incomplete 16-bit PCM sample"
+        );
+        if self.playback.pending != 0 {
             self.resample()?;
         }
         self.flush()?;
-        ensure!(self.enabled, "Empty PCM response");
-        self.frame.fill(0);
+        ensure!(self.playback.wrote_audio, "Empty PCM response");
+        self.drain()
+    }
+
+    /// Drain submitted I²S frames while retaining half-decoded samples and the
+    /// partial output frame so speech can continue after another sound plays.
+    pub(super) fn drain(&mut self) -> Result<()> {
+        if !self.playback.enabled {
+            return Ok(());
+        }
+        static SILENCE: [u8; FRAME_PAIRS * 8] = [0; FRAME_PAIRS * 8];
         let timeout = TickType::new_millis(IO_TIMEOUT_MS).ticks();
         for _ in 0..DMA_BUFFERS {
             self.check()?;
-            self.i2s.write_all(&self.frame, timeout)?;
+            self.i2s.write_all(&SILENCE, timeout)?;
         }
         self.i2s.tx_disable()?;
-        self.enabled = false;
+        self.playback.enabled = false;
         Ok(())
     }
 
     fn resample(&mut self) -> Result<()> {
         const _: () = assert!(CAPTURE_HZ * 3 == SPEECH_HZ * 2);
+        let pending = self.playback.pending;
         let sample = |offset| {
             i32::from(i16::from_le_bytes([
-                self.input[offset],
-                self.input[offset + 1],
+                self.playback.input[offset],
+                self.playback.input[offset + 1],
             ]))
         };
         let a = sample(0);
-        let b = if self.pending >= 4 { sample(2) } else { a };
-        let c = if self.pending >= 6 { sample(4) } else { b };
+        let b = if pending >= 4 { sample(2) } else { a };
+        let c = if pending >= 6 { sample(4) } else { b };
         let resampled = [(2 * a + b) / 3, (b + 2 * c) / 3];
-        for value in resampled.into_iter().take(self.pending.min(4) / 2) {
+        for value in resampled.into_iter().take(pending.min(4) / 2) {
             let slot = (value << 16).to_le_bytes();
-            self.frame[self.used..self.used + 4].copy_from_slice(&slot);
-            self.frame[self.used + 4..self.used + 8].copy_from_slice(&slot);
-            self.used += 8;
-            if self.used == self.frame.len() {
+            let used = self.playback.used;
+            self.playback.frame[used..used + 4].copy_from_slice(&slot);
+            self.playback.frame[used + 4..used + 8].copy_from_slice(&slot);
+            self.playback.used += 8;
+            if self.playback.used == self.playback.frame.len() {
                 self.flush()?;
             }
         }
@@ -273,27 +309,26 @@ impl Playback<'_, '_> {
 
     fn flush(&mut self) -> Result<()> {
         self.check()?;
-        if self.used != 0 {
-            if !self.enabled {
+        if self.playback.used != 0 {
+            if !self.playback.enabled {
                 self.i2s.tx_enable()?;
-                self.enabled = true;
+                self.playback.enabled = true;
             }
             self.i2s.write_all(
-                &self.frame[..self.used],
+                &self.playback.frame[..self.playback.used],
                 TickType::new_millis(IO_TIMEOUT_MS).ticks(),
             )?;
-            self.used = 0;
+            self.playback.used = 0;
+            self.playback.wrote_audio = true;
         }
         Ok(())
     }
-}
-
-impl Drop for Playback<'_, '_> {
-    fn drop(&mut self) {
-        if self.enabled
-            && let Err(error) = self.i2s.tx_disable()
-        {
-            log::warn!("Stop I2S output: {error}");
+    pub(super) fn stop(&mut self) {
+        if self.playback.enabled {
+            if let Err(error) = self.i2s.tx_disable() {
+                log::warn!("Stop I2S output: {error}");
+            }
+            self.playback.enabled = false;
         }
     }
 }

@@ -130,7 +130,7 @@ fn run_device() -> Result<()> {
     let healthy = !cfg!(feature = "wake-tflite") || wake_loaded;
     #[cfg(feature = "wasm-plugins")]
     let healthy = healthy && (panel.plugins.get().is_some() || !storage::has_partition());
-    let worker = Worker::start(panel.clone())?;
+    let mut worker = Worker::start(panel.clone())?;
     firmware::verify_boot(healthy)?;
     #[cfg(feature = "wake-tflite")]
     let mut wake_test = None;
@@ -150,12 +150,15 @@ fn run_device() -> Result<()> {
             FreeRtos::delay_ms(20);
             continue;
         }
-        worker.play_ready(&mut audio, &panel);
+        if worker.play_ready(&mut audio, &panel) {
+            continue;
+        }
         #[cfg(feature = "wasm-plugins")]
         if let Some(plugins) = panel.plugins.get() {
             let signals = plugins.take_signals();
             let alarm = plugins.take_timer_alarm();
             if signals != 0 || alarm.is_some() {
+                worker.pause_stream(&mut audio);
                 #[cfg(feature = "wake-tflite")]
                 if let Some(detector) = &mut detector {
                     detector.reset();

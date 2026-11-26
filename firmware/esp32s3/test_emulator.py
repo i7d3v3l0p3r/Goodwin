@@ -34,7 +34,7 @@ PORT = 8765
 BASE_URL = f"http://192.168.4.1:{PORT}/v1"
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x6000
-PASSWORD_TIMEOUT = 150
+PASSWORD_TIMEOUT = 210
 TRANSCRIPT = "Какая погода?"
 WAKE_TRANSCRIPT = "Гудвин, " + TRANSCRIPT
 ANSWER = "Сегодня солнечно."
@@ -70,7 +70,7 @@ def tone_amplitude(samples, rate, frequency):
     return 2 * math.hypot(sine, cosine) / len(samples)
 
 
-def check_amplifier(samples, rate, timers, interrupted=False):
+def check_amplifier(samples, rate, timers, interrupted=False, alarm_during_stream=False):
     window = rate // 20
     if interrupted:
         # The fixture pauses the stream and the emulator can insert silence
@@ -78,6 +78,7 @@ def check_amplifier(samples, rate, timers, interrupted=False):
         samples = samples[-rate:]
     longest_speech = longest_alarm = speech = alarm = 0
     audible_speech = 0
+    alarm_after_speech = resumed_speech = False
     for offset in range(0, len(samples) - window + 1, window):
         segment = samples[offset : offset + window]
         main = tone_amplitude(segment, rate, SPEECH_HZ)
@@ -87,9 +88,13 @@ def check_amplifier(samples, rate, timers, interrupted=False):
         alarm = alarm + 1 if main > 3000 and secondary > 1000 else 0
         longest_speech = max(longest_speech, speech)
         longest_alarm = max(longest_alarm, alarm)
+        alarm_after_speech |= bool(longest_speech and alarm >= 4)
+        resumed_speech |= bool(alarm_after_speech and speech)
     assert (audible_speech if interrupted else longest_speech) >= 4, "The assistant did not produce 200 ms of the 660 Hz fixture tone"
     if timers:
         assert longest_alarm >= 4, "The timer alarm did not produce both tones for at least 200 ms"
+    if alarm_during_stream:
+        assert resumed_speech, "The amplifier did not play speech before and after the timer alarm"
 
 
 WAKE_TAG = "v0.1.0"
@@ -203,7 +208,7 @@ class Provider(BaseHTTPRequestHandler):
                     # Queue three complete 4 KiB host reads before pausing the fixture.
                     if index == 4 * chunk_size and getattr(self.server, "streaming", False):
                         self.wfile.flush()
-                        assert self.server.release_stream.wait(8), "Playback did not start before the full response"
+                        assert self.server.release_stream.wait(self.server.stream_timeout), "The paused speech stream was not released"
                         if self.server.cancel_stream:
                             self.close_connection = True
                             self.server.stream_cancelled.set()
@@ -1015,6 +1020,7 @@ def run_emulator(args, flash, board, output, server):
     wifi_trial = False
     wifi_joining = False
     alarm_during_join = False
+    stream_alarm_started = None
 
     def activate_voice():
         if args.wake_test:
@@ -1049,6 +1055,15 @@ def run_emulator(args, flash, board, output, server):
                     wifi_joining = True
                 if wifi_joining and "Played plugin timer alarm" in line:
                     alarm_during_join = True
+                if stream_alarm_started is not None and "Played plugin timer alarm" in line:
+                    alarm_time = int(line.split("(", 1)[1].split(")", 1)[0])
+                    delay = alarm_time - stream_alarm_started
+                    assert 0 < delay < 6000, f"The stream held the timer alarm for {delay} ms"
+                    assert not server.release_stream.is_set()
+                    assert panel.request("/api/state")["active"]["stage"] == "playing"
+                    stream_alarm_started = None
+                    server.release_stream.set()
+                    print(f"Verified timer audio {delay} ms after streamed playback started, while the provider held the response open")
                 if args.interrupt_update and played and not interrupted and f"Loaded app from partition at offset {ota_1:#x}" in line:
                     control(port, "reset")
                     interrupted = True
@@ -1137,8 +1152,14 @@ def run_emulator(args, flash, board, output, server):
                         continue
                     assert panel.request("/api/state")["active"]["stage"] == "playing"
                     panel.print_resources("during streaming")
-                    server.release_stream.set()
+                    if args.alarm_during_stream:
+                        panel.request("/api/plugins/timers/timers", "POST",
+                                      {"seconds": 1, "name": "Speech pause alarm"}, 201)
+                        stream_alarm_started = int(line.split("(", 1)[1].split(")", 1)[0])
+                    else:
+                        server.release_stream.set()
                 if "Voice turn complete" in line and not played:
+                    assert stream_alarm_started is None, "The reply ended before the timer alarm"
                     source = ("wake_test" if args.wake_test else "wake" if args.wake_audio
                               else "manual_test" if args.manual_test else "push_to_talk")
                     panel.verify_voice(source, args.stream_speech)
@@ -1199,6 +1220,7 @@ def main():
     parser.add_argument("--update-image", type=Path, help="Verify an OTA install and reboot using this app.bin")
     parser.add_argument("--interrupt-update", action="store_true", help="Reset before OTA verification and check rollback")
     parser.add_argument("--stream-speech", action="store_true", help="Verify playback starts before the whole audio response arrives")
+    parser.add_argument("--alarm-during-stream", action="store_true", help="Play a timer alarm while the speech provider stalls")
     parser.add_argument("--panel-settings", action="store_true", help="Check the panel contract, persisted settings and protected diagnostics")
     parser.add_argument("--wake-test", action="store_true", help="Run the wake-word check with continuous listening paused")
     parser.add_argument("--wake-catalog-model", type=Path, help="Serve and install a Micro INT8 fixture model from a test catalog")
@@ -1218,6 +1240,8 @@ def main():
         parser.error("--timer-voice-tool requires --timers-package")
     if args.wifi_during_alarm and not args.timers_package:
         parser.error("--wifi-during-alarm requires --timers-package")
+    if args.alarm_during_stream and (not args.timers_package or not args.stream_speech or args.voice_lifecycle):
+        parser.error("--alarm-during-stream requires Timers and streamed speech without --voice-lifecycle")
     if args.voice_lifecycle and (not args.provider_package or not args.stream_speech or args.manual_test
                                  or args.wake_audio or args.timer_voice_tool):
         parser.error("--voice-lifecycle requires a streaming WASM provider and push-to-talk")
@@ -1235,6 +1259,7 @@ def main():
         server.failure = None
         server.wake = bool(args.wake_audio)
         server.streaming = args.stream_speech
+        server.stream_timeout = 25 if args.alarm_during_stream else 8
         server.tools = args.timer_voice_tool
         server.plugin_provider = bool(args.provider_package)
         server.panel_settings = args.panel_settings
@@ -1279,7 +1304,7 @@ def main():
         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
         frames = wav.getnframes()
         samples = struct.unpack(f"<{frames}h", wav.readframes(frames))
-        check_amplifier(samples, 16000, args.timers_package, args.voice_lifecycle)
+        check_amplifier(samples, 16000, args.timers_package, args.voice_lifecycle, args.alarm_during_stream)
     print(f"Verified panel setup, chat, diagnostics and the 660 Hz amplifier response in {output}")
 
 
