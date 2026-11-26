@@ -2,10 +2,12 @@
 
 import argparse
 import base64
+from contextlib import closing
 import csv
 import hashlib
 from email import policy
 from email.parser import BytesParser
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
@@ -310,8 +312,10 @@ def control(port, *commands):
 
 class Panel:
     def __init__(self, port):
+        self.port = port
         self.base = f"http://127.0.0.1:{port}"
-        self.client = build_opener(HTTPCookieProcessor(CookieJar()))
+        self.cookies = CookieJar()
+        self.client = build_opener(HTTPCookieProcessor(self.cookies))
 
     def request(self, route, method="GET", body=None, status=200, extra=None, timeout=20):
         headers = {"Accept": "application/json", **(extra or {})}
@@ -339,10 +343,54 @@ class Panel:
                 data = json.loads(data)
             return (reply.code, data) if isinstance(status, tuple) else data
 
+    def open_upload(self, route, size, origin=None):
+        request = Request(self.base + route)
+        self.cookies.add_cookie_header(request)
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.putrequest("POST", route)
+        if cookie := request.get_header("Cookie"):
+            connection.putheader("Cookie", cookie)
+        if origin:
+            connection.putheader("Origin", origin)
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.putheader("Content-Length", str(size))
+        connection.endheaders()
+        return connection
+
+    def streaming_upload(self, route, path, expected, interrupted=False):
+        size = path.stat().st_size
+        assert size > 4096
+        with closing(self.open_upload(route, size)) as upload, path.open("rb") as body:
+            upload.send(body.read(4096))
+            # A distinct connection must be served while the worker is waiting
+            # for the body. The SDK needs the first body byte to dispatch.
+            assert self.request("/api/access", timeout=5)["authorized"]
+            assert "settings" in self.request("/api/state", timeout=5)
+            with closing(self.open_upload(route, size)) as competing:
+                competing.send(b"\0")
+                reply = competing.getresponse()
+                assert (reply.status, json.load(reply)) == (409, {"error": "busy"})
+            if interrupted:
+                upload.sock.settimeout(30)
+                upload.sock.shutdown(socket.SHUT_WR)
+            else:
+                upload.sock.settimeout(90)
+                upload.send(body)
+            reply = upload.getresponse()
+            content = reply.read()
+            assert reply.status == expected, (route, reply.status, content)
+            print(f"Verified panel responsiveness during {route} ({'interrupted' if interrupted else 'complete'})",
+                  flush=True)
+            return json.loads(content) if content else None
+
     def install_timers(self, path):
         assert all(plugin["id"] != "timers" for plugin in self.request("/api/plugins"))
-        archive = path.read_bytes()
-        self.request("/api/plugin-packages", "POST", archive, 204, timeout=90)
+        initial_memory = self.request("/api/diagnostics/resources")["memory"]["used_bytes"]
+        assert self.streaming_upload("/api/plugin-packages", path, 400, interrupted=True) == {
+            "error": "invalid_plugin_package",
+        }
+        assert all(plugin["id"] != "timers" for plugin in self.request("/api/plugins"))
+        self.streaming_upload("/api/plugin-packages", path, 204)
         plugin = next(plugin for plugin in self.request("/api/plugins") if plugin["id"] == "timers")
         assert plugin["id"] == "timers" and plugin["status"] == "ready"
         assert plugin["pages"][0]["id"] == "main"
@@ -350,7 +398,10 @@ class Panel:
         asset = f"/plugin-assets/timers/{plugin['revision']}/{plugin['web']['entry']}"
         assert self.request(asset)
         assert self.request("/api/plugins/timers/timers")["timers"] == []
-        self.print_resources("with Timers installed")
+        resources = self.print_resources("with Timers installed")
+        assert resources["memory"]["used_bytes"] - initial_memory < 16 * 1024, (
+            "The finished upload still holds its task stack", initial_memory, resources["memory"],
+        )
 
     def exercise_timers(self, path, voice_tool):
         route = "/api/plugins/timers/timers"
@@ -664,11 +715,23 @@ class Panel:
 
     def install_firmware(self, image):
         assert self.request("/api/firmware", status=401) == {"error": "login_required"}
+        with closing(self.open_upload("/api/firmware", 4096)) as connection:
+            connection.send(b"\0")
+            reply = connection.getresponse()
+            assert (reply.status, json.load(reply)) == (401, {"error": "login_required"})
         self.submit_password("/api/login", {"password": "goodwin-fixture"})
+        with closing(self.open_upload("/api/firmware", 4096, origin="https://example.invalid")) as connection:
+            connection.send(b"\0")
+            reply = connection.getresponse()
+            assert (reply.status, json.load(reply)) == (403, {"error": "origin"})
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
         assert self.request("/api/firmware", "POST", bytes(4096), 400) == {"error": "invalid_firmware"}
         assert self.request("/api/firmware")["running_slot"] == "ota_0"
-        self.request("/api/firmware", "POST", image.read_bytes(), 202, timeout=90)
+        assert self.streaming_upload("/api/firmware", image, 500, interrupted=True) == {
+            "error": "firmware_update_failed",
+        }
+        assert self.request("/api/firmware")["running_slot"] == "ota_0"
+        assert self.streaming_upload("/api/firmware", image, 202) == {"restarting": True}
         self.print_resources("before OTA reboot")
 
     def verify_after_restart(self, wake, streaming):
@@ -706,13 +769,16 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
     selection = None
     config = args.work / "esp-emu.json"
     config.write_text('{"autoupdate":false}', encoding="utf-8")
+    has_plugins = args.timers_package or args.dataset_package or args.provider_package
+    limit = 420 if has_plugins else 220
+    if args.update_image:
+        limit = 480 if has_plugins else 360
     command = [
         args.emulator, "--chip", "esp32s3", "--firmware", flash, "--psram-size", "8M",
         "--cosim-board", board, "--part-wav", f"amp={output}",
         "--control-tcp", f"127.0.0.1:{port}", "--net",
         f"user,net=192.168.4.0/24,hostfwd=tcp:127.0.0.1:{panel_port}-:80",
-        "--config", config, "--log-color", "never", "--timeout",
-        "420s" if args.timers_package or args.dataset_package or args.provider_package else ("300s" if args.update_image else "220s"),
+        "--config", config, "--log-color", "never", "--timeout", f"{limit}s",
         "--wifi-fw-ap-password", "goodwin-setup",
     ]
     if args.wake_audio:
@@ -742,10 +808,7 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
 
         Thread(target=read_uart, daemon=True).start()
         try:
-            deadline = monotonic() + (
-                445 if args.timers_package or args.dataset_package or args.provider_package
-                else (325 if args.update_image else 245)
-            )
+            deadline = monotonic() + limit + 25
             while (line := lines.get(timeout=max(0.1, deadline - monotonic()))) is not None:
                 if "Capabilities " in line:
                     capabilities = json.loads(line.split("Capabilities ", 1)[1])

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -304,20 +304,37 @@ impl Plugins {
         }).collect()
     }
 
-    pub(super) fn install(&self, archive: impl Read) -> Result<(), Failure> {
-        let mut runtime = self.lock();
-        let work = runtime.store.work().join("incoming");
+    pub(super) fn install(&self, mut archive: impl Read) -> Result<(), Failure> {
+        // The upload worker serializes installers. Network reads and archive
+        // expansion must not hold the lock shared with plugin calls and ticks.
+        let work = self.lock().store.work().join("incoming");
         if work.exists() {
             fs::remove_dir_all(&work).map_err(store::storage)?;
         }
         fs::create_dir(&work).map_err(store::storage)?;
-        let result = runtime.install(archive, &work);
+        let result = (|| {
+            let manifest =
+                package::extract_reader(&mut archive, &work.join("package"), EXPANDED_LIMIT)
+                    .map_err(|error| {
+                        log::warn!("Invalid plugin archive: {error:#}");
+                        Failure::InvalidPackage
+                    })?;
+            // The decoder can finish before Content-Length. Require the whole
+            // declared request before changing the live package.
+            io::copy(&mut archive, &mut io::sink()).map_err(|error| {
+                log::warn!("Read plugin archive: {error}");
+                Failure::InvalidPackage
+            })?;
+            let mut runtime = self.lock();
+            let result = runtime.install(manifest, &work);
+            self.refresh_wake_targets(&mut runtime);
+            result
+        })();
         if work.exists()
             && let Err(error) = fs::remove_dir_all(&work)
         {
             log::warn!("Clean up plugin upload: {error}");
         }
-        self.refresh_wake_targets(&mut runtime);
         self.wake_scheduler();
         result
     }
@@ -473,12 +490,7 @@ impl VoiceTools<'_> {
 }
 
 impl Runtime {
-    fn install(&mut self, archive: impl Read, work: &Path) -> Result<(), Failure> {
-        let manifest = package::extract_reader(archive, &work.join("package"), EXPANDED_LIMIT)
-            .map_err(|error| {
-                log::warn!("Invalid plugin archive: {error:#}");
-                Failure::InvalidPackage
-            })?;
+    fn install(&mut self, manifest: Manifest, work: &Path) -> Result<(), Failure> {
         let id = &manifest.id;
         if id == crate::builtin_assistant::BUILTIN_PROVIDER {
             return Err(Failure::InvalidPackage);

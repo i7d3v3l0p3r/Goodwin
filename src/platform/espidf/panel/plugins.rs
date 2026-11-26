@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::plugins::{Failure, connections, settings::BODY_LIMIT as SETTINGS_BODY_LIMIT};
 
 use super::{CONTENT_SECURITY_POLICY, EspHttpConnection, Request, problem, send, send_json};
-use crate::platform::espidf::plugins::{ARCHIVE_LIMIT, Plugins};
+use crate::platform::espidf::plugins::Plugins;
 
 type PanelRequest<'a, 'b> = Request<&'a mut EspHttpConnection<'b>>;
 
@@ -20,12 +20,6 @@ pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Re
         .map_or((uri.as_str(), None), |(path, query)| (path, Some(query)));
     let result: Result<(), Failure> = match (method, path) {
         (Method::Get, "/api/plugins") => return send_json(request, &plugins.catalog()),
-        (Method::Post, "/api/plugin-packages") => {
-            let Ok(body) = Body::new(&mut request, ARCHIVE_LIMIT) else {
-                return problem(request, 413, "plugin_archive_too_large");
-            };
-            plugins.install(body)
-        }
         (Method::Delete, path) if path.starts_with("/api/plugin-packages/") => {
             plugins.remove(&path["/api/plugin-packages/".len()..])
         }

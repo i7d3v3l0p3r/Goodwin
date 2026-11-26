@@ -20,9 +20,9 @@ use crate::{
     builtin_assistant::{AudioSettings, ProviderUpdate, State},
     model,
     panel_core::{
-        ASSET_CACHE_CONTROL, ASSETS, CONTENT_SECURITY_POLICY, Chat, INDEX, Login, PAGE_PATHS,
-        SetupPassword, Source, UpdateMicrophone, UpdateSystemPrompt, same_origin, session_cookie,
-        session_token, valid_password_length,
+        ASSET_CACHE_CONTROL, ASSETS, AccessState, CONTENT_SECURITY_POLICY, Chat, INDEX, Login,
+        PAGE_PATHS, SetupPassword, Source, UpdateMicrophone, UpdateSystemPrompt, same_origin,
+        session_cookie, session_token, valid_password_length,
     },
 };
 
@@ -37,6 +37,7 @@ mod jobs;
 mod password_jobs;
 #[cfg(feature = "wasm-plugins")]
 mod plugins;
+mod uploads;
 #[cfg(feature = "wake-tflite")]
 mod wake_models;
 
@@ -232,10 +233,18 @@ impl Panel {
             .into_iter()
             .all(|capability| self.provider_ready(state, capability))
     }
+
+    fn access(&self, token: Option<&str>) -> AccessState {
+        self.credentials
+            .lock()
+            .expect("panel credentials")
+            .0
+            .access(token)
+    }
 }
 
-pub(super) fn serve(panel: Arc<Panel>) -> Result<EspHttpServer<'static>> {
-    let mut server = EspHttpServer::new(&Configuration {
+pub(super) fn serve(panel: Arc<Panel>) -> Result<uploads::Server> {
+    let http = EspHttpServer::new(&Configuration {
         stack_size: if cfg!(feature = "wasm-plugins") {
             52 * 1024
         } else if cfg!(feature = "wake-tflite") {
@@ -247,6 +256,7 @@ pub(super) fn serve(panel: Arc<Panel>) -> Result<EspHttpServer<'static>> {
         uri_match_wildcard: true,
         ..Default::default()
     })?;
+    let mut server = uploads::Server::new(http, panel.clone())?;
     for method in [
         Method::Get,
         Method::Post,
@@ -257,7 +267,9 @@ pub(super) fn serve(panel: Arc<Panel>) -> Result<EspHttpServer<'static>> {
         Method::Delete,
     ] {
         let panel = panel.clone();
-        server.fn_handler("/*", method, move |request| handle(request, &panel))?;
+        server
+            .http
+            .fn_handler("/*", method, move |request| handle(request, &panel))?;
     }
     Ok(server)
 }
@@ -309,12 +321,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
         .header("Cookie")
         .and_then(session_token)
         .map(str::to_owned);
-    let access = panel
-        .credentials
-        .lock()
-        .expect("panel credentials")
-        .0
-        .access(token.as_deref());
+    let access = panel.access(token.as_deref());
     match (method, path) {
         (Method::Get, "/api/capabilities") => {
             let capabilities = model::capabilities();
@@ -447,7 +454,6 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 }
             }
         }
-        (Method::Post, "/api/firmware") => install_firmware(request, panel),
         (Method::Get, "/api/state") => {
             use goodwin_plugin::provider::Capability;
             let snapshot = {
@@ -668,47 +674,6 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
     }
 }
 
-fn install_firmware(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Result<()> {
-    if request.header("Content-Type") != Some("application/octet-stream") {
-        return problem(request, 400, "invalid_firmware");
-    }
-    let size = request
-        .header("Content-Length")
-        .and_then(|len| len.parse::<usize>().ok());
-    let Some(size) = size.filter(|&size| (4096..=firmware::capacity()).contains(&size)) else {
-        return problem(request, 400, "invalid_firmware");
-    };
-    let state = State::lock(&panel.state);
-    if state.busy()
-        || panel.wake_model_busy()
-        || !panel.wifi_connected()
-        || panel.firmware_busy.swap(true, Ordering::AcqRel)
-    {
-        return problem(request, 409, "busy");
-    }
-    drop(state);
-    let attempt = firmware::install(|block| Ok(request.read(block)?), size);
-    if matches!(attempt, Ok(true)) {
-        let receipt = send(
-            request,
-            202,
-            "application/json",
-            br#"{"restarting":true}"#,
-            &[],
-        );
-        panel.reboot.store(true, Ordering::Release);
-        return receipt;
-    }
-    panel.firmware_busy.store(false, Ordering::Release);
-    match attempt {
-        Err(error) => {
-            log::warn!("Install firmware: {error:#}");
-            problem(request, 500, "firmware_update_failed")
-        }
-        _ => problem(request, 400, "invalid_firmware"),
-    }
-}
-
 fn read_json<T: DeserializeOwned>(request: &mut Request<&mut EspHttpConnection<'_>>) -> Result<T> {
     Ok(goodwin_json::from_slice(&read_json_body(request)?)?)
 }
@@ -795,7 +760,24 @@ fn send(
     content: &[u8],
     extra: &[(&str, &str)],
 ) -> Result<()> {
-    let reason = match status {
+    let mut headers = vec![
+        ("Content-Type", mime),
+        ("Content-Security-Policy", CONTENT_SECURITY_POLICY),
+        ("X-Content-Type-Options", "nosniff"),
+    ];
+    if !extra.iter().any(|(name, _)| *name == "Cache-Control") {
+        headers.push(("Cache-Control", "no-store"));
+    }
+    headers.extend_from_slice(extra);
+    let mut response = request.into_response(status, Some(status_reason(status)), &headers)?;
+    for block in content.chunks(4096) {
+        response.write_all(block)?;
+    }
+    Ok(())
+}
+
+fn status_reason(status: u16) -> &'static str {
+    match status {
         200 => "OK",
         201 => "Created",
         202 => "Accepted",
@@ -811,21 +793,7 @@ fn send(
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
-    };
-    let mut headers = vec![
-        ("Content-Type", mime),
-        ("Content-Security-Policy", CONTENT_SECURITY_POLICY),
-        ("X-Content-Type-Options", "nosniff"),
-    ];
-    if !extra.iter().any(|(name, _)| *name == "Cache-Control") {
-        headers.push(("Cache-Control", "no-store"));
     }
-    headers.extend_from_slice(extra);
-    let mut response = request.into_response(status, Some(reason), &headers)?;
-    for block in content.chunks(4096) {
-        response.write_all(block)?;
-    }
-    Ok(())
 }
 
 fn resources(storage: Option<serde_json::Value>) -> serde_json::Value {
