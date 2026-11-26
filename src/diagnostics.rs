@@ -28,7 +28,10 @@ static FLASH_FAILURES: AtomicU32 = AtomicU32::new(0);
 pub(crate) enum Queue {
     #[cfg(target_os = "espidf")]
     Device,
-    #[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+    #[cfg(any(
+        not(target_os = "espidf"),
+        all(feature = "wasm-plugins", feature = "wake-tflite")
+    ))]
     Plugin,
     #[cfg(target_os = "espidf")]
     Provider,
@@ -41,7 +44,10 @@ impl Queue {
         let counter = match self {
             #[cfg(target_os = "espidf")]
             Self::Device => &DEVICE_QUEUE_FULL,
-            #[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+            #[cfg(any(
+                not(target_os = "espidf"),
+                all(feature = "wasm-plugins", feature = "wake-tflite")
+            ))]
             Self::Plugin => &PLUGIN_QUEUE_FULL,
             #[cfg(target_os = "espidf")]
             Self::Provider => &PROVIDER_QUEUE_FULL,
