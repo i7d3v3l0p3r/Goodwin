@@ -748,6 +748,45 @@ class Panel:
         assert state["system_prompt"] == "Contract fixture\nNext line."
         assert not state["settings"]["microphone_muted"]
 
+    def verify_asset_cache(self):
+        path = "/panel.js"
+        policy = "public, max-age=0, must-revalidate"
+        with closing(HTTPConnection("127.0.0.1", self.port, timeout=5)) as connection:
+            connection.request("GET", path)
+            with connection.getresponse() as reply:
+                assert reply.status == 200
+                assert reply.getheader("Content-Encoding") == "gzip"
+                assert reply.getheader("Cache-Control") == policy
+                body = reply.read()
+                tag = reply.getheader("ETag")
+                assert tag == f'"{hashlib.sha256(body).hexdigest()}"'
+                assert gzip.decompress(body)
+
+            connection.request("GET", path, headers={"If-None-Match": f'"stale", W/{tag}'})
+            with connection.getresponse() as reply:
+                assert reply.status == 304
+                assert reply.getheader("ETag") == tag
+                assert reply.getheader("Cache-Control") == policy
+                assert not reply.read()
+
+            connection.request("GET", path, headers={"If-None-Match": '"stale"'})
+            with connection.getresponse() as reply:
+                assert reply.status == 200 and reply.read() == body
+
+            connection.request("GET", "/settings")
+            with connection.getresponse() as reply:
+                assert reply.status == 200
+                assert reply.getheader("Content-Encoding") == "gzip"
+                assert reply.getheader("Cache-Control") == "no-store"
+                assert b"<html" in gzip.decompress(reply.read())
+
+            connection.request("GET", "/api/capabilities")
+            with connection.getresponse() as reply:
+                assert reply.status == 200
+                assert reply.getheader("Cache-Control") == "no-store"
+                reply.read()
+        print("Verified gzip, conditional asset caching, and uncacheable HTML and API")
+
     def verify_microphone_settings(self):
         original = self.request("/api/state")["settings"]
         self.request("/api/settings/microphone", "PUT", {"muted": True}, 204)
@@ -998,6 +1037,7 @@ def run_emulator(args, flash, board, output, server):
                             panel.setup_access()
                         if args.panel_settings:
                             panel.verify_panel_contract()
+                            panel.verify_asset_cache()
                             panel.set_system_prompt()
                             panel.verify_microphone_settings()
                         panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat)
