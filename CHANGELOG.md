@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
 ### English
 
 - Mini 3 decodes buffered speech directly into its playback buffer. Mini 3 and ESP32-S3 reuse the conversation and tool definitions across calls within a voice request.
