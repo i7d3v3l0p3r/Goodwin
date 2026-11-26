@@ -130,7 +130,8 @@ impl CallLimits {
     const MODELS: Self = Self {
         request: FRAME_LIMIT,
         response: 512 * 1024,
-        timeout: Duration::from_secs(5),
+        // Allow a five-second provider fetch plus the host and guest RPC work.
+        timeout: Duration::from_secs(8),
     };
 
     fn provider(capability: Capability) -> Self {
