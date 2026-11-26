@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="134" height="28" viewBox="0 0 134 28">
+  <title>Скачать релиз</title>
+  <rect width="134" height="28" rx="6" fill="#24523c"/>
+  <g transform="translate(9 6)" fill="none" stroke="#c5edce" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 1v9m-4-4 4 4 4-4M2 11v3h12v-3"/>
+  </g>
+  <text x="32" y="18.5" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#fff">Скачать релиз</text>
+</svg>

@@ -4,6 +4,7 @@
 
 ### English
 
+- The project overview is available in English and Russian, with panel screenshots in both languages and guides for each platform.
 - On phones, open Chat, Wi-Fi or Station, and Plugins from the bottom bar. Menu brings settings within thumb reach. Larger plugin lists support search by name or page.
 - Mini 3 and ESP32-S3 remember recent exchanges in a voice conversation. In activation settings, choose one request per wake word or button press, or enable follow-ups with a wait of 1–60 seconds after each answer (eight by default).
 - GitHub releases now distribute Timers, OpenAI-compatible and Wake-word dataset only as WASM packages.
@@ -15,6 +16,7 @@
 
 ### Русский
 
+- У проекта появились русский и английский обзоры со снимками панели на каждом языке и ссылками на инструкции для обеих платформ.
 - На телефоне чат, Wi-Fi или колонка и плагины открываются с нижней панели. Остальные настройки доступны через «Меню». В большом списке плагинов можно искать по названию плагина или его страницы.
 - На Мини 3 и ESP32-S3 Гудвин помнит предыдущие реплики голосового диалога. В настройках активации можно выбрать одну реплику по слову или кнопке либо диалог с продолжением. Время ожидания после ответа настраивается от 1 до 60 секунд, по умолчанию — 8.
 - В релизах GitHub плагины таймеров, OpenAI-совместимого провайдера и датасета слова активации теперь доступны только в формате WASM.

@@ -45,7 +45,7 @@ and the local patches separately when reviewing upstream advisories. They are
 outside the Rust dependency graph in `Cargo.lock`.
 
 On x86-64 GNU/Linux, build the embedded panel and WASM fixtures as described in
-the [build instructions](../README.md), then run `bash
+the [build instructions](../guides/development.md#run-checks), then run `bash
 scripts/test-native-boundaries.sh` with GCC, G++, CMake, and Ninja available.
 The script instruments the native sources and bridges with ASan and UBSan and
 runs the Rust integration tests against them. All Goodwin builds use WAMR's
