@@ -1,0 +1,53 @@
+[
+  {
+    "method": "PUT",
+    "path": "/api/settings/microphone",
+    "body": { "muted": true },
+    "status": 204,
+    "response": null
+  },
+  {
+    "method": "PUT",
+    "path": "/api/settings/microphone",
+    "body": { "muted": false },
+    "status": 204,
+    "response": null
+  },
+  {
+    "method": "PUT",
+    "path": "/api/settings/system-prompt",
+    "body": { "system_prompt": " Contract fixture\r\nNext line. " },
+    "status": 204,
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/chat",
+    "body": { "message": " \t" },
+    "status": 400,
+    "response": { "error": "invalid_message" }
+  },
+  {
+    "method": "POST",
+    "path": "/api/voice/cancel",
+    "body": { "request_id": 1 },
+    "status": 409,
+    "response": { "error": "voice_request_inactive" }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/wake-models",
+    "body": { "id": "invalid model id", "tag": "v1" },
+    "status": 400,
+    "response": { "error": "invalid_wake_model" },
+    "requiresWakeCatalog": true
+  },
+  {
+    "method": "POST",
+    "path": "/api/wake-models/result",
+    "body": { "operation": "missing-operation" },
+    "status": 404,
+    "response": { "error": "wake_model_failed" },
+    "requiresWakeCatalog": true
+  }
+]

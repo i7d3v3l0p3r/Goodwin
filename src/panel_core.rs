@@ -13,6 +13,25 @@ pub(crate) struct UpdateSystemPrompt {
     pub system_prompt: String,
 }
 
+#[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
+#[derive(Deserialize)]
+pub(crate) struct InstallWakeModel {
+    pub(crate) id: String,
+    pub(crate) tag: String,
+}
+
+#[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
+impl InstallWakeModel {
+    pub(crate) fn valid(&self) -> bool {
+        crate::wake_catalog::valid_model_id(&self.id) && self.tag.len() <= 33
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct OperationTicket {
+    pub(crate) operation: String,
+}
+
 pub(crate) fn normalize_system_prompt(prompt: &str) -> goodwin_error::Result<String> {
     let prompt = prompt.trim().replace("\r\n", "\n").replace('\r', "\n");
     goodwin_error::ensure!(

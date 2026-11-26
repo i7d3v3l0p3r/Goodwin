@@ -1,23 +1,18 @@
 use std::sync::{Arc, atomic::Ordering, mpsc};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{
-    Command, EspHttpConnection, Method, Panel, Request, Result, State, Ticket, jobs::Outcome,
-    problem, read_json, send_json, send_pending, send_ticket,
+    Command, EspHttpConnection, Method, Panel, Request, Result, State, jobs::Outcome, problem,
+    read_json, send_json, send_pending, send_ticket,
 };
 use crate::{
+    panel_core::{InstallWakeModel, OperationTicket},
     platform::espidf::wake_models,
-    wake_catalog::{Selection, valid_model_id},
+    wake_catalog::Selection,
 };
 
-#[derive(Deserialize)]
-struct Install {
-    id: String,
-    tag: String,
-}
-
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(untagged)]
 pub(super) enum Completion {
     Catalog { tag: String, models: Vec<Selection> },
@@ -35,9 +30,9 @@ pub(super) fn handle(
         return problem(request, 409, "wifi_unavailable");
     }
     let install = if request.method() == Method::Put {
-        match read_json::<Install>(&mut request) {
-            Ok(install) if valid_model_id(&install.id) && install.tag.len() <= 33 => Some(install),
-            _ => return problem(request, 400, "wake_model_invalid"),
+        match read_json::<InstallWakeModel>(&mut request) {
+            Ok(install) if install.valid() => Some(install),
+            _ => return problem(request, 400, "invalid_wake_model"),
         }
     } else {
         None
@@ -58,17 +53,17 @@ pub(super) fn result(
     mut request: Request<&mut EspHttpConnection<'_>>,
     panel: &Panel,
 ) -> Result<()> {
-    let Ok(ticket) = read_json::<Ticket>(&mut request) else {
+    let Ok(ticket) = read_json::<OperationTicket>(&mut request) else {
         return problem(request, 400, "invalid_request");
     };
-    match panel.wake_jobs.take(&ticket.operation, "wake_model_failed") {
+    match panel.wake_jobs.read(&ticket.operation, "wake_model_failed") {
         Ok(None) => send_pending(request),
         Ok(Some(completion)) => send_json(request, &completion),
         Err((status, code)) => problem(request, status, code),
     }
 }
 
-fn process(panel: &Panel, install: Option<Install>) -> Outcome<Completion> {
+fn process(panel: &Panel, install: Option<InstallWakeModel>) -> Outcome<Completion> {
     let catalog = wake_models::catalog().map_err(|error| {
         log::warn!("Fetch wake model catalog: {error:#}");
         (502, "wake_catalog_unavailable")
@@ -88,7 +83,7 @@ fn process(panel: &Panel, install: Option<Install>) -> Outcome<Completion> {
     }
     let candidate = match wake_models::download(&catalog, &install.id) {
         Ok(Some(candidate)) => candidate,
-        Ok(None) => return Err((404, "wake_model_invalid")),
+        Ok(None) => return Err((404, "invalid_wake_model")),
         Err(error) => {
             log::warn!("Download wake model: {error:#}");
             return Err((502, "wake_model_failed"));

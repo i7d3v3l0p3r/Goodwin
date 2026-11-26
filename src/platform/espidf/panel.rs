@@ -42,7 +42,8 @@ mod uploads;
 #[cfg(feature = "wake-tflite")]
 mod wake_models;
 
-use jobs::{Jobs, Outcome, Ticket};
+use crate::panel_core::OperationTicket;
+use jobs::{Jobs, Outcome};
 use password_jobs::Operation;
 
 const BODY_LIMIT: usize = 16_384;
@@ -364,7 +365,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             );
         }
         (Method::Post, "/api/auth/result") => {
-            let Ok(ticket) = read_json::<Ticket>(&mut request) else {
+            let Ok(ticket) = read_json::<OperationTicket>(&mut request) else {
                 return problem(request, 400, "invalid_request");
             };
             let result = panel
@@ -729,7 +730,7 @@ fn send_ticket(
     ticket: Outcome<String>,
 ) -> Result<()> {
     match ticket {
-        Ok(id) => send_json_status(request, 202, &json!({"operation": id})),
+        Ok(operation) => send_json_status(request, 202, &OperationTicket { operation }),
         Err((status, code)) => problem(request, status, code),
     }
 }

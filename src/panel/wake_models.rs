@@ -5,12 +5,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
+    panel_core::{InstallWakeModel, OperationTicket},
     wake::{InstallError, runtimes},
-    wake_catalog::{Catalog, valid_model_id},
+    wake_catalog::Catalog,
 };
 
 use super::{Json, Panel, problem};
@@ -33,14 +33,11 @@ pub(super) async fn catalog() -> Response {
     }
 }
 
-#[derive(Deserialize)]
-pub(super) struct Install {
-    id: String,
-    tag: String,
-}
-
-pub(super) async fn install(State(panel): State<Panel>, Json(install): Json<Install>) -> Response {
-    if !valid_model_id(&install.id) || install.tag.len() > 33 {
+pub(super) async fn install(
+    State(panel): State<Panel>,
+    Json(install): Json<InstallWakeModel>,
+) -> Response {
+    if !install.valid() {
         return problem(StatusCode::BAD_REQUEST, "invalid_wake_model");
     }
     let app = Arc::clone(&panel.app);
@@ -62,21 +59,16 @@ pub(super) async fn install(State(panel): State<Panel>, Json(install): Json<Inst
     .await
     {
         Ok(Ok(operation)) => {
-            (StatusCode::ACCEPTED, Json(json!({"operation": operation}))).into_response()
+            (StatusCode::ACCEPTED, Json(OperationTicket { operation })).into_response()
         }
         Ok(Err(error)) => install_problem(error),
         Err(_) => install_problem(InstallError::Failed),
     }
 }
 
-#[derive(Deserialize)]
-pub(super) struct InstallTicket {
-    operation: String,
-}
-
 pub(super) async fn install_result(
     State(panel): State<Panel>,
-    Json(ticket): Json<InstallTicket>,
+    Json(ticket): Json<OperationTicket>,
 ) -> Response {
     match panel.app.wake_models.install_result(&ticket.operation) {
         Some(Ok(Some(selection))) => Json(selection).into_response(),

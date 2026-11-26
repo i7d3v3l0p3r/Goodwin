@@ -29,6 +29,7 @@ export function createPanel() {
       : providerReadiness.stageIssue(stage);
   let events: EventSource | undefined;
   let retry = 0;
+  let profileRefresh = 0;
   let retryDelay = 1000;
   let generation = 0;
   let updates: DeviceCapabilities["panel_updates"] | undefined;
@@ -46,18 +47,28 @@ export function createPanel() {
   function disconnect() {
     generation++;
     window.clearTimeout(retry);
+    window.clearTimeout(profileRefresh);
     events?.close();
     events = undefined;
   }
 
-  function connect() {
+  function connect(refreshProfile = false) {
     disconnect();
-    if (!updates) {
-      void detectProfile(generation);
-      return;
-    }
+    if (refreshProfile || !updates) void detectProfile(generation, true);
+    else startUpdates(generation);
+  }
+
+  function reconnect() {
+    disconnect();
+    setReachable(false);
+    retry = window.setTimeout(() => connect(true), retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 15_000);
+  }
+
+  function startUpdates(current: number) {
+    scheduleProfileRefresh(current);
     if (updates === "poll") {
-      void poll(generation, true);
+      void poll(current, true);
       return;
     }
     const source = new EventSource("/api/events");
@@ -69,12 +80,7 @@ export function createPanel() {
       setReachable(true);
     };
     source.onerror = () => {
-      if (events !== source) return;
-      setReachable(false);
-      if (source.readyState === EventSource.CLOSED) {
-        retry = window.setTimeout(connect, retryDelay);
-        retryDelay = Math.min(retryDelay * 2, 15_000);
-      }
+      if (events === source) reconnect();
     };
     source.addEventListener("access", (event: MessageEvent<string>) => {
       if (events === source) updateAccess(JSON.parse(event.data) as Access);
@@ -96,22 +102,30 @@ export function createPanel() {
     });
   }
 
-  async function detectProfile(current: number) {
+  function scheduleProfileRefresh(current: number) {
+    profileRefresh = window.setTimeout(() => void detectProfile(current, false), 30_000);
+  }
+
+  async function detectProfile(current: number, connecting: boolean) {
+    let profile: DeviceCapabilities | undefined;
     try {
-      const profile = await api<DeviceCapabilities>("capabilities");
-      if (generation !== current) return;
-      updates = profile.panel_updates;
-      setDevice(profile);
+      profile = await api<DeviceCapabilities>("capabilities");
     } catch (reason) {
       if (generation !== current) return;
       if (!(reason instanceof ApiError && reason.code === "not_found")) {
-        setReachable(false);
-        retry = window.setTimeout(connect, 1000);
+        if (connecting) reconnect();
+        else scheduleProfileRefresh(current);
         return;
       }
-      updates = "events";
     }
-    connect();
+    if (generation !== current) return;
+    const mode = profile?.panel_updates ?? "events";
+    setDevice(profile);
+    const changed = mode !== updates;
+    updates = mode;
+    if (connecting) startUpdates(current);
+    else if (changed) connect();
+    else scheduleProfileRefresh(current);
   }
 
   async function poll(current: number, refreshAccess = false) {
@@ -128,13 +142,15 @@ export function createPanel() {
         if (generation !== current) return;
         setSnapshot(next);
       }
+      retryDelay = 1000;
       setReachable(true);
     } catch (reason) {
       if (generation !== current) return;
       if (reason instanceof ApiError && reason.code === "login_required") {
         updateAccess({ protected: true, authorized: false, setup_required: false });
       } else {
-        setReachable(false);
+        reconnect();
+        return;
       }
     }
     if (generation === current) retry = window.setTimeout(() => void poll(current), 1000);
@@ -142,8 +158,8 @@ export function createPanel() {
 
   onSettled(() => {
     connect();
-    const recheckAccess = () => { if (access()?.authorized === false) connect(); };
-    const restorePage = (event: PageTransitionEvent) => { if (event.persisted) connect(); };
+    const recheckAccess = () => { if (access()?.authorized === false || !reachable()) connect(true); };
+    const restorePage = (event: PageTransitionEvent) => { if (event.persisted) connect(true); };
     window.addEventListener("focus", recheckAccess);
     window.addEventListener("pagehide", disconnect);
     window.addEventListener("pageshow", restorePage);

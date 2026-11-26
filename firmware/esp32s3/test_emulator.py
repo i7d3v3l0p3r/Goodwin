@@ -43,6 +43,7 @@ SPEECH_RATE = 24000
 SPEECH_HZ = 660
 CHAT_PREFIX = ANSWER.split()[0]
 SYSTEM_PROMPT = "Goodwin ESP fixture system prompt."
+PANEL_CONTRACT = Path(__file__).resolve().parents[2] / "tests/fixtures/panel_contract.json"
 
 
 def tone(rate=SPEECH_RATE, hz=SPEECH_HZ):
@@ -455,9 +456,15 @@ class Panel:
                     target.addfile(item, io.BytesIO(payload))
                 else:
                     target.addfile(item, source.extractfile(item))
-        assert self.request("/api/plugin-packages", "POST", broken.getvalue(), 409, timeout=90) == {
-            "error": "plugin_update_rolled_back",
-        }
+        # Timer completion is saved before audio starts. Package replacement can
+        # briefly be busy while the audio output still owns the alarm.
+        deadline = monotonic() + 8
+        while True:
+            failure = self.request("/api/plugin-packages", "POST", broken.getvalue(), 409, timeout=90)
+            if failure == {"error": "plugin_update_rolled_back"}:
+                break
+            assert failure == {"error": "plugin_busy"} and monotonic() < deadline, failure
+            sleep(0.4)
         self.request("/api/plugin-packages", "POST", path.read_bytes(), 204, timeout=90)
         assert saved in self.request(route)["timers"]
         self.print_resources("after Timers activation and replacement")
@@ -529,6 +536,7 @@ class Panel:
         ticket = self.request(path, "PUT", payload, 202, timeout=5)
         installed = self.wait_operation(result, ticket, 200, 100)
         assert installed == catalog["models"][0]
+        assert self.request(result, "POST", ticket) == installed
         assert self.request("/api/state")["wake_model"] == installed
         self.print_resources("after changing the wake model")
         return installed
@@ -726,6 +734,19 @@ class Panel:
         }
         self.request("/api/settings/system-prompt", "PUT", {"system_prompt": f" {SYSTEM_PROMPT} "}, 204)
         self.verify_panel_settings()
+
+    def verify_panel_contract(self):
+        profile = self.request("/api/capabilities")
+        assert (profile["platform"], profile["panel_updates"]) == ("espidf", "poll")
+        examples = json.loads(PANEL_CONTRACT.read_text(encoding="utf-8"))
+        for example in examples:
+            if example.get("requiresWakeCatalog") and not profile["wake_catalog"]:
+                continue
+            response = self.request(example["path"], example["method"], example["body"], example["status"])
+            assert response == example["response"], (example, response)
+        state = self.request("/api/state")
+        assert state["system_prompt"] == "Contract fixture\nNext line."
+        assert not state["settings"]["microphone_muted"]
 
     def verify_microphone_settings(self):
         original = self.request("/api/state")["settings"]
@@ -976,6 +997,7 @@ def run_emulator(args, flash, board, output, server):
                                 panel.request("/api/wake-models", status=401)
                             panel.setup_access()
                         if args.panel_settings:
+                            panel.verify_panel_contract()
                             panel.set_system_prompt()
                             panel.verify_microphone_settings()
                         panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat)

@@ -14,6 +14,67 @@ use crate::{
 };
 
 #[tokio::test]
+async fn panel_matches_the_shared_http_contract() {
+    #[derive(serde::Deserialize)]
+    struct Example {
+        method: String,
+        path: String,
+        body: Value,
+        status: u16,
+        response: Value,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (panel, task) = serve(router(app)).await;
+    let client = reqwest::Client::new();
+    let examples: Vec<Example> =
+        serde_json::from_str(include_str!("../../tests/fixtures/panel_contract.json")).unwrap();
+    for example in examples {
+        let method = reqwest::Method::from_bytes(example.method.as_bytes()).unwrap();
+        let response = client
+            .request(method, format!("{panel}{}", example.path))
+            .json(&example.body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            example.status,
+            "{}",
+            example.path
+        );
+        let body = response.bytes().await.unwrap();
+        let response = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&body).unwrap()
+        };
+        assert_eq!(response, example.response, "{}", example.path);
+    }
+    let state: Value = client
+        .get(format!("{panel}/api/state"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(state["system_prompt"], "Contract fixture\nNext line.");
+    assert_eq!(state["settings"]["microphone_muted"], false);
+    task.abort();
+}
+
+#[tokio::test]
 async fn wake_model_ticket_reports_pending_and_then_the_active_selection() {
     let dir = tempfile::tempdir().unwrap();
     let app = App::new(

@@ -5,21 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Deserialize;
-
 use crate::panel_core::random_bytes;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 const RESULT_LIFETIME: Duration = Duration::from_secs(60);
 const RESULT_LIMIT: usize = 4;
 
 pub(super) type Problem = (u16, &'static str);
 pub(super) type Outcome<T> = Result<T, Problem>;
-
-#[derive(Deserialize)]
-pub(super) struct Ticket {
-    pub operation: String,
-}
 
 struct Completed<T> {
     id: String,
@@ -79,6 +72,30 @@ impl<T: Send + 'static> Jobs<T> {
     }
 
     pub(super) fn take(&self, id: &str, expired: &'static str) -> Outcome<Option<T>> {
+        self.resolve(id, expired, |completed, index| {
+            completed
+                .remove(index)
+                .expect("completed panel job")
+                .outcome
+        })
+    }
+
+    #[cfg(feature = "wake-tflite")]
+    pub(super) fn read(&self, id: &str, expired: &'static str) -> Outcome<Option<T>>
+    where
+        T: Clone,
+    {
+        self.resolve(id, expired, |completed, index| {
+            completed[index].outcome.clone()
+        })
+    }
+
+    fn resolve(
+        &self,
+        id: &str,
+        expired: &'static str,
+        deliver: impl FnOnce(&mut VecDeque<Completed<T>>, usize) -> Outcome<T>,
+    ) -> Outcome<Option<T>> {
         let mut state = self.0.lock().expect("panel jobs");
         if state.active.as_deref() == Some(id) {
             return Ok(None);
@@ -90,12 +107,7 @@ impl<T: Send + 'static> Jobs<T> {
             .iter()
             .position(|result| result.id == id)
             .ok_or((404, expired))?;
-        state
-            .completed
-            .remove(index)
-            .expect("completed panel job")
-            .outcome
-            .map(Some)
+        deliver(&mut state.completed, index).map(Some)
     }
 }
 
