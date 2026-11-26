@@ -1,4 +1,7 @@
-use std::io::{BufRead, BufReader, Read};
+use std::{
+    borrow::Cow,
+    io::{BufRead, BufReader, Read},
+};
 
 use goodwin_error::{Context, Result, ensure};
 use goodwin_plugin::{
@@ -11,27 +14,35 @@ const MAX_WIRE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 128 * 1024;
 
 #[derive(Deserialize)]
-struct Event {
+struct Event<'a> {
     error: Option<IgnoredAny>,
-    choices: Option<Vec<Choice>>,
+    #[serde(borrow)]
+    choices: Option<Vec<Choice<'a>>>,
 }
 
 #[derive(Deserialize)]
-struct Choice {
+struct Choice<'a> {
     index: Option<u64>,
-    finish_reason: Option<String>,
-    delta: Option<Delta>,
+    #[serde(borrow)]
+    finish_reason: Option<Text<'a>>,
+    #[serde(borrow)]
+    delta: Option<Delta<'a>>,
 }
 
 #[derive(Deserialize)]
-struct Delta {
-    content: Option<String>,
+struct Delta<'a> {
+    #[serde(borrow)]
+    content: Option<Text<'a>>,
 }
+
+#[derive(Deserialize)]
+struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
 
 pub(super) fn read(response: impl Read, emit: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
     let mut reader = BufReader::new(response.take(MAX_WIRE_BYTES + 1));
     let mut line = String::new();
     let mut data = String::new();
+    let mut data_start = 0;
     let mut received = 0;
     let mut text_bytes = 0;
     loop {
@@ -51,53 +62,76 @@ pub(super) fn read(response: impl Read, emit: &mut dyn FnMut(&str) -> Result<()>
             received <= MAX_WIRE_BYTES,
             "Provider chat stream exceeds size limit"
         );
-        let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(value) = line.strip_prefix("data:") {
+        let received_line = line.trim_end_matches(['\r', '\n']);
+        if let Some(value) = received_line.strip_prefix("data:") {
             let value = value.strip_prefix(' ').unwrap_or(value);
+            let payload_length = data.len() - data_start;
             ensure!(
-                data.len() + usize::from(!data.is_empty()) + value.len() <= MAX_EVENT_BYTES,
+                payload_length + usize::from(payload_length != 0) + value.len() <= MAX_EVENT_BYTES,
                 "Provider chat event exceeds size limit"
             );
-            if !data.is_empty() {
+            if data.is_empty() && !value.is_empty() {
+                // Keep the first line's existing buffer. Most events use just one line.
+                data_start = received_line.len() - value.len();
+                line.truncate(received_line.len());
+                std::mem::swap(&mut line, &mut data);
+            } else if !data.is_empty() {
                 data.push('\n');
+                data.push_str(value);
             }
-            data.push_str(value);
-        } else if line.is_empty() && !data.is_empty() {
-            if data == "[DONE]" {
+        } else if received_line.is_empty() && !data.is_empty() {
+            let payload = &data[data_start..];
+            if payload == "[DONE]" {
                 return Ok(());
             }
-            let event: Event =
-                json_codec::from_str(&data).context("Invalid provider chat event")?;
+            let finished = json_codec::with_decoder(payload, |decoder| {
+                let event = decoder.decode().context("Invalid provider chat event")?;
+                emit_event(event, &mut text_bytes, emit)
+            })
+            .context("Invalid provider chat event")??;
+            std::mem::swap(&mut line, &mut data);
             data.clear();
-            ensure!(
-                event.error.is_none(),
-                "Provider chat stream returned an error"
-            );
-            let Some(choice) = event.choices.and_then(|choices| {
-                choices
-                    .into_iter()
-                    .find(|choice| choice.index.unwrap_or(0) == 0)
-            }) else {
-                continue;
-            };
-            let finish = choice.finish_reason.as_deref();
-            ensure!(
-                finish != Some("error"),
-                "Provider chat stream returned an error"
-            );
-            if let Some(text) = choice.delta.and_then(|delta| delta.content) {
-                text_bytes += text.len();
-                ensure!(
-                    text_bytes <= MAX_CHAT_BYTES,
-                    "Provider answer exceeds size limit"
-                );
-                emit_text(&text, emit)?;
-            }
-            if finish.is_some() {
+            data_start = 0;
+            if finished {
                 return Ok(());
             }
         }
     }
+}
+
+fn emit_event(
+    event: Event<'_>,
+    text_bytes: &mut usize,
+    emit: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<bool> {
+    ensure!(
+        event.error.is_none(),
+        "Provider chat stream returned an error"
+    );
+    let Some(choice) = event.choices.and_then(|choices| {
+        choices
+            .into_iter()
+            .find(|choice| choice.index.unwrap_or(0) == 0)
+    }) else {
+        return Ok(false);
+    };
+    let finish = choice
+        .finish_reason
+        .as_ref()
+        .map(|reason| reason.0.as_ref());
+    ensure!(
+        finish != Some("error"),
+        "Provider chat stream returned an error"
+    );
+    if let Some(Text(text)) = choice.delta.and_then(|delta| delta.content) {
+        *text_bytes += text.len();
+        ensure!(
+            *text_bytes <= MAX_CHAT_BYTES,
+            "Provider answer exceeds size limit"
+        );
+        emit_text(&text, emit)?;
+    }
+    Ok(finish.is_some())
 }
 
 pub(super) fn emit_text(mut text: &str, emit: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
@@ -176,5 +210,41 @@ mod tests {
         })
         .unwrap();
         assert_eq!(text, "А🌙");
+    }
+
+    #[test]
+    fn plain_event_text_is_borrowed_until_emission() {
+        let data = r#"{"choices":[{"finish_reason":"stop","delta":{"content":"Готово"}}]}"#;
+        json_codec::with_decoder(data, |decoder| {
+            let event: Event<'_> = decoder.decode().unwrap();
+            let choice = event.choices.unwrap().pop().unwrap();
+            assert!(matches!(
+                choice.finish_reason.unwrap().0,
+                Cow::Borrowed("stop")
+            ));
+            assert!(matches!(
+                choice.delta.unwrap().content.unwrap().0,
+                Cow::Borrowed("Готово")
+            ));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn joins_multiline_events_and_reuses_the_buffer_for_the_next_event() {
+        let stream = concat!(
+            "data: {\r\n",
+            "data:\r\n",
+            "data: \"choices\":[{\"delta\":{\"content\":\"first\"}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut chunks = Vec::new();
+        read(stream.as_bytes(), &mut |chunk| {
+            chunks.push(chunk.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(chunks, ["first", "second"]);
     }
 }

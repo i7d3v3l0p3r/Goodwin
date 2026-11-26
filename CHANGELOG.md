@@ -4,6 +4,7 @@
 
 ### English
 
+- Streaming chat uses less temporary memory when decoding provider responses.
 - ESP32-S3 restores interrupted WASM plugin data writes before the plugin starts, including files accessed through the plugin storage API.
 - The panel can export diagnostic counters and latencies as JSON. The export contains numeric metrics only.
 - An open panel refreshes device capabilities after reconnecting and while it stays open. ESP32-S3 clients can read a completed wake model operation more than once.
@@ -24,6 +25,7 @@
 
 ### Русский
 
+- Потоковый чат использует меньше временной памяти при разборе ответов провайдера.
 - ESP32-S3 восстанавливает файлы после прерванной записи до запуска WASM-плагина. Это касается и файлов, доступных через API хранилища плагинов.
 - Из панели можно скачать счётчики и задержки в формате JSON. В выгрузку входят только числовые показатели.
 - Открытая панель обновляет список возможностей устройства после переподключения и во время работы. На ESP32-S3 результат установки модели активации можно запросить повторно.

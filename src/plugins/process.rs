@@ -127,6 +127,11 @@ impl CallLimits {
         response: FRAME_LIMIT,
         timeout: CALL_TIMEOUT,
     };
+    const MODELS: Self = Self {
+        request: FRAME_LIMIT,
+        response: 512 * 1024,
+        timeout: Duration::from_secs(5),
+    };
 
     fn provider(capability: Capability) -> Self {
         let (request, response) = match capability {
@@ -431,11 +436,7 @@ impl Process {
             .call_with_limits(
                 MODELS_METHOD,
                 to_raw_value(&ModelsRequest { capability })?,
-                CallLimits {
-                    request: FRAME_LIMIT,
-                    response: 512 * 1024,
-                    timeout: Duration::from_secs(5),
-                },
+                CallLimits::MODELS,
             )
             .await?;
         Ok(goodwin_json::from_str(reply.get())?)

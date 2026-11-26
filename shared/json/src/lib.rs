@@ -9,7 +9,7 @@ extern crate std;
 use alloc::{string::String, vec::Vec};
 use core::fmt;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json_core::de;
 
 pub mod string_map;
@@ -84,6 +84,15 @@ pub fn from_slice<T: DeserializeOwned>(input: &[u8]) -> Result<T, DecodeError> {
 }
 
 pub fn from_str<T: DeserializeOwned>(input: &str) -> Result<T, DecodeError> {
+    with_decoder(input, |decoder| decoder.decode())?
+}
+
+/// Use a validated JSON document for a scoped decode that can borrow strings.
+/// The result must own any data it keeps after the callback returns.
+pub fn with_decoder<R>(
+    input: &str,
+    visit: impl for<'input> FnOnce(Decoder<'input>) -> R,
+) -> Result<R, DecodeError> {
     // The core decoder skips unknown scalar fields without validating their
     // syntax and has no nesting limit of its own.
     let strings = syntax::validate(input.as_bytes()).ok_or(DecodeError::Syntax)?;
@@ -96,26 +105,36 @@ pub fn from_str<T: DeserializeOwned>(input: &str) -> Result<T, DecodeError> {
     } else {
         input.as_bytes()
     };
-    decode(input, strings.escaped)
+    Ok(visit(Decoder {
+        input,
+        escaped: strings.escaped,
+    }))
 }
 
-fn decode<T: DeserializeOwned>(input: &[u8], escaped: usize) -> Result<T, DecodeError> {
-    if escaped == 0 {
-        return serde_json_core::from_slice(input)
+pub struct Decoder<'input> {
+    input: &'input [u8],
+    escaped: usize,
+}
+
+impl<'input> Decoder<'input> {
+    pub fn decode<T: Deserialize<'input>>(self) -> Result<T, DecodeError> {
+        if self.escaped == 0 {
+            return serde_json_core::from_slice(self.input)
+                .map(|(value, _)| value)
+                .map_err(DecodeError::Data);
+        }
+        let mut scratch = [0; 128];
+        let mut extended = Vec::new();
+        let buffer = if self.escaped <= scratch.len() {
+            &mut scratch[..self.escaped]
+        } else {
+            extended.resize(self.escaped, 0);
+            &mut extended
+        };
+        serde_json_core::from_slice_escaped(self.input, buffer)
             .map(|(value, _)| value)
-            .map_err(DecodeError::Data);
+            .map_err(DecodeError::Data)
     }
-    let mut scratch = [0; 128];
-    let mut extended = Vec::new();
-    let buffer = if escaped <= scratch.len() {
-        &mut scratch[..escaped]
-    } else {
-        extended.resize(escaped, 0);
-        &mut extended
-    };
-    serde_json_core::from_slice_escaped(input, buffer)
-        .map(|(value, _)| value)
-        .map_err(DecodeError::Data)
 }
 
 fn join_surrogate_pairs(mut input: &[u8], bytes_saved: usize) -> Vec<u8> {
