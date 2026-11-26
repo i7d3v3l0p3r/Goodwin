@@ -35,6 +35,18 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
             let kind = entry.file_type()?;
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
+            if !kind.is_dir() && (!kind.is_file() || !name.starts_with('.')) {
+                continue;
+            }
+            // FAT can expose short names in uppercase, although lookup is
+            // case-insensitive and the guest storage contract uses lowercase.
+            let lowercase;
+            let name = if name.as_bytes().iter().any(u8::is_ascii_uppercase) {
+                lowercase = name.to_ascii_lowercase();
+                &lowercase
+            } else {
+                name
+            };
             if kind.is_dir() && package::path(name) {
                 directories.push((entry.path(), depth - 1));
             } else if kind.is_file()
@@ -76,11 +88,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         recover(&data).unwrap();
-        let nested = data.join("nested");
+        let nested = data.join("NESTED");
         fs::create_dir_all(&nested).unwrap();
 
         // The old target was moved away, and the new data was never published.
-        fs::write(nested.join(".clip.bak"), b"previous").unwrap();
+        fs::write(nested.join(".CLIP.BAK"), b"previous").unwrap();
         fs::write(nested.join(".clip.new"), b"interrupted").unwrap();
 
         // Publication finished, but deletion of the previous data did not.
