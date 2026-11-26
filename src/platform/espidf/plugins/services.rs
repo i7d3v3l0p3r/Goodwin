@@ -19,7 +19,10 @@ use crate::{
     plugins::{
         ProviderConfig,
         package::{self, Manifest, WasmHttp},
-        store::quota::{Quota, file_size},
+        store::{
+            fat_files::sidecar,
+            quota::{Quota, file_size},
+        },
     },
     voice_core::VoiceRequest,
 };
@@ -321,14 +324,6 @@ pub(crate) fn save_json(path: &Path, value: &impl Serialize, limit: usize) -> Re
 pub(crate) fn save_json_bytes(path: &Path, bytes: &[u8], limit: usize) -> Result<()> {
     ensure!(bytes.len() <= limit, "Plugin JSON file is too large");
     replace_file(path, bytes)
-}
-
-fn sidecar(path: &Path, suffix: &str) -> Result<PathBuf> {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("Missing data filename")?;
-    Ok(path.with_file_name(format!(".{name}.{suffix}")))
 }
 
 fn remove_file(path: &Path) -> io::Result<()> {

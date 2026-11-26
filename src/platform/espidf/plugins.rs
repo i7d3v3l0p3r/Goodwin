@@ -748,6 +748,7 @@ impl Instance {
     fn open(manifest: &Manifest, root: &Path) -> Result<Self> {
         ensure!(manifest.is_wasm(), "ESP supports WASM plugin modules");
         let data = root.join("data");
+        crate::plugins::store::fat_files::recover(&data)?;
         if manifest.provider_connections {
             connections::Store::initialize(&manifest.id, &data)?;
         }

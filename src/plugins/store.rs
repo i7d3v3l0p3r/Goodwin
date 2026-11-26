@@ -7,6 +7,9 @@ use goodwin_error::{Context, Result, ensure};
 
 use super::{Failure, package};
 
+#[cfg(any(test, target_os = "espidf"))]
+pub(crate) mod fat_files;
+
 #[cfg(all(
     feature = "wasm-plugins",
     any(target_os = "linux", target_os = "espidf")
