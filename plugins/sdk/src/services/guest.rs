@@ -41,6 +41,13 @@ pub fn read_settings<T: DeserializeOwned>() -> Result<T> {
     Ok(serde_json::from_slice(&buffer[..used])?)
 }
 
+/// Maximum total size of guest data files, in bytes. Requires `wasmStorage`.
+pub fn storage_limit() -> Result<u64> {
+    let mut output = [0; 20];
+    let used = call(Request::StorageLimit, &[], &mut output)?;
+    Ok(crate::json_codec::from_slice(&output[..used])?)
+}
+
 pub fn http_read(buffer: &mut [u8]) -> io::Result<usize> {
     call(
         Request::HttpRead {

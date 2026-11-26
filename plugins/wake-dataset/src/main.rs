@@ -50,7 +50,7 @@ struct Dataset {
 
 impl Dataset {
     fn open(root: &Path) -> Result<Self> {
-        let mut store = Store::open(&root.join("clips"))?;
+        let mut store = Store::open(&root.join("clips"), files::storage_limit())?;
         let settings_path = root.join("capture.json");
         let bytes = files::read(&settings_path, 0, 8192, true)?;
         let settings: CaptureSettings = if bytes.is_empty() {
@@ -66,7 +66,7 @@ impl Dataset {
             (1..=MAX_STORAGE_MIB).contains(&settings.storage_mib),
             "Invalid wake dataset storage limit"
         );
-        store.set_storage_mib(settings.storage_mib);
+        store.set_storage_mib(settings.storage_mib, bytes.len());
         Ok(Self {
             store,
             collector: Collector::default(),
@@ -94,6 +94,8 @@ impl Dataset {
             "storageFailed": self.storage_failed,
             "storageFull": self.store.full(),
             "storageMiB": self.settings.storage_mib,
+            "maxStorageMiB": self.store.max_storage_mib(),
+            "storageLimitBytes": self.store.byte_limit(),
             "usedBytes": self.store.used_bytes,
             "limit": LIMIT,
             "minimumScore": self.settings.minimum_score,
@@ -171,7 +173,7 @@ impl Dataset {
                 let Some(limit) = value
                     .as_u64()
                     .and_then(|limit| usize::try_from(limit).ok())
-                    .filter(|limit| (1..=MAX_STORAGE_MIB).contains(limit))
+                    .filter(|limit| (1..=self.store.max_storage_mib()).contains(limit))
                 else {
                     return Ok(invalid());
                 };
@@ -183,14 +185,9 @@ impl Dataset {
             minimum_score,
             storage_mib,
         };
-        files::write(
-            &self.settings_path,
-            &goodwin_plugin::json_codec::to_vec(&settings)?,
-            true,
-        )?;
-        if storage_mib != self.settings.storage_mib {
-            self.store.set_storage_mib(storage_mib);
-        }
+        let encoded = goodwin_plugin::json_codec::to_vec(&settings)?;
+        files::write(&self.settings_path, &encoded, true)?;
+        self.store.set_storage_mib(storage_mib, encoded.len());
         self.settings = settings;
         self.record_result(Ok(()))?;
         Ok(HttpResponse::empty(204))
@@ -599,6 +596,7 @@ mod tests {
         .unwrap();
         let mut collector = dataset(dir.path());
         assert_eq!(collector.status()["storageMiB"], DEFAULT_STORAGE_MIB);
+        assert_eq!(collector.status()["maxStorageMiB"], MAX_STORAGE_MIB);
         assert_eq!(
             request(
                 &mut collector,
@@ -619,6 +617,7 @@ mod tests {
         );
         let reopened = dataset(dir.path());
         assert_eq!(reopened.status()["storageMiB"], 6);
+        assert_eq!(reopened.status()["storageLimitBytes"], 6 * store::MIB);
         assert_eq!(reopened.status()["minimumScore"], 0.42);
     }
 }

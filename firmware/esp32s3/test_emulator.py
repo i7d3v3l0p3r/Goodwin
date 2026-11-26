@@ -490,9 +490,20 @@ class Panel:
     def start_dataset(self, path):
         self.request("/api/plugin-packages", "POST", path.read_bytes(), 204, timeout=90)
         route = "/api/plugins/wake-dataset"
-        assert not self.request(f"{route}/clips")["clips"]
+        page = self.request(f"{route}/clips")
+        assert not page["clips"]
+        assert page["status"]["storageMiB"] == 4
+        assert page["status"]["maxStorageMiB"] == 2
+        assert page["status"]["storageLimitBytes"] == 2 * 1024 * 1024
+        self.request(f"{route}/capture-settings", "PUT", {"storageMiB": 3}, 400)
         self.request(f"{route}/capture-settings", "PUT", {"minimumScore": 0.15}, 204)
-        assert self.request(f"{route}/capture", "PUT", {"enabled": True})["collecting"]
+        status = self.request(f"{route}/capture", "PUT", {"enabled": True})
+        assert status["collecting"] and status["storageMiB"] == 4
+        assert 2 * 1024 * 1024 - 8192 < status["storageLimitBytes"] < 2 * 1024 * 1024
+        self.request(f"{route}/capture-settings", "PUT", {"storageMiB": 1}, 204)
+        status = self.request(f"{route}/clips")["status"]
+        assert status["collecting"] and status["storageMiB"] == 1
+        assert status["storageLimitBytes"] == 1024 * 1024
         self.print_resources("with Wake-word dataset installed")
 
     def stop_dataset(self, expected_model):
@@ -505,6 +516,9 @@ class Panel:
         route = "/api/plugins/wake-dataset"
         page = self.request(f"{route}/clips")
         assert page["clips"], page
+        assert page["status"]["storageMiB"] == 1
+        assert page["status"]["maxStorageMiB"] == 2
+        assert page["status"]["storageLimitBytes"] == 1024 * 1024
         clip = max(page["clips"], key=lambda row: row["peak"])
         assert clip["info"]["model"]["id"] == expected_model and clip["peak"] >= 0.15
         assert clip["info"]["gainApplied"] is True

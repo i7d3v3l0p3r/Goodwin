@@ -27,7 +27,7 @@
 - ESP32-S3 can process due timers while waiting for a voice provider's response.
 - Mini 3 tests the installed wake model with the incoming binary before replacing the service. On Stations with `flock`, the desktop installer recovers interrupted installations before selecting a wake model for the next attempt, even if the interruption occurs before the journal is created.
 - Cancelling streamed speech lets native plugins finish the RPC briefly, then restarts them if the stream stays open.
-- The wake-word dataset has a configurable storage limit and displays the space used. Lowering the limit preserves existing recordings.
+- The wake-word dataset has a configurable storage limit and displays the space used. The panel respects the storage cap on ESP32-S3. Lowering the limit preserves existing recordings.
 - The panel reuses cached gzip assets when their contents match the device's current build.
 
 ### Русский
@@ -55,7 +55,7 @@
 - ESP32-S3 может обрабатывать таймеры, пока ждёт ответа голосового провайдера.
 - Мини 3 проверяет установленную модель активации новой сборкой перед заменой службы. На Станциях с `flock` установщик обрабатывает прерывание до создания журнала и восстанавливает установку до выбора модели для следующей попытки.
 - После отмены потоковой озвучки нативный плагин получает короткую паузу на завершение запроса. Если поток остаётся открыт, Goodwin перезапускает плагин.
-- В датасете слова активации можно задать лимит хранилища и видеть занятый объём. Уменьшение лимита сохраняет существующие записи.
+- В датасете слова активации можно задать лимит хранилища и видеть занятый объём. Панель учитывает предел хранилища ESP32-S3. Уменьшение лимита сохраняет существующие записи.
 - Панель повторно использует gzip-файлы из кэша, если их содержимое совпадает с текущей сборкой устройства.
 
 ## [0.4.0] - 2026-11-25

@@ -70,18 +70,20 @@ pub struct Store {
     pub clips: BTreeMap<u64, Clip>,
     last_id: u64,
     pub used_bytes: usize,
+    storage_limit: usize,
     byte_limit: usize,
     quota_blocked: bool,
 }
 
 impl Store {
-    pub fn open(root: &Path) -> Result<Self> {
+    pub fn open(root: &Path, storage_limit: usize) -> Result<Self> {
         let mut store = Self {
             root: root.into(),
             clips: BTreeMap::new(),
             last_id: 0,
             used_bytes: 0,
-            byte_limit: DEFAULT_STORAGE_MIB * MIB,
+            storage_limit,
+            byte_limit: (DEFAULT_STORAGE_MIB * MIB).min(storage_limit),
             quota_blocked: false,
         };
         for label in Label::ALL {
@@ -117,9 +119,20 @@ impl Store {
         Ok(store)
     }
 
-    pub fn set_storage_mib(&mut self, limit: usize) {
-        self.byte_limit = limit * MIB;
-        self.quota_blocked = false;
+    pub fn max_storage_mib(&self) -> usize {
+        (self.storage_limit / MIB).min(MAX_STORAGE_MIB)
+    }
+
+    pub fn byte_limit(&self) -> usize {
+        self.byte_limit
+    }
+
+    pub fn set_storage_mib(&mut self, limit: usize, settings_bytes: usize) {
+        let byte_limit = (limit * MIB).min(self.storage_limit.saturating_sub(settings_bytes));
+        if self.byte_limit != byte_limit {
+            self.byte_limit = byte_limit;
+            self.quota_blocked = false;
+        }
     }
 
     pub fn full(&self) -> bool {
@@ -238,7 +251,7 @@ mod tests {
         clip.extend_from_slice(&pcm);
         std::fs::write(pending.join("10.clip"), clip).unwrap();
 
-        let store = Store::open(dir.path()).unwrap();
+        let store = Store::open(dir.path(), usize::MAX).unwrap();
         let clip = &store.clips[&10];
         assert_eq!(clip.info.gain, 2.0);
         assert!(!clip.info.gain_applied);
@@ -252,8 +265,10 @@ mod tests {
     #[test]
     fn reaching_the_byte_limit_preserves_clips_and_deleting_one_frees_space() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path()).unwrap();
-        store.set_storage_mib(1);
+        let mut store = Store::open(dir.path(), MIB).unwrap();
+        store.set_storage_mib(4, 42);
+        assert_eq!(store.max_storage_mib(), 1);
+        assert_eq!(store.byte_limit(), MIB - 42);
         let pcm = vec![0; WINDOW_FRAMES * FRAME_SAMPLES * 2];
         for captured_at_ms in 1..=20 {
             store
@@ -279,7 +294,7 @@ mod tests {
         }
         assert!(store.full());
         assert_eq!(store.clips.len(), 12);
-        assert!(store.used_bytes <= MIB);
+        assert!(store.used_bytes <= MIB - 42);
         let before = store.used_bytes;
         store.label(1, Label::Positive).unwrap();
         assert_eq!(store.used_bytes, before);
@@ -287,7 +302,7 @@ mod tests {
         assert!(!store.full());
         assert!(store.used_bytes < before);
         assert_eq!(
-            Store::open(dir.path()).unwrap().used_bytes,
+            Store::open(dir.path(), MIB).unwrap().used_bytes,
             store.used_bytes
         );
     }

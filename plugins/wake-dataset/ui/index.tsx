@@ -9,12 +9,13 @@ const copy = {
     collecting: "Collection enabled", stopped: "Collection stopped",
     hint: "Recordings stay on this device. The minimum score applies to dataset collection.",
     minimum: "Minimum score to save a clip", minimumHint: "Use 0 to keep every clip.", save: "Save",
-    capacity: "Storage limit (MiB)", usage: (used: string, limit: number) => `${used} of ${limit} MiB used`,
+    capacity: "Storage limit (MiB)", usage: (used: string, limit: string) => `${used} of ${limit} MiB used`,
     pending: "Unlabelled", positive: "Wake word heard", negative: "No wake word",
     download: "Download labelled dataset", exporting: "Preparing archive…",
     load: "Loading recordings…", failed: "The request failed. Try again.",
     login: "Open the panel in password mode and sign in to access recordings.",
     full: "Storage limit reached. Increase the limit or delete recordings to resume collection.",
+    maxed: "Storage limit reached. Delete recordings to resume collection.",
     clipsFull: "Recording count limit reached. Delete recordings to resume collection.",
     storage: "Collection stopped because the plugin could not save a recording.",
     empty: "No recordings with this label.", previous: "Previous", next: "Next", filter: "Filter by label",
@@ -29,12 +30,13 @@ const copy = {
     collecting: "Сбор включён", stopped: "Сбор остановлен",
     hint: "Записи хранятся на устройстве. Минимальная оценка действует при сборе датасета.",
     minimum: "Минимальная оценка для записи", minimumHint: "Укажите 0, чтобы сохранять все фрагменты.", save: "Сохранить",
-    capacity: "Лимит хранения (МиБ)", usage: (used: string, limit: number) => `Занято ${used} из ${limit} МиБ`,
+    capacity: "Лимит хранения (МиБ)", usage: (used: string, limit: string) => `Занято ${used} из ${limit} МиБ`,
     pending: "Без разметки", positive: "Слово прозвучало", negative: "Слова не было",
     download: "Скачать размеченный датасет", exporting: "Готовим архив…",
     load: "Загружаем записи…", failed: "Не удалось выполнить запрос. Попробуйте ещё раз.",
     login: "Для доступа к записям включите режим с паролем и войдите в панель.",
     full: "Достигнут лимит хранения. Увеличьте его или удалите часть записей, чтобы продолжить сбор.",
+    maxed: "Достигнут лимит хранения. Удалите часть записей, чтобы продолжить сбор.",
     clipsFull: "Достигнут лимит количества записей. Удалите часть записей, чтобы продолжить сбор.",
     storage: "Сбор остановлен. Плагину не удалось сохранить запись.",
     empty: "Записей с такой меткой нет.", previous: "Назад", next: "Вперёд", filter: "Фильтр по метке",
@@ -71,6 +73,8 @@ interface Status {
   storageFailed: boolean;
   storageFull: boolean;
   storageMiB: number;
+  maxStorageMiB: number;
+  storageLimitBytes: number;
   usedBytes: number;
   limit: number;
   minimumScore: number;
@@ -118,13 +122,19 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
     return limit !== undefined && total() >= limit;
   };
   const full = () => status()?.storageFull || clipsFull();
+  const storageMiB = (state: Status) => Math.min(state.storageMiB, state.maxStorageMiB);
+  const canIncreaseStorage = () => {
+    const state = status();
+    return state && storageMiB(state) < state.maxStorageMiB;
+  };
   const minimumChanged = () => {
     const draft = minimumDraft();
     return draft !== undefined && draft !== "" && Number(draft) !== status()?.minimumScore;
   };
   const capacityChanged = () => {
     const draft = capacityDraft();
-    return draft !== undefined && draft !== "" && Number(draft) !== status()?.storageMiB;
+    const state = status();
+    return state !== undefined && draft !== undefined && draft !== "" && Number(draft) !== storageMiB(state);
   };
   const settingsChanged = () => minimumChanged() || capacityChanged();
   const unregisterDraft = protectDraft(settingsChanged);
@@ -328,16 +338,16 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
             </label>
             <label class="gw-field">
               <span class="gw-field-label">{text.capacity}</span>
-              <input class="gw-control" type="number" inputmode="numeric" min="1" max="128" step="1"
-                required disabled={busy()} value={capacityDraft() ?? state().storageMiB}
+              <input class="gw-control" type="number" inputmode="numeric" min="1" max={state().maxStorageMiB} step="1"
+                required disabled={busy()} value={capacityDraft() ?? storageMiB(state())}
                 onInput={event => setCapacityDraft(event.currentTarget.value)} />
             </label>
             <button type="submit" class="gw-button" disabled={busy() || !settingsChanged()}>{text.save}</button>
             <p id="wake-dataset-minimum-hint" class="gw-field-hint">{text.minimumHint}</p>
-            <p class="gw-field-hint">{text.usage(decimal.format(state().usedBytes / (1024 * 1024)), state().storageMiB)}</p>
+            <p class="gw-field-hint">{text.usage(decimal.format(state().usedBytes / (1024 * 1024)), decimal.format(state().storageLimitBytes / (1024 * 1024)))}</p>
           </form>}
         </Show>
-        <Show when={full()}><InlineError>{clipsFull() ? text.clipsFull : text.full}</InlineError></Show>
+        <Show when={full()}><InlineError>{clipsFull() ? text.clipsFull : canIncreaseStorage() ? text.full : text.maxed}</InlineError></Show>
         <Show when={status()?.storageFailed}><InlineError>{text.storage}</InlineError></Show>
       </gw-card>
       <div class="wake-dataset__toolbar">

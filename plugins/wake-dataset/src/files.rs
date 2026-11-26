@@ -8,6 +8,10 @@ mod platform {
 
     use goodwin_error::{Context, Result};
 
+    pub fn storage_limit() -> usize {
+        usize::MAX
+    }
+
     pub fn list(path: &Path) -> Result<Vec<String>> {
         fs::create_dir_all(path)?;
         let mut names = Vec::new();
@@ -70,6 +74,14 @@ mod platform {
 
     use goodwin_error::Result;
     use goodwin_plugin::services::{Request, guest};
+
+    pub fn storage_limit() -> usize {
+        // Older hosts do not report a limit. They still enforce it on writes.
+        guest::storage_limit()
+            .ok()
+            .and_then(|limit| usize::try_from(limit).ok())
+            .unwrap_or(usize::MAX)
+    }
 
     pub fn list(path: &Path) -> Result<Vec<String>> {
         let mut data = vec![0; 128 * 1024];

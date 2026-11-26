@@ -17,9 +17,9 @@ pub(crate) mod fat_files;
 pub(crate) mod quota;
 
 #[cfg(target_os = "espidf")]
-const DATA_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const DATA_BYTES: u64 = 2 * 1024 * 1024;
 #[cfg(not(target_os = "espidf"))]
-const DATA_BYTES: u64 = 132 * 1024 * 1024;
+pub(crate) const DATA_BYTES: u64 = 132 * 1024 * 1024;
 const DATA_ENTRIES: usize = 8192;
 const DATA_DEPTH: usize = 16;
 

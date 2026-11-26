@@ -20,6 +20,7 @@ use crate::{
         ProviderConfig,
         package::{self, Manifest, WasmHttp},
         store::{
+            DATA_BYTES,
             fat_files::sidecar,
             quota::{Quota, file_size},
         },
@@ -203,6 +204,10 @@ impl HostServices for Host {
                     .send(goodwin_json::from_slice::<SpeechAudio>(input)?)
                     .context("Speech stream closed")?;
                 Ok(Vec::new())
+            }
+            Request::StorageLimit => {
+                ensure!(self.storage, "Plugin does not declare storage access");
+                Ok(goodwin_json::to_vec(&DATA_BYTES)?)
             }
             Request::List { path } => {
                 let directory = match fs::read_dir(self.path(&path)?) {

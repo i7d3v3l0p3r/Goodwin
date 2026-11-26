@@ -16,6 +16,7 @@ pub enum Request {
     HttpClose,
     Chat,
     Speech,
+    StorageLimit,
     List {
         path: String,
     },
@@ -48,6 +49,7 @@ enum Operation {
     HttpClose,
     Chat,
     Speech,
+    StorageLimit,
     List,
     Read,
     Write,
@@ -84,6 +86,7 @@ impl TryFrom<RequestWire> for Request {
             Operation::HttpClose => Self::HttpClose,
             Operation::Chat => Self::Chat,
             Operation::Speech => Self::Speech,
+            Operation::StorageLimit => Self::StorageLimit,
             Operation::List => Self::List {
                 path: wire.path.ok_or("Missing storage path")?,
             },
@@ -135,6 +138,16 @@ pub struct HttpResponse {
 mod tests {
     use super::*;
     use crate::json_codec;
+
+    #[test]
+    fn storage_limit_is_an_additive_storage_request() {
+        let wire = br#"{"operation":"storage_limit"}"#;
+        assert!(matches!(
+            json_codec::from_slice(wire).unwrap(),
+            Request::StorageLimit
+        ));
+        assert_eq!(json_codec::to_vec(&Request::StorageLimit).unwrap(), wire);
+    }
 
     #[test]
     fn reads_the_existing_storage_wire_format_with_operation_last() {

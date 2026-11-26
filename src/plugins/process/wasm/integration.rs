@@ -709,6 +709,10 @@ async fn wasm_dataset_captures_audio_and_reopens_saved_clips() {
         .unwrap();
     let id = list["body"]["clips"][0]["id"].as_u64().unwrap();
     assert_eq!(list["body"]["clips"][0]["info"]["gainApplied"], true);
+    let status = &list["body"]["status"];
+    assert_eq!(status["storageMiB"], 4);
+    assert_eq!(status["maxStorageMiB"], 128);
+    assert_eq!(status["storageLimitBytes"], 4 * 1024 * 1024);
     dataset
         .call(
             "http",

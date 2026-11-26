@@ -24,7 +24,10 @@ use crate::{
     plugins::{
         ProviderConfig,
         package::WasmHttp,
-        store::quota::{Quota, file_size},
+        store::{
+            DATA_BYTES,
+            quota::{Quota, file_size},
+        },
     },
 };
 
@@ -166,6 +169,13 @@ impl HostServices for Host {
                 Ok(Vec::new())
             }
             Request::List { path } => self.list(&path),
+            Request::StorageLimit => {
+                ensure!(
+                    self.storage.is_some(),
+                    "Plugin does not declare storage access"
+                );
+                Ok(goodwin_json::to_vec(&DATA_BYTES)?)
+            }
             Request::Read {
                 path,
                 offset,
