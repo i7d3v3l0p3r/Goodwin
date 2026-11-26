@@ -118,7 +118,9 @@ EOF
         core) set -- goodwin ;;
     esac
     sha256sum "$@" > SHA256SUMS
-    tar -czf "$upload/payload.tar.gz" "$@" SHA256SUMS
+    tar -cf "$upload/payload.tar" "$@" SHA256SUMS
+    gzip -c "$upload/payload.tar" > "$upload/payload.tar.gz"
+    rm "$upload/payload.tar"
     cd "$TEST_ROOT"
 }
 
@@ -137,13 +139,17 @@ install_init=$upload/init.sh
 upload="$TEST_ROOT/tmp/.goodwin-upload.test02"
 mkdir "$upload"
 cp "$install_init" "$upload/init.sh"
-models_inode=$(stat -c %i "$data/wake-models")
+inode() {
+    entry=$(ls -di "$1")
+    printf '%s\n' "$entry" | awk '{print $1}'
+}
+models_inode=$(inode "$data/wake-models")
 package catalog-keep
 sh "$TEST_ROOT/install-test.sh" "$upload" keep | tee "$TEST_ROOT/update.out"
 grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/update.out"
 grep 'GOODWIN_INSTALL_VERSION catalog-keep' "$TEST_ROOT/update.out"
 test "$(cat "$TEST_ROOT/running")" = catalog-keep
-test "$(stat -c %i "$data/wake-models")" = "$models_inode"
+test "$(inode "$data/wake-models")" = "$models_inode"
 test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
 test ! -e "$upload/payload"
 for stage in "$TEST_ROOT/data/opt"/.goodwin-stage.*; do test ! -e "$stage"; done
@@ -198,7 +204,7 @@ test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
 hook=$TEST_ROOT/data/init.d/S96goodwin
 web_upload="$TEST_ROOT/data/opt/.goodwin-upload.web001"
 mkdir "$web_upload"
-hook_inode=$(stat -c %i "$hook")
+hook_inode=$(inode "$hook")
 package web-release '' core
 cp "$TEST_ROOT/payload/goodwin" "$web_upload/goodwin"
 chmod 755 "$web_upload/goodwin"
@@ -212,7 +218,7 @@ cp "$TEST_ROOT/payload/goodwin" "$web_upload/goodwin"
 chmod 755 "$web_upload/goodwin"
 sh "$TEST_ROOT/install-test.sh" "$web_upload" core recovered
 test "$(cat "$TEST_ROOT/running")" = web-release
-test "$(stat -c %i "$hook")" = "$hook_inode"
+test "$(inode "$hook")" = "$hook_inode"
 test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
 
 package broken '' core
@@ -224,7 +230,7 @@ if sh "$TEST_ROOT/install-test.sh" "$web_upload" core web-release > "$TEST_ROOT/
 fi
 grep 'GOODWIN_CORE_ROLLED_BACK' "$TEST_ROOT/failed-web.out"
 test "$(cat "$TEST_ROOT/running")" = web-release
-test "$(stat -c %i "$hook")" = "$hook_inode"
+test "$(inode "$hook")" = "$hook_inode"
 test "$(cat "$data/config.json")" = retained
 test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
 
