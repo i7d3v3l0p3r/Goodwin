@@ -1012,6 +1012,20 @@ def run_emulator(args, flash, board, output, server):
     interrupted = False
     provision_steps = 0
     playback_events = 0
+    wifi_trial = False
+    wifi_joining = False
+    alarm_during_join = False
+
+    def activate_voice():
+        if args.wake_test:
+            panel.start_wake_test()
+        elif args.wake_audio:
+            panel.start_wake()
+        elif args.manual_test:
+            panel.request("/api/test", "POST", {"mode": "manual"}, 202)
+        else:
+            control(port, "part button input press after 100", "part button input release after 1200")
+
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, encoding="utf-8", errors="replace") as process:
         lines = Queue()
@@ -1031,6 +1045,10 @@ def run_emulator(args, flash, board, output, server):
                 if "Capabilities " in line:
                     capabilities = json.loads(line.split("Capabilities ", 1)[1])
                 psram_ready |= "PSRAM 8388608 bytes" in line
+                if wifi_trial and "Applying Wi-Fi settings" in line:
+                    wifi_joining = True
+                if wifi_joining and "Played plugin timer alarm" in line:
+                    alarm_during_join = True
                 if args.interrupt_update and played and not interrupted and f"Loaded app from partition at offset {ota_1:#x}" in line:
                     control(port, "reset")
                     interrupted = True
@@ -1072,15 +1090,21 @@ def run_emulator(args, flash, board, output, server):
                         if args.voice_lifecycle:
                             panel.verify_plugin_update(args.provider_package)
                             panel.exercise_voice_lifecycle(port, server)
-                        if args.wake_test:
-                            panel.start_wake_test()
-                        elif args.wake_audio:
-                            panel.start_wake()
-                        elif args.manual_test:
-                            panel.request("/api/test", "POST", {"mode": "manual"}, 202)
-                        else:
-                            control(port, "part button input press after 100", "part button input release after 1200")
                         started = True
+                        if args.wifi_during_alarm:
+                            panel.request("/api/plugins/timers/timers", "POST",
+                                          {"seconds": 2, "name": "Wi-Fi retry alarm"}, 201)
+                            panel.request("/api/network", "PUT", {"ssid": "myssid", "password": "wrong-pass"}, 202)
+                            wifi_trial = True
+                        else:
+                            activate_voice()
+                    elif wifi_trial:
+                        assert wifi_joining and alarm_during_join, "Wi-Fi reconfiguration blocked the timer audio"
+                        wifi = panel.wait_network("connected")
+                        assert wifi["ssid"] == "myssid" and wifi["error"] == "wifi_connect_failed", wifi
+                        wifi_trial = wifi_joining = False
+                        print("Verified timer audio during Wi-Fi reconfiguration and restored the previous network")
+                        activate_voice()
                     elif played and not persisted:
                         panel.verify_after_restart(
                             bool(args.wake_audio and not args.wake_test), args.stream_speech, args.panel_settings
@@ -1171,6 +1195,7 @@ def main():
     activation.add_argument("--wake-audio", type=Path, help="Use a 16 kHz mono PCM WAV containing the wake word")
     activation.add_argument("--manual-test", action="store_true", help="Start the microphone check from the panel")
     parser.add_argument("--provision-wifi", action="store_true", help="Start with blank NVS and verify Wi-Fi setup")
+    parser.add_argument("--wifi-during-alarm", action="store_true", help="Verify timer audio while changing Wi-Fi")
     parser.add_argument("--update-image", type=Path, help="Verify an OTA install and reboot using this app.bin")
     parser.add_argument("--interrupt-update", action="store_true", help="Reset before OTA verification and check rollback")
     parser.add_argument("--stream-speech", action="store_true", help="Verify playback starts before the whole audio response arrives")
@@ -1191,6 +1216,8 @@ def main():
         parser.error("--wake-test requires --wake-audio")
     if args.timer_voice_tool and not args.timers_package:
         parser.error("--timer-voice-tool requires --timers-package")
+    if args.wifi_during_alarm and not args.timers_package:
+        parser.error("--wifi-during-alarm requires --timers-package")
     if args.voice_lifecycle and (not args.provider_package or not args.stream_speech or args.manual_test
                                  or args.wake_audio or args.timer_voice_tool):
         parser.error("--voice-lifecycle requires a streaming WASM provider and push-to-talk")

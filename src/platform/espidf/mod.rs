@@ -19,11 +19,9 @@ mod wake;
 mod wake_models;
 mod worker;
 
-use std::{
-    net::Ipv4Addr,
-    sync::{Arc, atomic::Ordering, mpsc},
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, atomic::Ordering, mpsc};
+#[cfg(feature = "wake-tflite")]
+use std::time::{Duration, Instant};
 
 use esp_idf_svc::{
     hal::{delay::FreeRtos, peripherals::Peripherals},
@@ -43,7 +41,7 @@ use crate::{
 
 use self::{
     audio::{Audio, Recording},
-    network::{Network, WifiCredentials, WifiStatus},
+    network::Network,
     panel::{Command, Panel},
     settings::Store,
     worker::{VoiceJob, Worker},
@@ -72,12 +70,12 @@ fn run_device() -> Result<()> {
     let peripherals = Peripherals::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
     let store = Store::open(nvs.clone())?;
-    let mut wifi = store.wifi().unwrap_or_else(|error| {
+    let wifi = store.wifi().unwrap_or_else(|error| {
         log::warn!("Read Wi-Fi settings: {error:#}");
         None
     });
     let mut audio = model::audio(peripherals.i2s0, peripherals.pins)?;
-    let mut network = Network::new(peripherals.modem, nvs)?;
+    let network = Network::new(peripherals.modem, nvs)?;
     #[cfg(any(feature = "wasm-plugins", feature = "wake-tflite"))]
     let storage_ready = match storage::mount() {
         Ok(()) => true,
@@ -124,23 +122,16 @@ fn run_device() -> Result<()> {
             Err(error) => log::warn!("Plugin storage unavailable: {error:#}"),
         }
     }
-    let status = match wifi.as_ref() {
-        Some(credentials) => restore_wifi(&mut network, Some(credentials), None)?,
-        None => network.setup(None)?,
-    };
-    *panel.wifi.lock().expect("Wi-Fi status") = status;
+    #[cfg(any(feature = "wasm-plugins", feature = "wake-tflite"))]
+    let prewarm_clock = storage_ready && !cfg!(feature = "esp-emulator");
+    #[cfg(not(any(feature = "wasm-plugins", feature = "wake-tflite")))]
+    let prewarm_clock = false;
+    network.start(wifi, panel.clone(), prewarm_clock)?;
     let healthy = !cfg!(feature = "wake-tflite") || wake_loaded;
     #[cfg(feature = "wasm-plugins")]
     let healthy = healthy && (panel.plugins.get().is_some() || !storage::has_partition());
     let worker = Worker::start(panel.clone())?;
     firmware::verify_boot(healthy)?;
-    let mut retry_at = Instant::now() + Duration::from_secs(5);
-    let mut clock_retry_at = Instant::now();
-    #[cfg(any(feature = "wasm-plugins", feature = "wake-tflite"))]
-    let prewarm_clock = storage_ready && !cfg!(feature = "esp-emulator");
-    #[cfg(not(any(feature = "wasm-plugins", feature = "wake-tflite")))]
-    let prewarm_clock = false;
-    let mut failures = 0;
     #[cfg(feature = "wake-tflite")]
     let mut wake_test = None;
 
@@ -172,8 +163,9 @@ fn run_device() -> Result<()> {
                 let _ = audio.set_receiving(false);
                 if let Some(alarm) = alarm {
                     let played = audio.play_timer_signal();
-                    if let Err(error) = &played {
-                        log::warn!("Play plugin timer signal: {error:#}");
+                    match &played {
+                        Ok(()) => log::info!("Played plugin timer alarm"),
+                        Err(error) => log::warn!("Play plugin timer signal: {error:#}"),
                     }
                     plugins.finish_timer_alarm(alarm, played.is_ok());
                 }
@@ -227,64 +219,6 @@ fn run_device() -> Result<()> {
                     panel.finish_wake_model_change();
                     let _ = reply.send(result);
                 }
-                Command::Wifi(next) => {
-                    // Let the HTTP server send its acknowledgement before changing IP.
-                    FreeRtos::delay_ms(500);
-                    let status = match network.join(&next) {
-                        Ok(ip) if panel.save_wifi(&next).is_ok() => {
-                            let status = connected(&next, ip, None);
-                            wifi = Some(next);
-                            status
-                        }
-                        Ok(_) => restore_wifi(&mut network, wifi.as_ref(), Some("save_failed"))?,
-                        Err(error) => {
-                            log::warn!("New Wi-Fi network: {error:#}");
-                            restore_wifi(&mut network, wifi.as_ref(), Some("wifi_connect_failed"))?
-                        }
-                    };
-                    *panel.wifi.lock().expect("Wi-Fi status") = status;
-                    failures = 0;
-                    retry_at = Instant::now() + Duration::from_secs(5);
-                }
-            }
-        }
-        if let Some(credentials) = wifi.as_ref()
-            && !network.setup_active()
-            && Instant::now() >= retry_at
-        {
-            match network.connect() {
-                Ok(ip) => {
-                    let mut status = panel.wifi.lock().expect("Wi-Fi status");
-                    if !matches!(*status, WifiStatus::Connected { address, .. } if address == ip) {
-                        *status = connected(credentials, ip, None);
-                    }
-                    failures = 0;
-                }
-                Err(error) => {
-                    log::warn!("Waiting for Wi-Fi: {error:#}");
-                    failures += 1;
-                    if failures == 3 {
-                        let status = network.setup(Some("wifi_connect_failed"))?;
-                        *panel.wifi.lock().expect("Wi-Fi status") = status;
-                    } else {
-                        *panel.wifi.lock().expect("Wi-Fi status") = WifiStatus::Connecting;
-                    }
-                }
-            }
-            retry_at = Instant::now() + Duration::from_secs(5);
-        }
-        if !panel.clock_ready.load(Ordering::Acquire)
-            && (prewarm_clock || panel.clock_requested.load(Ordering::Acquire))
-            && panel.wifi_connected()
-        {
-            if Instant::now() >= clock_retry_at {
-                if let Err(error) = network.start_clock() {
-                    log::warn!("Start clock synchronization: {error:#}");
-                }
-                clock_retry_at = Instant::now() + Duration::from_secs(5);
-            }
-            if network.poll_clock() {
-                panel.clock_ready.store(true, Ordering::Release);
             }
         }
         if audio.button_pressed()
@@ -354,37 +288,6 @@ fn run_device() -> Result<()> {
         }
         FreeRtos::delay_ms(20);
     }
-}
-
-fn connected(
-    credentials: &WifiCredentials,
-    address: Ipv4Addr,
-    error: Option<&'static str>,
-) -> WifiStatus {
-    log::info!("Goodwin panel http://{address}/");
-    WifiStatus::Connected {
-        ssid: credentials.ssid.clone(),
-        address,
-        error,
-    }
-}
-
-fn restore_wifi(
-    network: &mut Network<'_>,
-    saved: Option<&WifiCredentials>,
-    error: Option<&'static str>,
-) -> Result<WifiStatus> {
-    let mut reason = error;
-    if let Some(credentials) = saved {
-        match network.join(credentials) {
-            Ok(ip) => return Ok(connected(credentials, ip, error)),
-            Err(error) => {
-                log::warn!("Saved Wi-Fi network: {error:#}");
-                reason = Some("wifi_connect_failed");
-            }
-        }
-    }
-    network.setup(reason)
 }
 
 fn start_voice(panel: &Panel, source: Source) -> Option<VoiceJob> {

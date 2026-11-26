@@ -1,4 +1,9 @@
-use std::net::Ipv4Addr;
+use std::{
+    net::Ipv4Addr,
+    sync::{Arc, atomic::Ordering},
+    thread,
+    time::{Duration, Instant},
+};
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -13,6 +18,10 @@ use esp_idf_svc::{
 };
 use goodwin_error::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+
+use super::panel::Panel;
+
+const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct WifiCredentials {
@@ -53,12 +62,175 @@ pub(super) enum WifiStatus {
     },
 }
 
+pub(super) struct WifiState {
+    pub status: WifiStatus,
+    pending: Option<(Instant, WifiCredentials)>,
+}
+
+impl WifiState {
+    pub fn new() -> Self {
+        Self {
+            status: WifiStatus::Connecting,
+            pending: None,
+        }
+    }
+
+    pub fn schedule(&mut self, next: WifiCredentials) -> bool {
+        if matches!(self.status, WifiStatus::Connecting) {
+            return false;
+        }
+        // Let the HTTP server send its acknowledgement before changing IP.
+        self.pending = Some((Instant::now() + Duration::from_millis(500), next));
+        self.status = WifiStatus::Connecting;
+        true
+    }
+
+    fn take_ready(&mut self) -> Option<WifiCredentials> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(at, _)| Instant::now() >= *at)
+        {
+            self.pending.take().map(|(_, credentials)| credentials)
+        } else {
+            None
+        }
+    }
+}
+
 pub(super) struct Network<'d> {
     wifi: BlockingWifi<EspWifi<'d>>,
     clock: Option<EspSntp<'static>>,
     clock_synchronized: bool,
     access_point: Option<WifiCredentials>,
     setup_active: bool,
+}
+
+impl Network<'static> {
+    pub(super) fn start(
+        mut self,
+        saved: Option<WifiCredentials>,
+        panel: Arc<Panel>,
+        prewarm_clock: bool,
+    ) -> Result<()> {
+        let status = self.restore(saved.as_ref(), None)?;
+        panel.wifi.lock().expect("Wi-Fi status").status = status;
+        thread::Builder::new()
+            .name("goodwin-wifi".into())
+            .stack_size(8 * 1024)
+            .spawn(move || self.run(saved, &panel, prewarm_clock))
+            .context("Start Goodwin Wi-Fi task")?;
+        Ok(())
+    }
+
+    fn run(mut self, mut saved: Option<WifiCredentials>, panel: &Panel, prewarm_clock: bool) {
+        let mut retry_at = Instant::now() + RETRY_INTERVAL;
+        let mut clock_retry_at = Instant::now();
+        let mut failures = 0;
+        while !panel.reboot.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(100));
+            if panel.firmware_busy() {
+                continue;
+            }
+            let change = panel.wifi.lock().expect("Wi-Fi status").take_ready();
+            if let Some(next) = change {
+                failures = 0;
+                match self.change(panel, &mut saved, next) {
+                    Ok(status) => panel.wifi.lock().expect("Wi-Fi status").status = status,
+                    Err(error) => log::warn!("Restore Wi-Fi setup: {error:#}"),
+                }
+                retry_at = Instant::now() + RETRY_INTERVAL;
+            } else if Instant::now() >= retry_at && !self.setup_active {
+                if let Err(error) = self.reconnect(panel, saved.as_ref(), &mut failures) {
+                    log::warn!("Retry Wi-Fi setup: {error:#}");
+                }
+                retry_at = Instant::now() + RETRY_INTERVAL;
+            }
+            if !panel.clock_ready.load(Ordering::Acquire)
+                && (prewarm_clock || panel.clock_requested.load(Ordering::Acquire))
+                && panel.wifi_connected()
+            {
+                if Instant::now() >= clock_retry_at {
+                    if let Err(error) = self.start_clock() {
+                        log::warn!("Start clock synchronization: {error:#}");
+                    }
+                    clock_retry_at = Instant::now() + RETRY_INTERVAL;
+                }
+                if self.poll_clock() {
+                    panel.clock_ready.store(true, Ordering::Release);
+                }
+            }
+        }
+    }
+
+    fn change(
+        &mut self,
+        panel: &Panel,
+        saved: &mut Option<WifiCredentials>,
+        next: WifiCredentials,
+    ) -> Result<WifiStatus> {
+        log::info!("Applying Wi-Fi settings");
+        let error = match self.join(&next) {
+            Ok(ip) if panel.save_wifi(&next).is_ok() => {
+                let status = connected(&next, ip, None);
+                *saved = Some(next);
+                return Ok(status);
+            }
+            Ok(_) => "save_failed",
+            Err(error) => {
+                log::warn!("New Wi-Fi network: {error:#}");
+                "wifi_connect_failed"
+            }
+        };
+        self.restore(saved.as_ref(), Some(error))
+    }
+
+    fn reconnect(
+        &mut self,
+        panel: &Panel,
+        saved: Option<&WifiCredentials>,
+        failures: &mut u8,
+    ) -> Result<()> {
+        {
+            let mut state = panel.wifi.lock().expect("Wi-Fi status");
+            if state.pending.is_some() {
+                return Ok(());
+            }
+            if let Some(credentials) = saved
+                && let Ok(true) = self.wifi.wifi().sta_netif().is_up()
+                && let Ok(true) = self.wifi.is_connected()
+                && let Ok(info) = self.wifi.wifi().sta_netif().get_ip_info()
+            {
+                if !matches!(state.status, WifiStatus::Connected { address, .. } if address == info.ip)
+                {
+                    state.status = connected(credentials, info.ip, None);
+                }
+                *failures = 0;
+                return Ok(());
+            }
+            state.status = WifiStatus::Connecting;
+        }
+        let status = if let Some(credentials) = saved.filter(|_| *failures < 3) {
+            match self.connect() {
+                Ok(ip) => {
+                    *failures = 0;
+                    connected(credentials, ip, None)
+                }
+                Err(error) => {
+                    log::warn!("Waiting for Wi-Fi: {error:#}");
+                    *failures = failures.saturating_add(1);
+                    if *failures < 3 {
+                        return Ok(());
+                    }
+                    self.setup(Some("wifi_connect_failed"))?
+                }
+            }
+        } else {
+            self.setup(Some("wifi_connect_failed"))?
+        };
+        panel.wifi.lock().expect("Wi-Fi status").status = status;
+        Ok(())
+    }
 }
 
 impl<'d> Network<'d> {
@@ -76,7 +248,25 @@ impl<'d> Network<'d> {
         })
     }
 
-    pub(super) fn join(&mut self, credentials: &WifiCredentials) -> Result<Ipv4Addr> {
+    fn restore(
+        &mut self,
+        saved: Option<&WifiCredentials>,
+        error: Option<&'static str>,
+    ) -> Result<WifiStatus> {
+        let mut reason = error;
+        if let Some(credentials) = saved {
+            match self.join(credentials) {
+                Ok(ip) => return Ok(connected(credentials, ip, error)),
+                Err(error) => {
+                    log::warn!("Saved Wi-Fi network: {error:#}");
+                    reason = Some("wifi_connect_failed");
+                }
+            }
+        }
+        self.setup(reason)
+    }
+
+    fn join(&mut self, credentials: &WifiCredentials) -> Result<Ipv4Addr> {
         let auth_method = if credentials.password.is_empty() {
             AuthMethod::None
         } else {
@@ -100,7 +290,7 @@ impl<'d> Network<'d> {
         self.connect()
     }
 
-    pub(super) fn setup(&mut self, error: Option<&'static str>) -> Result<WifiStatus> {
+    fn setup(&mut self, error: Option<&'static str>) -> Result<WifiStatus> {
         let access_point = match &self.access_point {
             Some(access_point) => access_point,
             None => {
@@ -131,12 +321,13 @@ impl<'d> Network<'d> {
             max_connections: 2,
             ..Default::default()
         });
+        self.setup_active = false;
         self.reconfigure(config)?;
-        self.setup_active = true;
         self.wifi
             .wait_netif_up()
             .context("Start Goodwin setup access point")?;
         let address = self.wifi.wifi().ap_netif().get_ip_info()?.ip;
+        self.setup_active = true;
         let password = &self
             .access_point
             .as_ref()
@@ -151,10 +342,6 @@ impl<'d> Network<'d> {
         })
     }
 
-    pub(super) fn setup_active(&self) -> bool {
-        self.setup_active
-    }
-
     fn reconfigure(&mut self, configuration: Configuration) -> Result<()> {
         if self.wifi.is_started()? {
             self.wifi.stop()?;
@@ -164,7 +351,7 @@ impl<'d> Network<'d> {
         Ok(())
     }
 
-    pub(super) fn connect(&mut self) -> Result<Ipv4Addr> {
+    fn connect(&mut self) -> Result<Ipv4Addr> {
         ensure!(!self.setup_active, "Wi-Fi setup is active");
         if !self.wifi.is_connected()? {
             self.wifi.connect().context("Connect to Wi-Fi")?;
@@ -172,10 +359,12 @@ impl<'d> Network<'d> {
         self.wifi
             .wait_netif_up()
             .context("Wait for an IP address")?;
-        Ok(self.wifi.wifi().sta_netif().get_ip_info()?.ip)
+        let address = self.wifi.wifi().sta_netif().get_ip_info()?.ip;
+        ensure!(!address.is_unspecified(), "Wi-Fi station has no IP address");
+        Ok(address)
     }
 
-    pub(super) fn start_clock(&mut self) -> Result<()> {
+    fn start_clock(&mut self) -> Result<()> {
         if self.clock.is_none() {
             let mut config = SntpConf::default();
             let servers = ["time.cloudflare.com", "time.google.com", "0.pool.ntp.org"];
@@ -187,7 +376,7 @@ impl<'d> Network<'d> {
         Ok(())
     }
 
-    pub(super) fn poll_clock(&mut self) -> bool {
+    fn poll_clock(&mut self) -> bool {
         if !self.clock_synchronized
             && self
                 .clock
@@ -198,5 +387,18 @@ impl<'d> Network<'d> {
             log::info!("Clock synchronized for HTTPS");
         }
         self.clock_synchronized
+    }
+}
+
+fn connected(
+    credentials: &WifiCredentials,
+    address: Ipv4Addr,
+    error: Option<&'static str>,
+) -> WifiStatus {
+    log::info!("Goodwin panel http://{address}/");
+    WifiStatus::Connected {
+        ssid: credentials.ssid.clone(),
+        address,
+        error,
     }
 }

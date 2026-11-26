@@ -4,6 +4,7 @@
 
 ### English
 
+- ESP32-S3 can play timer alarms while Wi-Fi reconnects or applies new settings.
 - Mini 3 can be built with only the Micro INT8 wake runtime. On a fresh installation from this package, the installer selects the Micro INT8 model by default.
 - On ESP32-S3, a voice or chat request can wait for the HTTPS clock while the device continues to handle due timer alarms.
 - Streaming chat uses less temporary memory when decoding provider responses.
@@ -27,6 +28,7 @@
 
 ### Русский
 
+- ESP32-S3 воспроизводит сигналы таймеров во время переподключения Wi-Fi и применения новых сетевых настроек.
 - Мини 3 можно собрать только с движком активации Micro INT8. При первой установке из такого пакета установщик по умолчанию выбирает модель Micro INT8.
 - На ESP32-S3 запрос чата или голосовой запрос может ждать синхронизации часов для HTTPS, пока устройство воспроизводит сигналы таймеров.
 - Потоковый чат использует меньше временной памяти при разборе ответов провайдера.

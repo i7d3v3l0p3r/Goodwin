@@ -29,7 +29,7 @@ use crate::{
 use super::{
     auth::Auth,
     firmware,
-    network::{WifiCredentials, WifiStatus},
+    network::{WifiCredentials, WifiState, WifiStatus},
     settings::Store,
     worker::VoiceJob,
 };
@@ -52,7 +52,7 @@ pub(super) struct Panel {
     pub state: Mutex<State>,
     credentials: Mutex<(Auth, Store)>,
     password_jobs: Jobs<String>,
-    pub wifi: Mutex<WifiStatus>,
+    pub wifi: Mutex<WifiState>,
     pub reboot: AtomicBool,
     firmware_busy: AtomicBool,
     pub(super) clock_requested: AtomicBool,
@@ -78,7 +78,6 @@ pub(super) enum Command {
         super::wake_models::Candidate,
         std::sync::mpsc::Sender<goodwin_error::Result<crate::wake_catalog::Selection>>,
     ),
-    Wifi(WifiCredentials),
 }
 
 #[derive(Deserialize)]
@@ -140,7 +139,7 @@ impl Panel {
             state: Mutex::new(state),
             credentials: Mutex::new((auth, store)),
             password_jobs: Jobs::default(),
-            wifi: Mutex::new(WifiStatus::Connecting),
+            wifi: Mutex::new(WifiState::new()),
             reboot: AtomicBool::new(false),
             firmware_busy: AtomicBool::new(false),
             clock_requested: AtomicBool::new(false),
@@ -175,7 +174,7 @@ impl Panel {
 
     pub fn wifi_connected(&self) -> bool {
         matches!(
-            *self.wifi.lock().expect("Wi-Fi status"),
+            self.wifi.lock().expect("Wi-Fi status").status,
             WifiStatus::Connected { .. }
         )
     }
@@ -424,7 +423,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
         #[cfg(feature = "wake-tflite")]
         (Method::Post, "/api/wake-models/result") => wake_models::result(request, panel),
         (Method::Get, "/api/network") => {
-            let wifi = panel.wifi.lock().expect("Wi-Fi status").clone();
+            let wifi = panel.wifi.lock().expect("Wi-Fi status").status.clone();
             send_json(request, &wifi)
         }
         (Method::Put, "/api/network") => {
@@ -438,14 +437,10 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             if state.busy()
                 || panel.firmware_busy()
                 || panel.wake_model_busy()
-                || matches!(*wifi, WifiStatus::Connecting)
-                || crate::diagnostics::Queue::Device
-                    .send(&panel.command, Command::Wifi(next))
-                    .is_err()
+                || !wifi.schedule(next)
             {
                 return problem(request, 409, "busy");
             }
-            *wifi = WifiStatus::Connecting;
             drop(wifi);
             drop(state);
             send(request, 202, "text/plain", &[], &[])

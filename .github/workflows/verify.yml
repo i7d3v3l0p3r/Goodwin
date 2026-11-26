@@ -145,6 +145,6 @@ jobs:
           python firmware/esp32s3/test_emulator.py \
             --emulator "$RUNNER_TEMP/$emulator/esp-emu" --examples "$RUNNER_TEMP/$examples" \
             --firmware target/esp32s3/emulator/merged.bin --emulator-timeout 720 \
-            --wake-build --panel-settings --stream-speech \
+            --wake-build --panel-settings --stream-speech --wifi-during-alarm \
             --wake-catalog-model target/wake-tflite/esp32s3/goodwin-micro-int8.tflite \
             --timers-package target/plugins/timers-wasm32.tar.gz
