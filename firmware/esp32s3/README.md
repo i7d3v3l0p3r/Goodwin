@@ -99,7 +99,7 @@ Enable **Streaming playback** to play PCM as it arrives.
 ## Add-ons
 
 Sign in and upload the same `*-wasm32.tar.gz` packages used on Mini 3 under
-**Add-ons**. The ESP build accepts up to four packages with ustar archives
+**Plugins**. The ESP build accepts up to four packages with ustar archives
 up to 768 KiB each and expanded contents up to 1 MiB. Files and settings
 persist in the plugin flash volume. The **Diagnostics** page shows usage
 of that volume and the two memory regions.

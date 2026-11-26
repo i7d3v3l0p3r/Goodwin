@@ -1,4 +1,5 @@
-import { createSignal, For, Show } from "solid-js";
+import { useSearchParams } from "@solidjs/router";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { Icon, PluginNavigationIcon } from "../../components/icons";
 import { PageHeader } from "../../components/PageHeader";
 import { Button, ButtonLink } from "../../components/ui-kit/Button";
@@ -25,6 +26,16 @@ export function PluginsPage() {
   const [deleting, setDeleting] = createSignal(false);
   const words = () => panel.t().plugins;
   const installed = () => panel.snapshot()?.plugins;
+  const [search, setSearch] = useSearchParams();
+  const query = () => typeof search.q === "string" ? search.q : "";
+  const matches = createMemo(() => {
+    const plugins = installed() ?? [];
+    const term = query().trim().toLowerCase();
+    if (!term) return plugins;
+    const language = panel.language();
+    return plugins.filter(plugin => plugin.title[language].toLowerCase().includes(term) || plugin.id.includes(term)
+      || plugin.pages.some(page => page.navigation && page.title[language].toLowerCase().includes(term)));
+  });
   const allowed = () => panel.access()?.protected;
   const pending = () => panel.pending() || !panel.reachable();
   let archive!: HTMLInputElement;
@@ -43,8 +54,8 @@ export function PluginsPage() {
   }
 
   return <>
-    <PageHeader title={panel.t().extensions} />
-    <section class="gw-page" aria-label={panel.t().extensions}>
+    <PageHeader title={words().title} />
+    <section class="gw-page" aria-label={words().title}>
       <Show when={allowed()} fallback={<p class={styles.note}>{words().password} <a href={settingsSectionPath("panel")}>{panel.t().enablePassword}</a></p>}>
         <div class={styles.upload}>
           <div>
@@ -63,13 +74,21 @@ export function PluginsPage() {
         <p class={styles.note}><a href={setupPath}>{panel.t().firstRun.install}</a></p>
       </Show>
       <Show when={!removing() && panel.error()}><InlineError>{errorLabel(panel.t(), panel.error())}</InlineError></Show>
+      <Show when={(installed()?.length ?? 0) >= 6 || query()}>
+        <label class={styles.search}>
+          <Icon name="search" size={18} />
+          <input type="search" aria-label={words().search} placeholder={words().search}
+            value={query()} onInput={event => setSearch({ q: event.currentTarget.value }, { replace: true })} />
+        </label>
+      </Show>
       <div role="status">
         <Show when={!installed()}><StatusIndicator tone="pending">{words().listLoading}</StatusIndicator></Show>
         <Show when={installed()?.length === 0}><EmptyState>{words().empty}</EmptyState></Show>
+        <Show when={installed()?.length && !matches().length}><EmptyState>{words().noMatches}</EmptyState></Show>
       </div>
-      <Show when={installed()?.length}>
+      <Show when={matches().length}>
         <ul class={styles.list}>
-          <For each={installed()} keyed={plugin => plugin.id}>
+          <For each={matches()} keyed={plugin => plugin.id}>
             {plugin => <li class={styles.item}>
               <div class={styles.details}>
                 <h2>{plugin().title[panel.language()]}</h2>

@@ -19,9 +19,11 @@ import MicOff from "@lucide/solid/icons/mic-off";
 import Monitor from "@lucide/solid/icons/monitor";
 import Plug from "@lucide/solid/icons/plug";
 import Plus from "@lucide/solid/icons/plus";
+import Search from "@lucide/solid/icons/search";
 import Settings from "@lucide/solid/icons/settings";
 import Sparkles from "@lucide/solid/icons/sparkles";
 import Timer from "@lucide/solid/icons/timer";
+import Wifi from "@lucide/solid/icons/wifi";
 import X from "@lucide/solid/icons/x";
 import { Dynamic } from "@solidjs/web";
 
@@ -29,6 +31,8 @@ const icons = {
   plugin: Plug,
   chat: MessageSquareText,
   settings: Settings,
+  search: Search,
+  wifi: Wifi,
   send: ArrowUp,
   plus: Plus,
   mic: Mic,

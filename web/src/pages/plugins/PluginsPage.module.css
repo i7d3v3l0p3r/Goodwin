@@ -6,6 +6,9 @@
 }
 
 .upload { margin-bottom: 20px; }
+.search { position: relative; display: grid; align-items: center; margin-top: 12px; }
+.search svg { position: absolute; left: 12px; pointer-events: none; color: var(--muted); }
+.search input[type="search"] { min-height: 44px; padding-inline-start: 38px; }
 .note { color: var(--muted); font-size: .9rem; }
 .list { display: grid; gap: 10px; padding: 0; margin: 14px 0 0; list-style: none; }
 
@@ -18,6 +21,7 @@
 
 .details { display: grid; flex: 1 1 170px; gap: 5px; min-width: 0; }
 .details h2 { font-size: 1rem; overflow-wrap: anywhere; }
+.details a { max-width: 100%; overflow-wrap: anywhere; }
 .metadata { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 9px; }
 
 .rowMenu { position: relative; }
