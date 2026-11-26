@@ -798,12 +798,11 @@ class Panel:
                 reply.read()
         print("Verified gzip, conditional asset caching, and uncacheable HTML and API")
 
-    def verify_microphone_settings(self):
+    def mute_microphone_and_submit_stale_settings(self):
         original = self.request("/api/state")["settings"]
         self.request("/api/settings/microphone", "PUT", {"muted": True}, 204)
         self.request("/api/settings", "PUT", {"settings": original}, 204)
         assert self.request("/api/state")["settings"]["microphone_muted"]
-        self.request("/api/settings/microphone", "PUT", {"muted": original["microphone_muted"]}, 204)
 
     def verify_panel_settings(self):
         assert self.request("/api/state")["system_prompt"] == SYSTEM_PROMPT
@@ -948,7 +947,7 @@ class Panel:
         assert self.streaming_upload("/api/firmware", image, 202) == {"restarting": True}
         self.print_resources("before OTA reboot")
 
-    def verify_after_restart(self, wake, streaming):
+    def verify_after_restart(self, wake, streaming, microphone_muted):
         assert self.request("/api/access") == {
             "protected": True, "authorized": False, "setup_required": False
         }
@@ -960,7 +959,7 @@ class Panel:
             "speech_streaming": streaming,
         }
         audio = self.request("/api/state")["settings"]
-        assert audio["listening"] == wake and not audio["microphone_muted"]
+        assert audio["listening"] == wake and audio["microphone_muted"] == microphone_muted
         assert audio["sensitivity"] == 0.55 and audio["wake_gain"] == audio["transcription_gain"] == 1.0
 
 
@@ -1062,7 +1061,6 @@ def run_emulator(args, flash, board, output, server):
                             panel.verify_panel_contract()
                             panel.verify_asset_cache()
                             panel.set_system_prompt()
-                            panel.verify_microphone_settings()
                         panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat)
                         if args.timers_package:
                             panel.install_timers(args.timers_package)
@@ -1084,9 +1082,12 @@ def run_emulator(args, flash, board, output, server):
                             control(port, "part button input press after 100", "part button input release after 1200")
                         started = True
                     elif played and not persisted:
-                        panel.verify_after_restart(bool(args.wake_audio and not args.wake_test), args.stream_speech)
+                        panel.verify_after_restart(
+                            bool(args.wake_audio and not args.wake_test), args.stream_speech, args.panel_settings
+                        )
                         if args.panel_settings:
                             panel.verify_panel_settings()
+                            print("Verified that the microphone stayed muted after reset")
                         if args.timers_package:
                             panel.verify_timers_after_restart()
                         if args.dataset_package:
@@ -1121,6 +1122,8 @@ def run_emulator(args, flash, board, output, server):
                         panel.stop_dataset(active_model)
                     if args.timers_package:
                         panel.exercise_timers(args.timers_package, args.timer_voice_tool)
+                    if args.panel_settings:
+                        panel.mute_microphone_and_submit_stale_settings()
                     panel.request("/api/logout", "POST", {}, 204)
                     assert panel.request("/api/settings/provider", status=401) == {"error": "login_required"}
                     played = True
@@ -1171,7 +1174,7 @@ def main():
     parser.add_argument("--update-image", type=Path, help="Verify an OTA install and reboot using this app.bin")
     parser.add_argument("--interrupt-update", action="store_true", help="Reset before OTA verification and check rollback")
     parser.add_argument("--stream-speech", action="store_true", help="Verify playback starts before the whole audio response arrives")
-    parser.add_argument("--panel-settings", action="store_true", help="Check the saved system prompt and protected diagnostic log")
+    parser.add_argument("--panel-settings", action="store_true", help="Check the panel contract, persisted settings and protected diagnostics")
     parser.add_argument("--wake-test", action="store_true", help="Run the wake-word check with continuous listening paused")
     parser.add_argument("--wake-catalog-model", type=Path, help="Serve and install a Micro INT8 fixture model from a test catalog")
     parser.add_argument("--voice-lifecycle", action="store_true", help="Cancel recording, WASM provider calls and playback")
