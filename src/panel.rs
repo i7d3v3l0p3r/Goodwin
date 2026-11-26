@@ -62,6 +62,7 @@ pub fn router(app: Arc<App>) -> Router {
     let protected = Router::new()
         .route("/api/state", get(snapshot))
         .route("/api/diagnostics/resources", get(diagnostics::resources))
+        .route("/api/diagnostics/metrics", get(diagnostics::metrics))
         .route("/api/diagnostics/logs", get(diagnostics::logs))
         .route(
             "/api/core-update",

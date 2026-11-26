@@ -11,6 +11,7 @@ mod checksum;
 mod config;
 #[cfg(not(target_os = "espidf"))]
 mod core_update;
+mod diagnostics;
 #[cfg(not(target_os = "espidf"))]
 #[path = "../shared/http_tls.rs"]
 mod http_tls;

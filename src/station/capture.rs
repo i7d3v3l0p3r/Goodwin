@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -218,12 +218,14 @@ impl Detector {
         }
         let model = self.model.as_mut().expect("loaded wake model");
         let threshold = model.threshold(sensitivity);
+        let started = Instant::now();
         let prediction = model.predict(
             self.wake_frame
                 .as_slice()
                 .try_into()
                 .expect("one wake frame"),
         );
+        crate::diagnostics::wake_frame(started.elapsed(), prediction.is_err());
         self.wake_frame.clear();
         let score = match prediction {
             Ok(score) => score,

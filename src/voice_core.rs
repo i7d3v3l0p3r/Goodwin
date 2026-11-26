@@ -43,7 +43,10 @@ impl VoiceRequest {
 
     pub(crate) fn cancel(&self, reason: Failure) {
         let mut state = self.state.lock().expect("voice cancellation");
-        state.reason.get_or_insert(reason);
+        if state.reason.is_none() {
+            state.reason = Some(reason);
+            crate::diagnostics::voice_cancelled();
+        }
         #[cfg(not(target_os = "espidf"))]
         if let Some(waiter) = state.waiter.take() {
             drop(state);

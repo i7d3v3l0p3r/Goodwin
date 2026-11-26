@@ -7,7 +7,7 @@ use esp_idf_svc::{
 use goodwin_error::{Result, bail};
 use serde::Serialize;
 
-use crate::model::FIRMWARE_TAG;
+use crate::{diagnostics::flash_write, model::FIRMWARE_TAG};
 
 #[derive(Serialize)]
 pub(super) struct Info {
@@ -75,7 +75,8 @@ pub(super) fn install(
     }
     // Stream to the inactive slot. Dropping an incomplete update leaves the boot selection intact.
     let mut ota = EspOta::new()?;
-    let mut update = ota.initiate_update_with_known_size(size)?;
+    let owner = &mut ota;
+    let mut update = flash_write(move || owner.initiate_update_with_known_size(size))?;
     let mut tag_found = false;
     let mut previous = 0;
     let mut remaining = size;
@@ -84,7 +85,7 @@ pub(super) fn install(
         tag_found |= buffer[..end]
             .windows(FIRMWARE_TAG.len())
             .any(|window| window == FIRMWARE_TAG);
-        update.write(&buffer[previous..end])?;
+        flash_write(|| update.write(&buffer[previous..end]))?;
         remaining -= count;
         if remaining == 0 {
             break;
@@ -99,7 +100,7 @@ pub(super) fn install(
     if !tag_found {
         return Ok(false);
     }
-    update.complete()?;
+    flash_write(|| update.complete())?;
     log::info!("Staged firmware image with {size} bytes");
     Ok(true)
 }

@@ -74,7 +74,9 @@ impl Detector {
                     }
                     let start = Instant::now();
                     let score = model.predict(&frame.samples);
-                    let elapsed_us = start.elapsed().as_micros();
+                    let elapsed = start.elapsed();
+                    crate::diagnostics::wake_frame(elapsed, score.is_err());
+                    let elapsed_us = elapsed.as_micros();
                     if output
                         .send(Prediction {
                             generation,
@@ -190,7 +192,9 @@ impl Detector {
                 self.end_observations();
                 self.generation += 1;
                 // The worker missed audio. Resume near the live edge with fresh model state.
-                self.next = self.first + self.history.len() - FRAME_SAMPLES;
+                let resume = self.first + self.history.len() - FRAME_SAMPLES;
+                crate::diagnostics::capture_skipped((resume - self.next).div_ceil(FRAME_SAMPLES));
+                self.next = resume;
             }
             let offset = self.next - self.first;
             if self.history.len() >= offset + FRAME_SAMPLES {

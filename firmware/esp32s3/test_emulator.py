@@ -734,6 +734,17 @@ class Panel:
         }
         self.request("/api/settings/system-prompt", "PUT", {"system_prompt": f" {SYSTEM_PROMPT} "}, 204)
         self.verify_panel_settings()
+        metrics = self.request("/api/diagnostics/metrics")
+        assert metrics["voice_cancellations"] == 0
+        assert metrics["flash_writes"]["count"] > 0
+        assert metrics["flash_writes"]["max_us"] >= metrics["flash_writes"]["p95_upper_us"] > 0
+
+        def numeric(value):
+            if isinstance(value, dict):
+                return all(numeric(item) for item in value.values())
+            return value is None or type(value) is int
+
+        assert numeric(metrics), metrics
 
     def verify_panel_contract(self):
         profile = self.request("/api/capabilities")

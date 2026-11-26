@@ -1,7 +1,10 @@
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 use goodwin_error::{Context, Result};
 
-use crate::builtin_assistant::{AudioSettings, ProviderSettings};
+use crate::{
+    builtin_assistant::{AudioSettings, ProviderSettings},
+    diagnostics::flash_write,
+};
 
 use super::network::WifiCredentials;
 
@@ -41,8 +44,8 @@ impl Store {
     }
 
     pub(super) fn save_wifi(&mut self, settings: &WifiCredentials) -> Result<()> {
-        self.nvs
-            .set_str("wifi", &goodwin_json::to_string(settings)?)?;
+        let data = goodwin_json::to_string(settings)?;
+        flash_write(|| self.nvs.set_str("wifi", &data))?;
         Ok(())
     }
 
@@ -72,7 +75,7 @@ impl Store {
 
     pub(super) fn save_provider(&mut self, settings: &ProviderSettings) -> Result<()> {
         let data = goodwin_json::to_string(settings)?;
-        self.nvs.set_str("provider", &data)?;
+        flash_write(|| self.nvs.set_str("provider", &data))?;
         Ok(())
     }
 
@@ -91,9 +94,9 @@ impl Store {
 
     pub(super) fn save_system_prompt(&mut self, prompt: &str) -> Result<()> {
         if prompt.is_empty() {
-            self.nvs.remove("system_prompt")?;
+            flash_write(|| self.nvs.remove("system_prompt"))?;
         } else {
-            self.nvs.set_blob("system_prompt", prompt.as_bytes())?;
+            flash_write(|| self.nvs.set_blob("system_prompt", prompt.as_bytes()))?;
         }
         Ok(())
     }
@@ -117,8 +120,8 @@ impl Store {
         &mut self,
         selection: &crate::wake_catalog::Selection,
     ) -> Result<()> {
-        self.nvs
-            .set_blob("wake_model", &goodwin_json::to_vec(selection)?)?;
+        let data = goodwin_json::to_vec(selection)?;
+        flash_write(|| self.nvs.set_blob("wake_model", &data))?;
         Ok(())
     }
 
@@ -144,8 +147,8 @@ impl Store {
         &mut self,
         settings: &crate::assistant::AssistantSettings,
     ) -> Result<()> {
-        self.nvs
-            .set_blob("assistant", &goodwin_json::to_vec(settings)?)?;
+        let data = goodwin_json::to_vec(settings)?;
+        flash_write(|| self.nvs.set_blob("assistant", &data))?;
         Ok(())
     }
 
@@ -158,8 +161,8 @@ impl Store {
     }
 
     pub(super) fn save_audio(&mut self, settings: AudioSettings) -> Result<()> {
-        self.nvs
-            .set_str("audio_settings", &goodwin_json::to_string(&settings)?)?;
+        let data = goodwin_json::to_string(&settings)?;
+        flash_write(|| self.nvs.set_str("audio_settings", &data))?;
         Ok(())
     }
 
@@ -175,7 +178,7 @@ impl Store {
     }
 
     pub(super) fn save_password(&mut self, hash: &str) -> Result<()> {
-        self.nvs.set_str("panel_pbkdf2", hash)?;
+        flash_write(|| self.nvs.set_str("panel_pbkdf2", hash))?;
         Ok(())
     }
 }

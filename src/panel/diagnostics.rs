@@ -49,6 +49,10 @@ pub(super) async fn resources(State(panel): State<Panel>) -> impl IntoResponse {
     Json(data)
 }
 
+pub(super) async fn metrics() -> impl IntoResponse {
+    Json(crate::diagnostics::snapshot())
+}
+
 pub(super) async fn logs(State(panel): State<Panel>, headers: HeaderMap) -> Response {
     if let Some(response) =
         password_rejection(&panel, &headers, "diagnostics_password_required").await

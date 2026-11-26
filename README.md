@@ -148,6 +148,8 @@ On the Station, extract the package with `gzip -dc goodwin-mini3-aarch64.tar.gz 
 
 The text chat and push-button Station test work without a wake model. In Settings you can pause background detection, change sensitivity, test the speaker and microphone, and see timings for the last request. Pausing detection leaves the button test available. Goodwin keeps transcripts in the current conversation and does not save recordings or diagnostic transcripts to disk.
 
+System resources in Settings can download a diagnostic JSON snapshot. It contains process-local counts for full queues, wake inference failures, skipped capture frames and voice cancellations. The latency summaries report sample counts, bucket upper bounds for the median and 95th percentile, and the measured maximum. ESP32-S3 also reports write latency for NVS settings, WASM plugin data, wake model assets and OTA. The export has no recordings, conversations, credentials or journal entries.
+
 **Settings → Microphone** lets you set separate input gains for wake word detection and speech recognition. The recognition field defaults to automatic gain. A fixed multiplier applies to the recording and its speech detection, including audio buffered before the wake word triggers. Gain changes take effect without restarting Goodwin. An active voice turn keeps its original settings.
 
 Use **Settings → System prompt** to define Goodwin’s role, personality, and tone for both text and voice replies. Save the prompt to apply it to subsequent requests. Clear the field and save to restore the built-in instructions. Goodwin keeps the instructions for spoken output and voice plugin calls when a custom prompt is set.

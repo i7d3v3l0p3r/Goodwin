@@ -339,6 +339,10 @@ fn remove_file(path: &Path) -> io::Result<()> {
 }
 
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    crate::diagnostics::flash_write(|| write_replacement(path, bytes))
+}
+
+fn write_replacement(path: &Path, bytes: &[u8]) -> Result<()> {
     let temp = sidecar(path, "new")?;
     let backup = sidecar(path, "bak")?;
     if backup.try_exists()? {

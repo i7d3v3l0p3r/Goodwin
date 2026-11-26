@@ -222,7 +222,11 @@ impl Plugins {
     #[cfg(feature = "wake-tflite")]
     pub(super) fn observe_wake(&self, make_event: impl FnOnce() -> Event) {
         let epoch = self.wake_epoch.load(Ordering::Acquire);
-        if epoch & 1 != 0 && self.wake_events.try_send((epoch, make_event())).is_ok() {
+        if epoch & 1 != 0
+            && crate::diagnostics::Queue::Plugin
+                .send(&self.wake_events, (epoch, make_event()))
+                .is_ok()
+        {
             self.wake_scheduler();
         }
     }

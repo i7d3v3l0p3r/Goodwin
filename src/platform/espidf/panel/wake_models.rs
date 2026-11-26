@@ -94,9 +94,8 @@ fn process(panel: &Panel, install: Option<InstallWakeModel>) -> Outcome<Completi
         return Err((409, "wake_model_busy"));
     }
     let (reply, receive) = mpsc::channel();
-    let sent = panel
-        .command
-        .try_send(Command::UseWakeModel(candidate, reply));
+    let sent = crate::diagnostics::Queue::Device
+        .send(&panel.command, Command::UseWakeModel(candidate, reply));
     drop(state);
     if sent.is_err() {
         panel.finish_wake_model_change();

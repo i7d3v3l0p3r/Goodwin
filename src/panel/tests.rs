@@ -238,6 +238,23 @@ async fn open_panel_shows_resources_but_requires_a_password_for_logs() {
         .await
         .unwrap();
     assert_eq!(resources["supported"], cfg!(target_os = "linux"));
+    let export = reqwest::get(format!("{panel}/api/diagnostics/metrics"))
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(export.headers()[header::CACHE_CONTROL], "no-store");
+    let metrics = export.json::<Value>().await.unwrap();
+    fn numeric_metrics(value: &Value) -> bool {
+        match value {
+            Value::Object(values) => values.values().all(numeric_metrics),
+            Value::Null | Value::Number(_) => true,
+            _ => false,
+        }
+    }
+    assert!(numeric_metrics(&metrics));
+    assert!(metrics["voice_cancellations"].is_u64());
+    assert!(metrics["wake_inference"]["count"].is_u64());
     let logs = reqwest::get(format!("{panel}/api/diagnostics/logs"))
         .await
         .unwrap();

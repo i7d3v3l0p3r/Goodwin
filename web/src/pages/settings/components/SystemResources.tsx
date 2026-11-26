@@ -1,4 +1,5 @@
 import { createMemo, createSignal, onSettled, Show } from "solid-js";
+import { ButtonLink } from "../../../components/ui-kit/Button";
 import { EmptyState, InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { ApiError, api } from "../../../helpers/api";
 import { errorLabel, type Language, type Words } from "../../../helpers/words";
@@ -68,6 +69,9 @@ export function SystemResources(props: { t: Words; language: Language }) {
 
   return <section aria-labelledby="resources-title">
     <h2 id="resources-title">{t().systemResources}</h2>
+    <ButtonLink href="/api/diagnostics/metrics" download="goodwin-diagnostics.json" variant="secondary">
+      {t().downloadDiagnostics}
+    </ButtonLink>
     <Show when={error()}><InlineError>{errorLabel(t(), error())}</InlineError></Show>
     <Show when={data()} fallback={<Show when={!error()}><StatusIndicator tone="pending">{t().loadingResources}</StatusIndicator></Show>}>{sample =>
       <Show when={sample().supported} fallback={<EmptyState>{t().resourcesUnavailable}</EmptyState>}>

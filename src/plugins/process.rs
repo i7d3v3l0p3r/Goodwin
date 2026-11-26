@@ -486,9 +486,12 @@ impl Process {
 
     fn enqueue(&self, call: Call) -> Result<()> {
         ensure!(self.running(), "Plugin process is unavailable");
-        self.requests
-            .try_send(call)
-            .map_err(|_| report!("Plugin process is busy or unavailable"))
+        self.requests.try_send(call).map_err(|error| {
+            if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                crate::diagnostics::Queue::Plugin.full();
+            }
+            report!("Plugin process is busy or unavailable")
+        })
     }
 }
 

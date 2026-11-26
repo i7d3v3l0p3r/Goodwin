@@ -66,10 +66,14 @@ impl Delivery {
         self.schedule.update(status);
         if let Some(id) = self.schedule.take_alarm() {
             let (send, receive) = oneshot::channel();
-            if sound.try_send(Signal(Some(send))).is_ok() {
-                self.playing = Some((id, receive));
-            } else {
-                self.schedule.finish(id, false);
+            match sound.try_send(Signal(Some(send))) {
+                Ok(()) => self.playing = Some((id, receive)),
+                Err(error) => {
+                    if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                        crate::diagnostics::Queue::Timer.full();
+                    }
+                    self.schedule.finish(id, false);
+                }
             }
         }
     }

@@ -157,8 +157,8 @@ impl Worker {
         let result = network
             .ready(context.provider(panel, None).https(), || false)
             .and_then(|()| {
-                self.jobs
-                    .try_send(Job::Chat(context, message, history))
+                crate::diagnostics::Queue::Provider
+                    .send(&self.jobs, Job::Chat(context, message, history))
                     .map_err(|_| goodwin_error::report!("Provider task is unavailable"))
             });
         if let Err(error) = result {
@@ -179,8 +179,8 @@ impl Worker {
         });
         job.request.check()?;
         ready.map_err(provider_failure)?;
-        self.jobs
-            .try_send(Job::Voice(job, wav))
+        crate::diagnostics::Queue::Provider
+            .send(&self.jobs, Job::Voice(job, wav))
             .map_err(|_| Failure::ProviderUnavailable)
     }
 

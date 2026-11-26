@@ -435,7 +435,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 || panel.firmware_busy()
                 || panel.wake_model_busy()
                 || matches!(*wifi, WifiStatus::Connecting)
-                || panel.command.try_send(Command::Wifi(next)).is_err()
+                || crate::diagnostics::Queue::Device
+                    .send(&panel.command, Command::Wifi(next))
+                    .is_err()
             {
                 return problem(request, 409, "busy");
             }
@@ -611,9 +613,8 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             if state.busy()
                 || panel.firmware_busy()
                 || panel.wake_model_busy()
-                || panel
-                    .command
-                    .try_send(Command::Chat(message.clone()))
+                || crate::diagnostics::Queue::Device
+                    .send(&panel.command, Command::Chat(message.clone()))
                     .is_err()
             {
                 return problem(request, 409, "busy");
@@ -651,7 +652,10 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 Source::WakeTest => Command::WakeTest(job),
                 _ => Command::VoiceTest(job),
             };
-            if panel.command.try_send(command).is_err() {
+            if crate::diagnostics::Queue::Device
+                .send(&panel.command, command)
+                .is_err()
+            {
                 state.finish_voice(&voice, Some(crate::panel_core::Failure::Busy));
                 return problem(request, 409, "busy");
             }
@@ -683,6 +687,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             #[cfg(not(any(feature = "wasm-plugins", feature = "wake-tflite")))]
             let storage = None;
             send_json(request, &resources(storage))
+        }
+        (Method::Get, "/api/diagnostics/metrics") => {
+            send_json(request, &crate::diagnostics::snapshot())
         }
         (Method::Get, "/api/diagnostics/logs") => send_json(
             request,
@@ -820,14 +827,18 @@ fn resources(storage: Option<serde_json::Value>) -> serde_json::Value {
     let memory = |region| {
         let caps = region | sys::MALLOC_CAP_8BIT;
         // SAFETY: These ESP-IDF accessors read the allocator counters for the given capabilities.
-        let (total, free, minimum) = unsafe {
+        let (total, free, minimum, largest) = unsafe {
             (
                 sys::heap_caps_get_total_size(caps),
                 sys::heap_caps_get_free_size(caps),
                 sys::heap_caps_get_minimum_free_size(caps),
+                sys::heap_caps_get_largest_free_block(caps),
             )
         };
-        json!({"used_bytes": total.saturating_sub(free), "total_bytes": total, "minimum_free_bytes": minimum})
+        json!({
+            "used_bytes": total.saturating_sub(free), "total_bytes": total,
+            "minimum_free_bytes": minimum, "largest_free_bytes": largest,
+        })
     };
     // SAFETY: The timer is initialized by ESP-IDF before app_main.
     let uptime = unsafe { sys::esp_timer_get_time() } / 1_000_000;

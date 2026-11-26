@@ -134,11 +134,13 @@ pub(super) fn save_asset(selection: &Selection, interpreter: &TfliteModel) -> Re
         fs::remove_file(&path)?;
     }
     let temporary = directory.join("incoming.tflite");
-    let mut file = File::create(&temporary)?;
-    file.write_all(interpreter.bytes())?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temporary, path)?;
+    crate::diagnostics::flash_write(|| {
+        let mut file = File::create(&temporary)?;
+        file.write_all(interpreter.bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, path)
+    })?;
     Ok(())
 }
 
