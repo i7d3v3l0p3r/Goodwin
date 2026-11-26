@@ -3,31 +3,53 @@ use goodwin_error::Result;
 use crate::{
     builtin_assistant::{Provider, ProviderSettings},
     panel_core::Message,
+    voice_core::VoiceRequest,
 };
 
 use super::http_client::HttpClient;
 
 pub(super) struct Cascade<'a> {
     settings: &'a ProviderSettings,
-    builtin: Provider<'a, HttpClient>,
+    builtin: Provider<'a, HttpClient<'a>>,
     prompt: &'a str,
     #[cfg(feature = "wasm-plugins")]
     pub(super) plugins: Option<&'a super::plugins::Plugins>,
     #[cfg(feature = "wasm-plugins")]
     pub(super) assistant: Option<&'a crate::assistant::AssistantSettings>,
+    #[cfg(feature = "wasm-plugins")]
+    voice: Option<(
+        &'a crate::voice_core::VoiceProviders<Option<super::plugins::ProviderBinding>>,
+        &'a VoiceRequest,
+    )>,
 }
 
 impl<'a> Cascade<'a> {
-    pub(super) fn new(settings: &'a ProviderSettings, prompt: &'a str) -> Self {
+    pub(super) fn new(
+        settings: &'a ProviderSettings,
+        prompt: &'a str,
+        request: Option<&'a VoiceRequest>,
+    ) -> Self {
         Self {
             settings,
-            builtin: Provider::new(settings, HttpClient),
+            builtin: Provider::new(settings, HttpClient(request)),
             prompt,
             #[cfg(feature = "wasm-plugins")]
             plugins: None,
             #[cfg(feature = "wasm-plugins")]
             assistant: None,
+            #[cfg(feature = "wasm-plugins")]
+            voice: None,
         }
+    }
+
+    #[cfg(feature = "wasm-plugins")]
+    pub(super) fn bind_voice(
+        mut self,
+        bindings: &'a crate::voice_core::VoiceProviders<Option<super::plugins::ProviderBinding>>,
+        request: &'a VoiceRequest,
+    ) -> Self {
+        self.voice = Some((bindings, request));
+        self
     }
 
     #[cfg(feature = "wasm-plugins")]
@@ -64,9 +86,27 @@ impl<'a> Cascade<'a> {
         let plugin = self
             .plugins
             .ok_or_else(|| goodwin_error::report!("Plugin runtime is unavailable"))?;
+        let binding = self
+            .voice
+            .map(|(bindings, request)| -> Result<_> {
+                use goodwin_plugin::provider::Capability;
+                let binding = match capability {
+                    Capability::Transcription => &bindings.transcription,
+                    Capability::Chat => &bindings.chat,
+                    Capability::Speech => &bindings.speech,
+                };
+                Ok((
+                    binding
+                        .as_ref()
+                        .ok_or_else(|| goodwin_error::report!("Voice provider is unavailable"))?,
+                    request,
+                ))
+            })
+            .transpose()?;
         Ok(Some(super::plugins::PluginProvider {
             plugin,
             settings: stage,
+            binding,
         }))
     }
 

@@ -3,11 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use esp_idf_svc::{
-    handle::RawHandle,
-    http::{Method, client::EspHttpConnection},
-    sys::{self, esp, esp_http_client_is_complete_data_received},
-};
 use goodwin_error::{Context, Result, ensure};
 use goodwin_plugin::{
     provider::MAX_RECORDING_BYTES,
@@ -15,11 +10,11 @@ use goodwin_plugin::{
 };
 use url::Url;
 
-use super::super::super::http_client;
+use super::super::super::http_client::{HttpCall, ProviderHttp};
 
 thread_local! {
     // ESP-IDF connections stay on the calling task for the entire guest invocation.
-    static RESPONSE: RefCell<Option<EspHttpConnection>> = const { RefCell::new(None) };
+    static RESPONSE: RefCell<Option<ProviderHttp>> = const { RefCell::new(None) };
 }
 
 pub(crate) struct Invocation;
@@ -41,30 +36,14 @@ pub(super) fn close() {
     RESPONSE.with(|response| response.borrow_mut().take());
 }
 
-pub(super) fn read(length: usize, deadline: Instant) -> Result<Vec<u8>> {
+pub(super) fn read(length: usize, call: HttpCall<'_>) -> Result<Vec<u8>> {
     ensure!(length <= 64 * 1024, "HTTP chunk is too large");
     let length = length.min(4096);
     RESPONSE.with(|response| {
         let mut response = response.borrow_mut();
         let connection = response.as_mut().context("No open HTTP response")?;
         let mut bytes = vec![0; length];
-        let count = loop {
-            ensure!(
-                Instant::now() < deadline,
-                "WASM provider HTTP read timed out"
-            );
-            match connection.read(&mut bytes) {
-                Err(error) if error.code() == -sys::ESP_ERR_HTTP_EAGAIN => continue,
-                result => break result?,
-            }
-        };
-        if count == 0 && length != 0 {
-            // SAFETY: The client remains valid until the thread-local response is dropped.
-            ensure!(
-                unsafe { esp_http_client_is_complete_data_received(connection.handle()) },
-                "Incomplete provider HTTP response"
-            );
-        }
+        let count = connection.read(&mut bytes, call)?;
         bytes.truncate(count);
         Ok(bytes)
     })
@@ -76,7 +55,7 @@ pub(super) fn start(
     base: &str,
     key: &str,
     require_key: bool,
-    deadline: Instant,
+    call: HttpCall<'_>,
 ) -> Result<Vec<u8>> {
     close();
     ensure!(
@@ -164,37 +143,26 @@ pub(super) fn start(
     if !request.get {
         headers.push(("Content-Length", length.as_str()));
     }
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    call.check()?;
+    let remaining = call.deadline.saturating_duration_since(Instant::now());
     ensure!(!remaining.is_zero(), "WASM provider call timed out");
     let timeout = remaining.min(Duration::from_millis(request.timeout_ms.clamp(1, 15_000)));
-    let mut connection = http_client::open(timeout, None)?;
-    let method = if request.get {
-        Method::Get
-    } else {
-        Method::Post
-    };
-    connection.initiate_request(method, url.as_str(), &headers)?;
-    for part in [prefix.as_bytes(), input, suffix.as_bytes()] {
-        for block in part.chunks(4096) {
-            ensure!(Instant::now() < deadline, "Timed out sending request");
-            connection.write_all(block)?;
-        }
-    }
-    connection.initiate_response()?;
-    let status = connection.status();
-    let content_type = connection
-        .header("Content-Type")
-        .filter(|kind| kind.len() <= 1024)
-        .unwrap_or_default()
-        .to_owned();
+    let (connection, status) = ProviderHttp::start(
+        url.as_str(),
+        request.get,
+        &headers,
+        &[prefix.as_bytes(), input, suffix.as_bytes()],
+        timeout,
+        call,
+    )?;
+    let content_type = connection.content_type().unwrap_or_default().to_owned();
     if (200..300).contains(&status) {
         if content_type
             .split(';')
             .next()
             .is_some_and(|kind| kind.eq_ignore_ascii_case("text/event-stream"))
         {
-            // SAFETY: This task owns the live response handle and performs all reads serially.
-            esp!(unsafe { sys::esp_http_client_set_timeout_ms(connection.handle(), 200) })?;
+            connection.set_timeout(200)?;
         }
         RESPONSE.with(|response| response.replace(Some(connection)));
     }

@@ -12,8 +12,7 @@ use goodwin_error::{Result, ensure};
 
 use crate::{
     builtin_assistant::SPEECH_HZ,
-    panel_core::Source,
-    voice_core::{CAPTURE_HZ, RECORDING_LIMIT, VoiceActivity},
+    voice_core::{CAPTURE_HZ, RECORDING_LIMIT, VoiceActivity, VoiceRequest},
 };
 
 pub(super) const FRAME_PAIRS: usize = CAPTURE_HZ as usize / 100;
@@ -45,17 +44,6 @@ pub(super) enum Recording {
         captured: Vec<i16>,
         post_trigger: usize,
     },
-}
-
-impl Recording {
-    pub(super) fn source(&self) -> Source {
-        match self {
-            Self::Button => Source::PushToTalk,
-            Self::ManualTest => Source::ManualTest,
-            #[cfg(feature = "wake-tflite")]
-            Self::Wake { .. } => Source::Wake,
-        }
-    }
 }
 
 impl<'d> Audio<'d> {
@@ -181,20 +169,20 @@ impl<'d> Audio<'d> {
         Ok(&mono[..bytes / 8])
     }
 
-    pub(super) fn play(&mut self, pcm: &[u8]) -> Result<()> {
-        let mut playback = self.playback();
-        playback.push(pcm)?;
+    #[cfg(feature = "wasm-plugins")]
+    pub(super) fn play_timer_signal(&mut self) -> Result<()> {
+        let mut playback = self.playback(None);
+        playback.push(&crate::voice_core::timer_signal_pcm(SPEECH_HZ))?;
         playback.finish()
     }
 
-    #[cfg(feature = "wasm-plugins")]
-    pub(super) fn play_timer_signal(&mut self) -> Result<()> {
-        self.play(&crate::voice_core::timer_signal_pcm(SPEECH_HZ))
-    }
-
-    pub(super) fn playback(&mut self) -> Playback<'_, 'd> {
+    pub(super) fn playback<'a>(
+        &'a mut self,
+        request: Option<&'a VoiceRequest>,
+    ) -> Playback<'a, 'd> {
         Playback {
             i2s: &mut self.i2s,
+            request,
             input: [0; 6],
             pending: 0,
             frame: [0; FRAME_PAIRS * 8],
@@ -206,6 +194,7 @@ impl<'d> Audio<'d> {
 
 pub(super) struct Playback<'a, 'd> {
     i2s: &'a mut I2sDriver<'d, I2sBiDir>,
+    request: Option<&'a VoiceRequest>,
     input: [u8; 6],
     pending: usize,
     frame: [u8; FRAME_PAIRS * 8],
@@ -214,7 +203,17 @@ pub(super) struct Playback<'a, 'd> {
 }
 
 impl Playback<'_, '_> {
+    fn check(&self) -> Result<()> {
+        ensure!(
+            self.request
+                .is_none_or(|request| request.failure().is_none()),
+            "Voice request cancelled"
+        );
+        Ok(())
+    }
+
     pub(super) fn push(&mut self, mut pcm: &[u8]) -> Result<()> {
+        self.check()?;
         // HTTP chunk boundaries may fall inside a little-endian sample.
         while !pcm.is_empty() {
             let count = pcm.len().min(self.input.len() - self.pending);
@@ -230,6 +229,7 @@ impl Playback<'_, '_> {
     }
 
     pub(super) fn finish(mut self) -> Result<()> {
+        self.check()?;
         ensure!(self.pending % 2 == 0, "Incomplete 16-bit PCM sample");
         if self.pending != 0 {
             self.resample()?;
@@ -239,6 +239,7 @@ impl Playback<'_, '_> {
         self.frame.fill(0);
         let timeout = TickType::new_millis(IO_TIMEOUT_MS).ticks();
         for _ in 0..DMA_BUFFERS {
+            self.check()?;
             self.i2s.write_all(&self.frame, timeout)?;
         }
         self.i2s.tx_disable()?;
@@ -271,6 +272,7 @@ impl Playback<'_, '_> {
     }
 
     fn flush(&mut self) -> Result<()> {
+        self.check()?;
         if self.used != 0 {
             if !self.enabled {
                 self.i2s.tx_enable()?;

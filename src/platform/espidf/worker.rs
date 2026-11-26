@@ -10,7 +10,7 @@ use goodwin_error::{Context, Result};
 use crate::{
     builtin_assistant::{ProviderSettings, State},
     panel_core::{Failure, Message, PlaybackMode, Stage},
-    voice_core::{self, RecordingWav, Turn},
+    voice_core::{self, RecordingGain, RecordingWav, Turn, VoiceRequest},
 };
 
 use super::{audio::Audio, cascade::Cascade, network::Network, panel::Panel};
@@ -27,6 +27,72 @@ pub(super) struct RequestContext {
     assistant: Option<crate::assistant::AssistantSettings>,
 }
 
+pub(super) struct VoiceJob {
+    pub(super) request: VoiceRequest,
+    context: RequestContext,
+    #[cfg(feature = "wasm-plugins")]
+    bindings: Option<voice_core::VoiceProviders<Option<super::plugins::ProviderBinding>>>,
+    pub(super) gain: RecordingGain,
+    pub(super) wake_word: Option<String>,
+    #[cfg(feature = "wake-tflite")]
+    pub(super) audio: crate::builtin_assistant::AudioSettings,
+}
+
+impl VoiceJob {
+    pub(super) fn admit(
+        state: &mut State,
+        panel: &Panel,
+        source: crate::panel_core::Source,
+    ) -> Result<Self, Failure> {
+        if !panel.voice_ready(state) {
+            return Err(Failure::ProviderUnavailable);
+        }
+        #[cfg(feature = "wasm-plugins")]
+        let bindings = state
+            .assistant
+            .as_ref()
+            .zip(panel.plugins.get())
+            .map(|(settings, plugins)| {
+                plugins
+                    .bind_voice(&settings.pipeline)
+                    .map_err(|_| Failure::ProviderUnavailable)
+            })
+            .transpose()?;
+        Ok(Self {
+            request: state.start_voice(source),
+            context: RequestContext::new(state),
+            #[cfg(feature = "wasm-plugins")]
+            bindings,
+            gain: RecordingGain::new(state.audio.transcription_gain.map(|gain| gain as f32), 1.0),
+            #[cfg(feature = "wake-tflite")]
+            wake_word: state
+                .wake_model
+                .as_ref()
+                .filter(|_| {
+                    matches!(
+                        source,
+                        crate::panel_core::Source::Wake | crate::panel_core::Source::WakeTest
+                    )
+                })
+                .map(|selection| selection.wake_word.clone()),
+            #[cfg(not(feature = "wake-tflite"))]
+            wake_word: None,
+            #[cfg(feature = "wake-tflite")]
+            audio: state.audio,
+        })
+    }
+
+    fn provider<'a>(&'a self, panel: &'a Panel) -> Cascade<'a> {
+        let provider = self.context.provider(panel, Some(&self.request));
+        #[cfg(feature = "wasm-plugins")]
+        let provider = match &self.bindings {
+            Some(bindings) => provider.bind_voice(bindings, &self.request),
+            None => provider,
+        };
+        provider
+    }
+}
+
 impl RequestContext {
     pub(super) fn new(state: &State) -> Self {
         Self {
@@ -37,8 +103,8 @@ impl RequestContext {
         }
     }
 
-    fn provider<'a>(&'a self, _panel: &'a Panel) -> Cascade<'a> {
-        let provider = Cascade::new(&self.provider, &self.prompt);
+    fn provider<'a>(&'a self, _panel: &'a Panel, request: Option<&'a VoiceRequest>) -> Cascade<'a> {
+        let provider = Cascade::new(&self.provider, &self.prompt, request);
         #[cfg(feature = "wasm-plugins")]
         let provider = provider.with_plugins(
             _panel.plugins.get().map(Arc::as_ref),
@@ -50,12 +116,16 @@ impl RequestContext {
 
 enum Job {
     Chat(RequestContext, String, Vec<Message>),
-    Voice(RequestContext, RecordingWav, Option<String>),
+    Voice(VoiceJob, RecordingWav),
 }
 
 enum PlaybackRequest {
-    Buffered(Vec<u8>, mpsc::Sender<Result<()>>),
-    Streaming(mpsc::Receiver<Chunk>, mpsc::Sender<Result<()>>),
+    Buffered(VoiceRequest, Vec<u8>, mpsc::Sender<Result<()>>),
+    Streaming(
+        VoiceRequest,
+        mpsc::Receiver<Chunk>,
+        mpsc::Sender<Result<()>>,
+    ),
 }
 
 enum Chunk {
@@ -85,7 +155,7 @@ impl Worker {
             (RequestContext::new(&state), state.chat_context())
         };
         let result = network
-            .ready(context.provider(panel).https())
+            .ready(context.provider(panel, None).https(), || false)
             .and_then(|()| {
                 self.jobs
                     .try_send(Job::Chat(context, message, history))
@@ -98,29 +168,39 @@ impl Worker {
 
     pub(super) fn voice(
         &self,
-        context: RequestContext,
+        job: VoiceJob,
         wav: RecordingWav,
-        wake_word: Option<String>,
         panel: &Panel,
         network: &mut Network<'_>,
     ) -> Result<(), Failure> {
-        network
-            .ready(context.provider(panel).https())
-            .map_err(provider_failure)?;
+        job.request.check()?;
+        let ready = network.ready(job.provider(panel).https(), || {
+            job.request.failure().is_some()
+        });
+        job.request.check()?;
+        ready.map_err(provider_failure)?;
         self.jobs
-            .try_send(Job::Voice(context, wav, wake_word))
+            .try_send(Job::Voice(job, wav))
             .map_err(|_| Failure::ProviderUnavailable)
     }
 
     /// The device loop is the only owner of the I²S driver.
     pub(super) fn play_ready(&self, audio: &mut Audio<'_>, panel: &Panel) {
         match self.playback.try_recv() {
-            Ok(PlaybackRequest::Buffered(pcm, done)) => {
-                State::lock(&panel.state).playing(PlaybackMode::Buffered);
-                let _ = done.send(audio.play(&pcm));
+            Ok(PlaybackRequest::Buffered(request, pcm, done)) => {
+                let result = (|| {
+                    if request.failure().is_some() {
+                        return Ok(());
+                    }
+                    State::lock(&panel.state).playing(PlaybackMode::Buffered);
+                    let mut playback = audio.playback(Some(&request));
+                    playback.push(&pcm)?;
+                    playback.finish()
+                })();
+                let _ = done.send(result);
             }
-            Ok(PlaybackRequest::Streaming(chunks, done)) => {
-                let result = play_stream(audio, &panel.state, &chunks);
+            Ok(PlaybackRequest::Streaming(request, chunks, done)) => {
+                let result = play_stream(audio, &panel.state, &chunks, &request);
                 let _ = done.send(result);
             }
             Err(_) => {}
@@ -132,12 +212,18 @@ fn play_stream(
     audio: &mut Audio<'_>,
     state: &Mutex<State>,
     chunks: &mpsc::Receiver<Chunk>,
+    request: &VoiceRequest,
 ) -> Result<()> {
-    let mut playback = audio.playback();
+    let mut playback = audio.playback(Some(request));
     let mut started = false;
+    let mut last_chunk = std::time::Instant::now();
     loop {
-        match chunks.recv_timeout(Duration::from_secs(20)) {
+        if request.failure().is_some() {
+            return Ok(());
+        }
+        match chunks.recv_timeout(Duration::from_millis(50)) {
             Ok(Chunk::Pcm(pcm)) => {
+                last_chunk = std::time::Instant::now();
                 if !started {
                     State::lock(state).playing(PlaybackMode::Streaming);
                 }
@@ -149,6 +235,8 @@ fn play_stream(
             }
             Ok(Chunk::End) => return playback.finish(),
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout)
+                if last_chunk.elapsed() < Duration::from_secs(20) => {}
             Err(error) => return Err(error).context("Wait for speech audio"),
         }
     }
@@ -158,31 +246,39 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
     let state = &panel.state;
     match job {
         Job::Chat(context, message, history) => {
-            let answer = context.provider(panel).chat(&message, &history, |_chunk| {
-                #[cfg(feature = "wasm-plugins")]
-                State::lock(state).chat_chunk(_chunk);
-            });
+            let answer = context
+                .provider(panel, None)
+                .chat(&message, &history, |_chunk| {
+                    #[cfg(feature = "wasm-plugins")]
+                    State::lock(state).chat_chunk(_chunk);
+                });
             State::lock(state).finish_chat(answer);
         }
-        Job::Voice(context, wav, wake_word) => {
-            let provider = context.provider(panel);
+        Job::Voice(job, wav) => {
+            let provider = job.provider(panel);
             let streaming = provider.streaming();
             let result = block_on(voice_core::run(
+                &job.request,
                 &mut EspTurn {
+                    request: &job.request,
                     provider,
                     output,
                     state,
                     transcript: String::new(),
                     streaming,
                     #[cfg(feature = "wasm-plugins")]
-                    tools: panel.plugins.get().map(|plugins| plugins.voice_tools()),
+                    tools: panel
+                        .plugins
+                        .get()
+                        .map(|plugins| plugins.voice_tools(&job.request)),
                 },
                 wav,
-                wake_word.as_deref(),
+                job.wake_word.as_deref(),
             ));
-            State::lock(state).finish(result.err());
+            State::lock(state).finish_voice(&job.request, result.err());
             match result {
                 Ok(()) => log::info!("Voice turn complete"),
+                Err(Failure::Cancelled) => log::info!("Voice turn cancelled"),
                 Err(error) => log::warn!("Voice turn failed: {error:?}"),
             }
         }
@@ -190,6 +286,7 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
 }
 
 struct EspTurn<'a> {
+    request: &'a VoiceRequest,
     provider: Cascade<'a>,
     output: &'a mpsc::SyncSender<PlaybackRequest>,
     state: &'a Mutex<State>,
@@ -205,17 +302,21 @@ enum Speech {
 }
 
 impl Turn for EspTurn<'_> {
-    type Error = Failure;
     type Speech = Speech;
 
+    fn stage(&mut self, stage: Stage) {
+        State::lock(self.state).stage(stage);
+    }
+
     async fn transcribe(&mut self, wav: &[u8]) -> Result<String, Failure> {
-        let text = self.provider.transcribe(wav).map_err(provider_failure)?;
+        let result = self.provider.transcribe(wav);
+        self.request.check()?;
+        let text = result.map_err(provider_failure)?;
         State::lock(self.state).transcript(text.clone());
         Ok(text)
     }
 
     async fn reply(&mut self, text: &str) -> Result<String, Failure> {
-        State::lock(self.state).stage(Stage::Thinking);
         self.transcript = text.to_owned();
         #[cfg(feature = "wasm-plugins")]
         if let Some(tools) = &self.tools
@@ -239,7 +340,6 @@ impl Turn for EspTurn<'_> {
         {
             let mut state = State::lock(self.state);
             state.voice_answer(&self.transcript, &answer);
-            state.stage(Stage::Synthesizing);
         }
         if self.streaming {
             Ok(Speech::Streaming(answer))
@@ -256,12 +356,20 @@ impl Turn for EspTurn<'_> {
         match speech {
             Speech::Buffered(pcm) => self
                 .output
-                .send(PlaybackRequest::Buffered(pcm, done))
+                .send(PlaybackRequest::Buffered(self.request.clone(), pcm, done))
                 .map_err(|_| Failure::Playback)?,
             Speech::Streaming(text) => {
                 let (chunks, incoming) = mpsc::sync_channel(2);
-                let mut pending = Some(PlaybackRequest::Streaming(incoming, done));
+                let mut pending = Some(PlaybackRequest::Streaming(
+                    self.request.clone(),
+                    incoming,
+                    done,
+                ));
                 let streamed = self.provider.stream_speech(&text, |pcm| {
+                    goodwin_error::ensure!(
+                        self.request.failure().is_none(),
+                        "Voice request cancelled"
+                    );
                     if pcm.is_empty() {
                         return Ok(());
                     }
@@ -295,10 +403,6 @@ impl Turn for EspTurn<'_> {
             .recv()
             .map_err(|_| Failure::Playback)?
             .map_err(playback_failure)
-    }
-
-    fn no_speech(&self) -> Failure {
-        Failure::NoSpeech
     }
 }
 

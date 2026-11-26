@@ -1,12 +1,10 @@
 use goodwin_error::{Context, Result};
-use goodwin_plugin::provider::Capability;
 
 use crate::{
-    assistant::AssistantSettings,
     plugins::VoiceTools,
     providers::{Provider, SpeechStream},
     station::{RecordingGain, playback_failure},
-    voice_core::{self, Turn},
+    voice_core::{self, Turn, VoiceProviders},
     wav::PcmAudio,
 };
 
@@ -17,6 +15,15 @@ mod tests;
 
 impl App {
     pub(crate) async fn voice(&self, id: u64, samples: Vec<i16>, woke: bool, gain: RecordingGain) {
+        let Some(request) = self
+            .runtime()
+            .active
+            .as_ref()
+            .filter(|turn| turn.id == id)
+            .and_then(|turn| turn.voice_request.clone())
+        else {
+            return;
+        };
         let error = self.voice_answer(id, samples, woke, gain).await.err();
         let announcement: Option<&[u8]> = match error {
             Some(Failure::ProviderUnavailable | Failure::ProviderFailed) => {
@@ -33,9 +40,14 @@ impl App {
                 details.playback = Some(PlaybackMode::Announcement);
             });
             self.stage(id, Stage::Playing);
-            if let Err(error) = self.player.play_speech(wav, &self.indicators).await {
-                log::warn!("Offline announcement failed id={id}: {error:#}");
-            }
+            let _ = request
+                .step(async {
+                    self.player
+                        .play_speech(wav, &self.indicators)
+                        .await
+                        .map_err(playback_failure)
+                })
+                .await;
         }
         self.finish(id, error);
     }
@@ -47,23 +59,37 @@ impl App {
         woke: bool,
         gain: RecordingGain,
     ) -> Result<(), Failure> {
-        let (request, wake_word) = self
+        let (request, wake_word, voice, providers) = self
             .runtime()
             .active
-            .as_ref()
+            .as_mut()
             .filter(|turn| turn.id == id)
-            .map(|turn| (turn.request.clone(), turn.wake_word.clone()))
+            .and_then(|turn| {
+                Some((
+                    turn.request.clone(),
+                    turn.wake_word.clone(),
+                    turn.voice_request.clone()?,
+                    turn.voice_providers.take()?,
+                ))
+            })
             .ok_or(Failure::Busy)?;
+        voice.check()?;
         let engine = &request.settings.assistant;
-        let transcription = self.voice_provider(id, engine, Capability::Transcription)?;
-        let chat = self.voice_provider(id, engine, Capability::Chat)?;
-        let speech = self.voice_provider(id, engine, Capability::Speech)?;
+        let VoiceProviders {
+            transcription,
+            chat,
+            speech,
+        } = providers.map_err(|(stage, error)| {
+            self.update_voice(id, |details, _| details.error_stage = Some(stage));
+            error
+        })?;
         gain.prepare(&mut samples);
         let wav = voice_core::recording_wav(samples).map_err(|error| {
             log::warn!("Could not encode recording id={id}: {error}");
             Failure::Microphone
         })?;
         voice_core::run(
+            &voice,
             &mut StationTurn {
                 app: self,
                 id,
@@ -77,23 +103,6 @@ impl App {
             woke.then_some(wake_word.as_deref().unwrap_or("Гудвин")),
         )
         .await
-    }
-
-    fn voice_provider(
-        &self,
-        id: u64,
-        engine: &AssistantSettings,
-        capability: Capability,
-    ) -> Result<Provider, Failure> {
-        engine.resolve(&self.plugins, capability).inspect_err(|_| {
-            self.update_voice(id, |details, _| {
-                details.error_stage = Some(match capability {
-                    Capability::Transcription => Stage::Transcribing,
-                    Capability::Chat => Stage::Thinking,
-                    Capability::Speech => Stage::Synthesizing,
-                });
-            });
-        })
     }
 }
 
@@ -113,8 +122,11 @@ enum Speech {
 }
 
 impl Turn for StationTurn<'_> {
-    type Error = Failure;
     type Speech = Speech;
+
+    fn stage(&mut self, stage: Stage) {
+        self.app.stage(self.id, stage);
+    }
 
     async fn transcribe(&mut self, wav: &[u8]) -> Result<String, Failure> {
         let text = self
@@ -130,7 +142,6 @@ impl Turn for StationTurn<'_> {
 
     async fn reply(&mut self, text: &str) -> Result<String, Failure> {
         self.app.push("user", text.to_owned());
-        self.app.stage(self.id, Stage::Thinking);
         let voice_turn = {
             let mut runtime = self.app.runtime();
             runtime.voice_turn += 1;
@@ -150,7 +161,6 @@ impl Turn for StationTurn<'_> {
         self.app
             .update_voice(self.id, |details, _| details.answer = Some(answer.clone()));
         self.app.push("assistant", answer.clone());
-        self.app.stage(self.id, Stage::Synthesizing);
         if self.speech_streaming
             && let Some(mut stream) = self
                 .speech
@@ -199,10 +209,6 @@ impl Turn for StationTurn<'_> {
                     .await
             }
         }
-    }
-
-    fn no_speech(&self) -> Failure {
-        Failure::NoSpeech
     }
 }
 

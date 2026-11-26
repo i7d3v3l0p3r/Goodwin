@@ -22,6 +22,7 @@ use crate::{
     plugins::{Plugins, View as PluginView},
     providers::Provider,
     station::{Indicators, Player},
+    voice_core::{VoiceProviders, VoiceRequest},
     wake::{PendingModel, WakeModels},
     wake_catalog::Selection,
 };
@@ -64,6 +65,8 @@ struct Turn {
     request: RequestSettings,
     wake_word: Option<String>,
     voice: Option<VoiceDetails>,
+    voice_request: Option<VoiceRequest>,
+    voice_providers: Option<Result<VoiceProviders<Provider>, (Stage, Failure)>>,
 }
 
 pub(crate) struct ActiveTurn {
@@ -364,6 +367,26 @@ impl App {
         })
     }
 
+    pub(crate) fn cancel_voice(&self, id: u64) -> bool {
+        let mut runtime = self.runtime();
+        let Some(turn) = runtime.active.as_ref().filter(|turn| turn.id == id) else {
+            return false;
+        };
+        let Some(request) = turn
+            .voice_request
+            .as_ref()
+            .filter(|request| request.id == id)
+        else {
+            return false;
+        };
+        request.cancel(Failure::Cancelled);
+        if matches!(turn.report.stage, Stage::AwaitingWake | Stage::Recording) {
+            self.finish_turn(&mut runtime, id, Some(Failure::Cancelled));
+            self.wake_models.changed.notify_one();
+        }
+        true
+    }
+
     pub fn start(&self, source: Source) -> Result<u64, Failure> {
         self.start_turn(source, false)
     }
@@ -392,15 +415,16 @@ impl App {
         }
         runtime.next_id += 1;
         let id = runtime.next_id;
-        let stage = match source {
-            Source::Chat => Stage::Thinking,
-            Source::WakeTest => Stage::AwaitingWake,
-            _ => Stage::Recording,
+        let stage = if source == Source::Chat {
+            Stage::Thinking
+        } else {
+            crate::voice_core::first_voice_stage(source)
         };
         runtime.active = Some(Turn {
             id,
             started: Instant::now(),
             report: Report {
+                request_id: (source != Source::Chat).then_some(id),
                 source,
                 stage,
                 timings: Vec::new(),
@@ -416,6 +440,11 @@ impl App {
             },
             voice: (source != Source::Chat)
                 .then(|| VoiceDetails::new(&request.settings.assistant.pipeline)),
+            voice_request: (source != Source::Chat).then(|| VoiceRequest::new(id)),
+            voice_providers: (source != Source::Chat).then(|| {
+                self.plugins
+                    .bind_voice(&request.settings.assistant.pipeline)
+            }),
             request,
             wake_word: runtime
                 .wake_model
@@ -430,7 +459,16 @@ impl App {
 
     pub fn stage(&self, id: u64, stage: Stage) {
         let mut runtime = self.runtime();
-        if let Some(turn) = runtime.active.as_mut().filter(|turn| turn.id == id) {
+        if let Some(turn) = runtime.active.as_mut().filter(|turn| {
+            turn.id == id
+                && turn
+                    .voice_request
+                    .as_ref()
+                    .is_none_or(|request| request.failure().is_none())
+        }) {
+            if turn.report.stage == stage {
+                return;
+            }
             turn.record_timing();
             let wake_test_done =
                 turn.report.stage == Stage::AwaitingWake && stage != Stage::AwaitingWake;
@@ -450,6 +488,11 @@ impl App {
     fn finish_turn(&self, runtime: &mut Runtime, id: u64, error: Option<Failure>) {
         if runtime.active.as_ref().is_some_and(|turn| turn.id == id) {
             let mut turn = runtime.active.take().expect("matching active turn");
+            let error = turn
+                .voice_request
+                .as_ref()
+                .and_then(VoiceRequest::failure)
+                .or(error);
             turn.record_timing();
             turn.report.error = error;
             let source = turn.report.source;

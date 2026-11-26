@@ -51,18 +51,27 @@ pub struct Process {
     speech_streaming: bool,
     wake_subscription: Option<Arc<AtomicU64>>,
     #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
-    provider_connection: Option<Arc<str>>,
+    provider_connection: Option<ProviderTarget>,
+}
+
+#[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+#[derive(Clone)]
+enum ProviderTarget {
+    Connection(Arc<str>),
+    Snapshot(super::ProviderConfig),
 }
 
 struct Call {
     method: &'static str,
     params: Box<RawValue>,
     #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
-    connection: Option<Arc<str>>,
-    response: Option<oneshot::Sender<Result<Box<RawValue>>>>,
+    connection: Option<ProviderTarget>,
+    response: Option<CallResponse>,
     chunks: Option<StreamChunks>,
     limits: CallLimits,
 }
+
+type CallResponse = oneshot::Sender<Result<Box<RawValue>>>;
 
 enum StreamChunks {
     Chat(mpsc::Sender<String>),
@@ -441,12 +450,21 @@ impl Process {
         let mut process = self.clone();
         #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
         {
-            process.provider_connection = Some(Arc::from(id));
+            process.provider_connection = Some(ProviderTarget::Connection(Arc::from(id)));
         }
         #[cfg(not(all(feature = "wasm-plugins", target_os = "linux")))]
         let _ = id;
         process.speech_streaming &= speech_streaming;
         process
+    }
+
+    #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+    pub(super) fn with_provider_config(mut self, config: super::ProviderConfig) -> Self {
+        if let super::ProviderConfig::Connection(connection) = &config {
+            self.speech_streaming &= connection.protocol.speech_streaming();
+        }
+        self.provider_connection = Some(ProviderTarget::Snapshot(config));
+        self
     }
 
     fn enqueue(&self, call: Call) -> Result<()> {
@@ -540,7 +558,7 @@ async fn run(
         tokio::select! {
             frame = output.read(FRAME_LIMIT) => notify(frame?, sound)?,
             call = incoming.recv() => {
-                let Some(call) = call else { return Ok(false); };
+                let Some(mut call) = call else { return Ok(false); };
                 if call.response.as_ref().is_some_and(oneshot::Sender::is_closed) { continue; }
                 id += 1;
                 let message = plugin_rpc::Request {
@@ -553,22 +571,38 @@ async fn run(
                         continue;
                     }
                 };
+                let mut response = call.response.take();
                 let exchange = exchange(input, output, sound, wake_subscription, id, &call, &request);
                 let result = if let Some(StreamChunks::Speech(chunks)) = &call.chunks {
                     match finish_speech_exchange(exchange, chunks).await {
                         Ok(result) => result,
                         Err(error) => {
                             log::warn!("Restarting native speech plugin: {error:#}");
-                            complete(call.response, Err(error));
+                            complete(response, Err(error));
                             return Ok(true);
                         }
                     }
                 } else {
-                    timeout(call.limits.timeout, exchange).await.context("Plugin RPC timed out")??
+                    tokio::select! {
+                        biased;
+                        result = timeout(call.limits.timeout, exchange) => result.context("Plugin RPC timed out")??,
+                        () = response_closed(response.as_mut()) => {
+                            // A cancelled exchange can leave a partial frame in either pipe.
+                            return Ok(true);
+                        }
+                    }
                 };
-                complete(call.response, result);
+                complete(response, result);
             }
         }
+    }
+}
+
+async fn response_closed(response: Option<&mut CallResponse>) {
+    if let Some(response) = response {
+        response.closed().await;
+    } else {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -590,10 +624,7 @@ async fn finish_speech_exchange<T>(
     .context("Plugin speech deadline exceeded")?
 }
 
-fn complete(
-    response: Option<oneshot::Sender<Result<Box<RawValue>>>>,
-    result: Result<Box<RawValue>>,
-) {
+fn complete(response: Option<CallResponse>, result: Result<Box<RawValue>>) {
     if let Some(response) = response {
         let _ = response.send(result);
     } else if let Err(error) = result {

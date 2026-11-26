@@ -88,6 +88,13 @@ impl Detector {
     }
 
     pub(crate) fn apply_pending_model(&mut self, app: &App) {
+        if let Some(recording) = &self.recording
+            && app.active().is_none_or(|turn| turn.id != recording.id)
+        {
+            self.recording = None;
+            self.frame.clear();
+            self.reset_wake(app);
+        }
         if let Some(pending) = app.take_pending_wake_model() {
             log::info!("Wake model activated id={}", pending.selection.id);
             self.end_wake_stream(app);
@@ -112,6 +119,14 @@ impl Detector {
     #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     fn tick(&mut self, app: &Arc<App>) {
         let active = app.active();
+        if self
+            .recording
+            .as_ref()
+            .is_some_and(|recording| active.as_ref().is_none_or(|turn| turn.id != recording.id))
+        {
+            self.recording = None;
+            self.reset_wake(app);
+        }
         if let Some(ActiveTurn {
             id,
             source,

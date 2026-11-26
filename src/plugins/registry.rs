@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{RwLock, RwLockReadGuard},
+    sync::{Arc, RwLock, RwLockReadGuard},
 };
 
 use goodwin_plugin::provider::Capability;
@@ -60,14 +60,19 @@ impl Registry {
         self.changes.send_replace(());
     }
 
-    pub(super) fn take_active(&self, id: &str, status: Status) -> Option<Active> {
+    pub(super) fn take_active(&self, id: &str, status: Status) -> Result<Option<Active>, Failure> {
         let mut entries = self.entries.write().expect("plugin registry");
-        let entry = entries.get_mut(id)?;
+        let Some(entry) = entries.get_mut(id) else {
+            return Ok(None);
+        };
+        if entry.active.as_ref().is_some_and(Active::used_by_voice) {
+            return Err(Failure::Busy);
+        }
         entry.status = status;
         entry.error = None;
         let active = entry.active.take();
         self.changes.send_replace(());
-        active
+        Ok(active)
     }
 
     pub(super) fn set_connections(&self, id: &str, mut views: Vec<connections::View>) {
@@ -86,11 +91,22 @@ impl Registry {
         }
     }
 
-    pub(super) fn settings_changed(&self, id: &str) {
-        if let Some(entry) = self.entries.write().expect("plugin registry").get_mut(id) {
-            entry.settings_revision += 1;
-            self.changes.send_replace(());
+    pub(super) fn update_settings<T>(
+        &self,
+        id: &str,
+        write: impl FnOnce() -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let mut entries = self.entries.write().expect("plugin registry");
+        let entry = entries.get_mut(id).ok_or(Failure::NotFound)?;
+        // Native providers read the settings file themselves. Keep the file
+        // stable while a voice request holds the package.
+        if !entry.manifest.is_wasm() && entry.active.as_ref().is_some_and(Active::used_by_voice) {
+            return Err(Failure::Busy);
         }
+        let result = write()?;
+        entry.settings_revision += 1;
+        self.changes.send_replace(());
+        Ok(result)
     }
 }
 
@@ -108,6 +124,13 @@ pub(super) struct Active {
     pub(super) registration: Registration,
     pub(super) revision: String,
     pub(super) connections: Vec<connections::View>,
+    pub(super) voice: Arc<()>,
+}
+
+impl Active {
+    fn used_by_voice(&self) -> bool {
+        Arc::strong_count(&self.voice) > 1
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]

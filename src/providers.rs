@@ -18,6 +18,7 @@ use crate::{
 pub(crate) struct Provider {
     process: Process,
     selection: ModelSelection,
+    _package: Option<std::sync::Arc<()>>,
 }
 
 pub(crate) struct SpeechStream {
@@ -58,25 +59,41 @@ impl Plugins {
             log::warn!("Provider unavailable id={id} capability={capability:?}");
             return Err(Failure::ProviderUnavailable);
         };
+        Provider::from_process(settings, capability, process, model_catalog)
+    }
+}
+
+impl Provider {
+    pub(crate) fn from_process(
+        settings: &StageSettings,
+        capability: Capability,
+        process: Process,
+        model_catalog: bool,
+    ) -> Result<Self, Failure> {
+        let id = &settings.provider;
         if !model_catalog && !settings.selection.is_empty() {
             log::warn!(
                 "Provider does not accept model selection id={id} capability={capability:?}"
             );
             return Err(Failure::ProviderUnavailable);
         }
-        Ok(Provider {
+        Ok(Self {
             process,
             selection: settings.selection.clone(),
+            _package: None,
         })
     }
-}
 
-impl Provider {
+    pub(crate) fn pin_package(mut self, package: std::sync::Arc<()>) -> Self {
+        self._package = Some(package);
+        self
+    }
     #[cfg(test)]
     pub(crate) fn mock(process: Process) -> Self {
         Self {
             process,
             selection: ModelSelection::default(),
+            _package: None,
         }
     }
 

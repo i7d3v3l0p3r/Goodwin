@@ -206,16 +206,18 @@ impl Plugins {
         let _operation = self.0.lifecycle.lock().await;
         let fields = self.settings_fields(id)?;
         let directory = self.0.store.slot(id).join("data");
-        let view = tokio::task::spawn_blocking(move || {
-            let data = SettingsData::read(&directory).map_err(storage)?;
-            let data = settings::apply(&fields, data, patch)?;
-            data.save(&directory).map_err(storage)?;
-            Ok(settings::View::new(fields, data))
+        let manager = self.0.clone();
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            manager.registry.update_settings(&id, || {
+                let data = SettingsData::read(&directory).map_err(storage)?;
+                let data = settings::apply(&fields, data, patch)?;
+                data.save(&directory).map_err(storage)?;
+                Ok(settings::View::new(fields, data))
+            })
         })
         .await
-        .map_err(storage)??;
-        self.0.registry.settings_changed(id);
-        Ok(view)
+        .map_err(storage)?
     }
 
     pub(crate) fn provider(&self, id: &str, capability: Capability) -> Option<(Process, bool)> {
@@ -230,6 +232,67 @@ impl Plugins {
             None => active.process.clone(),
         };
         Some((process, active.registration.model_catalog))
+    }
+
+    pub(crate) fn bind_voice(
+        &self,
+        pipeline: &crate::assistant::PipelineSettings,
+    ) -> std::result::Result<
+        crate::voice_core::VoiceProviders<crate::providers::Provider>,
+        (crate::app::Stage, crate::app::Failure),
+    > {
+        use crate::app::Failure;
+        let registry = self.0.registry.read();
+        #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+        let mut configs = BTreeMap::<&str, super::ProviderConfig>::new();
+        crate::voice_core::VoiceProviders::resolve(|capability| {
+            let settings = pipeline.get(capability);
+            let Some(RegisteredProvider {
+                entry,
+                active,
+                connection,
+            }) = registered_provider(&registry, &settings.provider, capability)
+            else {
+                return Err(Failure::ProviderUnavailable);
+            };
+            let process = active.process.clone();
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            let process = if entry.manifest.is_wasm() {
+                use std::collections::btree_map::Entry;
+                let config = match configs.entry(settings.provider.as_str()) {
+                    Entry::Occupied(config) => config.get().clone(),
+                    Entry::Vacant(config) => {
+                        let data = self.0.store.slot(&entry.manifest.id).join("data");
+                        config
+                            .insert(
+                                super::ProviderConfig::read(
+                                    &data,
+                                    connection.map(|view| view.id.as_str()),
+                                )
+                                .map_err(|error| {
+                                    log::warn!(
+                                        "Read voice provider configuration id={}: {error:#}",
+                                        entry.manifest.id
+                                    );
+                                    Failure::ProviderUnavailable
+                                })?,
+                            )
+                            .clone()
+                    }
+                };
+                process.with_provider_config(config)
+            } else {
+                process
+            };
+            let _ = (entry, connection);
+            crate::providers::Provider::from_process(
+                settings,
+                capability,
+                process,
+                active.registration.model_catalog,
+            )
+            .map(|provider| provider.pin_package(active.voice.clone()))
+        })
     }
 
     pub(crate) fn provider_revisions<const N: usize>(
@@ -369,6 +432,7 @@ impl Plugins {
         self.0.registry.insert(
             manifest,
             Some(Active {
+                voice: Arc::default(),
                 process,
                 registration,
                 revision: "fixture".into(),
@@ -479,7 +543,7 @@ impl Plugins {
             return Err(Failure::Storage);
         }
         let old = Manifest::read(&previous.join("package")).map_err(storage)?;
-        self.0.withdraw(id, Status::Updating).await;
+        self.0.withdraw(id, Status::Updating).await?;
         let source = previous.join("data");
         let destination = staged.join("data");
         let prepared = tokio::task::spawn_blocking(move || {
@@ -538,7 +602,7 @@ impl Plugins {
             return Err(Failure::Storage);
         }
         let work = tempfile::tempdir_in(self.0.store.work()).map_err(storage)?;
-        self.0.withdraw(id, Status::Removing).await;
+        self.0.withdraw(id, Status::Removing).await?;
         if let Err(error) = fs::rename(&slot, work.path().join("removed")) {
             if let Ok(manifest) = Manifest::read(&slot.join("package")) {
                 self.0
@@ -556,10 +620,11 @@ impl Plugins {
 }
 
 impl Manager {
-    async fn withdraw(&self, id: &str, status: Status) {
-        if let Some(active) = self.registry.take_active(id, status) {
+    async fn withdraw(&self, id: &str, status: Status) -> Result<(), Failure> {
+        if let Some(active) = self.registry.take_active(id, status)? {
             active.process.stop().await;
         }
+        Ok(())
     }
 
     async fn start(&self, manifest: &Manifest) -> Result<Active> {
@@ -605,6 +670,7 @@ impl Manager {
             Vec::new()
         };
         Ok(Active {
+            voice: Arc::default(),
             process,
             registration,
             revision,

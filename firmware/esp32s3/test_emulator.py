@@ -69,18 +69,24 @@ def tone_amplitude(samples, rate, frequency):
     return 2 * math.hypot(sine, cosine) / len(samples)
 
 
-def check_amplifier(samples, rate, timers):
+def check_amplifier(samples, rate, timers, interrupted=False):
     window = rate // 20
+    if interrupted:
+        # The fixture pauses the stream and the emulator can insert silence
+        # while it waits for TCP. Check the tone in the tail of the final reply.
+        samples = samples[-rate:]
     longest_speech = longest_alarm = speech = alarm = 0
+    audible_speech = 0
     for offset in range(0, len(samples) - window + 1, window):
         segment = samples[offset : offset + window]
         main = tone_amplitude(segment, rate, SPEECH_HZ)
         secondary = tone_amplitude(segment, rate, 880)
         speech = speech + 1 if main > 5000 and secondary < 1000 else 0
+        audible_speech += speech != 0
         alarm = alarm + 1 if main > 3000 and secondary > 1000 else 0
         longest_speech = max(longest_speech, speech)
         longest_alarm = max(longest_alarm, alarm)
-    assert longest_speech >= 4, "The assistant did not produce 200 ms of the 660 Hz fixture tone"
+    assert (audible_speech if interrupted else longest_speech) >= 4, "The assistant did not produce 200 ms of the 660 Hz fixture tone"
     if timers:
         assert longest_alarm >= 4, "The timer alarm did not produce both tones for at least 200 ms"
 
@@ -160,8 +166,23 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             status, content_type, body = self.reply()
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
+            headers_sent = False
+            if self.path == "/v1/audio/transcriptions" and (hold := self.server.hold_transcription):
+                if hold == "release":
+                    # Split headers after Content-Type to exercise a retry on an
+                    # already active parser, including status and type retention.
+                    self.send_response(status)
+                    self.send_header("Content-Type", content_type)
+                    self.flush_headers()
+                    headers_sent = True
+                self.server.transcription_started.set()
+                assert self.server.release_transcription.wait(12), "Transcription fixture was not released"
+                if hold == "cancel":
+                    self.close_connection = True
+                    return
+            if not headers_sent:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
             self.send_header("Connection", "close")
             if content_type in ("audio/pcm", "text/event-stream"):
                 self.send_header("Transfer-Encoding", "chunked")
@@ -182,6 +203,10 @@ class Provider(BaseHTTPRequestHandler):
                     if index == 4 * chunk_size and getattr(self.server, "streaming", False):
                         self.wfile.flush()
                         assert self.server.release_stream.wait(8), "Playback did not start before the full response"
+                        if self.server.cancel_stream:
+                            self.close_connection = True
+                            self.server.stream_cancelled.set()
+                            return
                 self.wfile.write(b"0\r\n\r\n")
             else:
                 self.send_header("Content-Length", str(len(body)))
@@ -705,6 +730,81 @@ class Panel:
         self.request("/api/chat/clear", "POST", {}, 204)
         assert self.request("/api/state")["messages"] == []
 
+    def wait_voice(self, predicate):
+        end = monotonic() + 12
+        while monotonic() < end:
+            state = self.request("/api/state")
+            if result := predicate(state):
+                return result
+            sleep(0.04)
+        raise AssertionError(("Voice request did not reach the expected state", state["active"], state["last_voice"]))
+
+    def exercise_voice_lifecycle(self, port, server):
+        def start():
+            control(port, "part button input press after 100", "part button input release after 1200")
+            return self.wait_voice(lambda state: state["active"])["request_id"]
+
+        def cancel(request_id, stage):
+            self.request("/api/voice/cancel", "POST", {"request_id": request_id}, 202)
+            last = self.wait_voice(lambda state: not state["active"] and state["last_voice"])
+            assert (last["request_id"], last["error"], last["error_stage"]) == (request_id, "cancelled", stage)
+
+        start_requests = len(server.requests)
+        if self.request("/api/state")["model"]:
+            self.request("/api/test", "POST", {"mode": "wake"}, 202)
+            wake = self.wait_voice(lambda state: state["active"])
+            assert wake["stage"] == "awaiting_wake"
+            cancel(wake["request_id"], "awaiting_wake")
+        recording = start()
+        cancel(recording, "recording")
+        assert len(server.requests) == start_requests
+        # Let the first button release before pressing again.
+        sleep(2)
+
+        server.hold_transcription = "cancel"
+        processing = start()
+        assert processing != recording
+        assert server.transcription_started.wait(10)
+        old = self.request("/api/voice/cancel", "POST", {"request_id": recording}, 409)
+        assert old == {"error": "voice_request_inactive"}
+        cancel(processing, "transcribing")
+        server.release_transcription.set()
+
+        server.transcription_started.clear()
+        server.release_transcription.clear()
+        server.hold_transcription = "release"
+        server.cancel_stream = True
+        playing = start()
+        assert server.transcription_started.wait(10)
+        connection_path = "/api/plugin-connections/openai-compatible"
+        connection = next(row for row in self.request(connection_path) if row["name"] == "ESP fixture")
+        self.request(f"{connection_path}/{connection['id']}", "DELETE")
+        sleep(0.8)
+        server.release_transcription.set()
+        self.wait_voice(lambda state: state["active"] and state["active"]["stage"] == "playing")
+        assert server.playback_started.wait(7)
+        cancel(playing, "playing")
+        server.release_stream.set()
+        assert server.stream_cancelled.wait(5)
+        server.release_stream.clear()
+        assert server.requests[start_requests:] == [
+            "/v1/audio/transcriptions", "/v1/audio/transcriptions",
+            "/v1/chat/completions", "/v1/audio/speech",
+        ]
+        # Configure the next request with a new connection. The cancelled turn used
+        # the old connection through TTS after it had been removed from the panel.
+        original = self.request("/api/state")["settings"]["assistant"]
+        result = self.request(connection_path, "PUT", {
+            "name": "ESP fixture", "protocol": "openai", "baseUrl": BASE_URL, "key": "",
+        })
+        for capability in ("transcription", "chat", "speech"):
+            original["pipeline"][capability]["provider"] = f"openai-compatible:{result['id']}"
+        self.request("/api/settings/assistant", "PUT", original, 204)
+        self.request("/api/chat/clear", "POST", {}, 204)
+        server.hold_transcription = None
+        server.cancel_stream = False
+        print("Verified ESP recording, stalled WASM HTTP, and streamed playback cancellation with pinned providers", flush=True)
+
     def print_resources(self, stage):
         resources = self.request("/api/diagnostics/resources")
         for region in ("memory", "psram"):
@@ -750,7 +850,7 @@ class Panel:
         assert audio["sensitivity"] == 0.55 and audio["wake_gain"] == audio["transcription_gain"] == 1.0
 
 
-def run_emulator(args, flash, board, output, release_stream, release_chat=None, catalog_sync=None):
+def run_emulator(args, flash, board, output, server):
     with flash.open("rb") as flash_file:
         flash_file.seek(0x8000)
         table = flash_file.read(0xC00)
@@ -796,6 +896,7 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
     persisted = False
     interrupted = False
     provision_steps = 0
+    playback_events = 0
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, encoding="utf-8", errors="replace") as process:
         lines = Queue()
@@ -803,6 +904,8 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
         def read_uart():
             for line in process.stdout:
                 print(line, end="", flush=True)
+                if "Streamed playback started" in line:
+                    server.playback_started.set()
                 lines.put(line)
             lines.put(None)
 
@@ -842,14 +945,16 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
                         if args.panel_settings:
                             panel.set_system_prompt()
                             panel.verify_microphone_settings()
-                        panel.configure_and_chat(args.stream_speech, args.provider_package, release_chat)
+                        panel.configure_and_chat(args.stream_speech, args.provider_package, server.release_chat)
                         if args.timers_package:
                             panel.install_timers(args.timers_package)
                         if args.wake_catalog_model:
-                            selection = panel.install_wake_model(catalog_sync)
+                            selection = panel.install_wake_model((server.catalog_request_started, server.release_catalog))
                             active_model = selection["id"]
                         if args.dataset_package:
                             panel.start_dataset(args.dataset_package)
+                        if args.voice_lifecycle:
+                            panel.exercise_voice_lifecycle(port, server)
                         if args.wake_test:
                             panel.start_wake_test()
                         elif args.wake_audio:
@@ -883,9 +988,12 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None, 
                 if "Voice turn failed:" in line:
                     raise RuntimeError(line.strip())
                 if args.stream_speech and "Streamed playback started" in line:
+                    playback_events += 1
+                    if args.voice_lifecycle and playback_events == 1:
+                        continue
                     assert panel.request("/api/state")["active"]["stage"] == "playing"
                     panel.print_resources("during streaming")
-                    release_stream.set()
+                    server.release_stream.set()
                 if "Voice turn complete" in line and not played:
                     source = ("wake_test" if args.wake_test else "wake" if args.wake_audio
                               else "manual_test" if args.manual_test else "push_to_talk")
@@ -946,6 +1054,7 @@ def main():
     parser.add_argument("--panel-settings", action="store_true", help="Check the saved system prompt and protected diagnostic log")
     parser.add_argument("--wake-test", action="store_true", help="Run the wake-word check with continuous listening paused")
     parser.add_argument("--wake-catalog-model", type=Path, help="Serve and install a Micro INT8 fixture model from a test catalog")
+    parser.add_argument("--voice-lifecycle", action="store_true", help="Cancel recording, WASM provider calls and playback")
     args = parser.parse_args()
     if args.interrupt_update and not args.update_image:
         parser.error("--interrupt-update requires --update-image")
@@ -957,6 +1066,9 @@ def main():
         parser.error("--wake-test requires --wake-audio")
     if args.timer_voice_tool and not args.timers_package:
         parser.error("--timer-voice-tool requires --timers-package")
+    if args.voice_lifecycle and (not args.provider_package or not args.stream_speech or args.manual_test
+                                 or args.wake_audio or args.timer_voice_tool):
+        parser.error("--voice-lifecycle requires a streaming WASM provider and push-to-talk")
     args.work.mkdir(parents=True, exist_ok=True)
     board = prepare_board(args.examples, args.work)
     if args.provision_wifi:
@@ -981,11 +1093,16 @@ def main():
         server.release_catalog = Event()
         server.release_stream = Event()
         server.release_chat = Event()
+        server.hold_transcription = None
+        server.transcription_started = Event()
+        server.release_transcription = Event()
+        server.cancel_stream = False
+        server.stream_cancelled = Event()
+        server.playback_started = Event()
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            run_emulator(args, flash, board, output, server.release_stream, server.release_chat,
-                         (server.catalog_request_started, server.release_catalog))
+            run_emulator(args, flash, board, output, server)
         finally:
             server.shutdown()
             thread.join()
@@ -999,13 +1116,18 @@ def main():
             expected.insert(-1, "/v1/chat/completions")
         if args.provider_package:
             expected.insert(0, "/v1/models")
+        if args.voice_lifecycle:
+            expected[2:2] = [
+                "/v1/audio/transcriptions", "/v1/audio/transcriptions",
+                "/v1/chat/completions", "/v1/audio/speech",
+            ]
         assert server.requests == expected, server.requests
         assert server.wake_downloads == (2 if args.wake_catalog_model else 0)
     with wave.open(str(output)) as wav:
         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
         frames = wav.getnframes()
         samples = struct.unpack(f"<{frames}h", wav.readframes(frames))
-        check_amplifier(samples, 16000, args.timers_package)
+        check_amplifier(samples, 16000, args.timers_package, args.voice_lifecycle)
     print(f"Verified panel setup, chat, diagnostics and the 660 Hz amplifier response in {output}")
 
 

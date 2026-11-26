@@ -21,7 +21,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use super::*;
 use crate::{
     plugin_wasm::{HostServices, META_LIMIT},
-    plugins::{connections, package::WasmHttp},
+    plugins::{ProviderConfig, package::WasmHttp},
 };
 
 const STORAGE_LIMIT: usize = 128 * 1024;
@@ -35,7 +35,7 @@ pub(super) struct Host {
     data: PathBuf,
     http: Option<WasmHttp>,
     has_connections: bool,
-    connection: Option<connections::Connection>,
+    config: Option<ProviderConfig>,
     storage: Option<OwnedFd>,
     response: Option<HttpResponseBody>,
     runtime: tokio::runtime::Handle,
@@ -54,7 +54,7 @@ impl Host {
             data,
             http: manifest.wasm_http.clone(),
             has_connections: manifest.provider_connections,
-            connection: None,
+            config: None,
             storage,
             response: None,
             runtime: tokio::runtime::Handle::current(),
@@ -65,28 +65,35 @@ impl Host {
     }
 
     pub(super) fn finish(&mut self) {
-        self.connection = None;
+        self.config = None;
         self.response = None;
         self.chunks = None;
         self.shutdown = None;
     }
 
-    pub(super) fn select_connection(&mut self, id: Option<&str>) -> Result<()> {
-        self.connection = if let Some(id) = id {
-            ensure!(
-                self.has_connections,
-                "Plugin does not register provider connections"
-            );
-            Some(
-                connections::Store::read(&self.data)?
-                    .connection(id)
-                    .context("Provider connection is unavailable")?
-                    .clone(),
-            )
-        } else {
-            None
+    pub(super) fn select_config(&mut self, target: Option<ProviderTarget>) -> Result<()> {
+        self.config = match target {
+            Some(ProviderTarget::Connection(id)) => {
+                Some(ProviderConfig::read(&self.data, Some(&id))?)
+            }
+            Some(ProviderTarget::Snapshot(config)) => Some(config),
+            None => None,
         };
         Ok(())
+    }
+
+    fn connection(&self) -> Result<&crate::plugins::connections::Connection> {
+        match &self.config {
+            Some(ProviderConfig::Connection(connection)) => Ok(connection),
+            _ => bail!("Select a provider connection"),
+        }
+    }
+
+    fn settings(&self) -> Result<Arc<SettingsData>> {
+        match &self.config {
+            Some(ProviderConfig::Settings(settings)) => Ok(settings.clone()),
+            _ => Ok(SettingsData::read(&self.data)?.into()),
+        }
     }
 
     fn check_active(&self) -> Result<()> {
@@ -109,17 +116,12 @@ impl HostServices for Host {
         self.check_active()?;
         match request {
             Request::Settings if self.has_connections => {
-                let connection = self
-                    .connection
-                    .as_ref()
-                    .context("Select a provider connection")?;
+                let connection = self.connection()?;
                 Ok(goodwin_json::to_vec(
                     &json!({"protocol": connection.protocol}),
                 )?)
             }
-            Request::Settings => Ok(goodwin_json::to_vec(
-                &SettingsData::read(&self.data)?.values,
-            )?),
+            Request::Settings => Ok(goodwin_json::to_vec(&self.settings()?.values)?),
             Request::HttpStart { request } => self.http_start(request, input),
             Request::HttpRead { length } => {
                 ensure!(length <= 64 * 1024, "HTTP chunk is too large");
@@ -333,10 +335,7 @@ impl Host {
 
     fn http_destination(&self) -> Result<(String, String, bool)> {
         if self.has_connections {
-            let connection = self
-                .connection
-                .as_ref()
-                .context("Select a provider connection")?;
+            let connection = self.connection()?;
             return Ok((
                 connection.base_url.clone(),
                 connection.key.clone(),
@@ -347,7 +346,7 @@ impl Host {
             .http
             .as_ref()
             .context("Plugin does not declare WASM HTTP access")?;
-        let settings = SettingsData::read(&self.data)?;
+        let settings = self.settings()?;
         let base = config
             .base_url
             .clone()

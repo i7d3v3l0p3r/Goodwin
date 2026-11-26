@@ -12,6 +12,7 @@ use crate::panel_core::{
     ChatTest, Failure, Message, PlaybackMode, Report, Source, Stage, VoiceDetails, VoiceModel,
     VoiceReport, recent_chat,
 };
+use crate::voice_core::VoiceRequest;
 
 mod provider;
 mod settings;
@@ -72,6 +73,7 @@ pub(super) struct State {
     last_voice: Option<VoiceReport>,
     messages: VecDeque<Message>,
     next_message: u64,
+    next_request: u64,
 }
 
 struct Request {
@@ -79,6 +81,7 @@ struct Request {
     report: Report,
     voice: Option<VoiceDetails>,
     chat_reply: Option<u64>,
+    voice_request: Option<VoiceRequest>,
 }
 
 impl Request {
@@ -108,14 +111,9 @@ impl State {
         }
     }
 
-    #[cfg(feature = "wake-tflite")]
-    pub(crate) fn source(&self) -> Option<Source> {
-        self.active.as_ref().map(|request| request.report.source)
-    }
-
     pub fn start_chat(&mut self, message: String, test: bool) {
         let id = self.push("user", message);
-        self.start(Source::Chat, Stage::Thinking, Some(id), None);
+        self.start(Source::Chat, Stage::Thinking, Some(id), None, None);
         let model = self.voice_model(
             &self.provider.chat_model,
             goodwin_plugin::provider::Capability::Chat,
@@ -139,7 +137,7 @@ impl State {
         recent_chat(self.messages.iter().rev().skip(1))
     }
 
-    pub fn start_voice(&mut self, source: Source) {
+    pub fn start_voice(&mut self, source: Source) -> VoiceRequest {
         use goodwin_plugin::provider::Capability;
         let started_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -156,12 +154,11 @@ impl State {
             playback: None,
             error_stage: None,
         };
-        let stage = if source == Source::WakeTest {
-            Stage::AwaitingWake
-        } else {
-            Stage::Recording
-        };
-        self.start(source, stage, None, Some(details));
+        let stage = crate::voice_core::first_voice_stage(source);
+        self.next_request += 1;
+        let request = VoiceRequest::new(self.next_request);
+        self.start(source, stage, None, Some(details), Some(request.clone()));
+        request
     }
 
     fn start(
@@ -170,10 +167,12 @@ impl State {
         stage: Stage,
         message_id: Option<u64>,
         voice: Option<VoiceDetails>,
+        voice_request: Option<VoiceRequest>,
     ) {
         self.active = Some(Request {
             phase_start: Instant::now(),
             report: Report {
+                request_id: voice_request.as_ref().map(|request| request.id),
                 source,
                 stage,
                 message_id,
@@ -183,13 +182,52 @@ impl State {
             },
             voice,
             chat_reply: None,
+            voice_request,
         });
     }
 
     pub fn stage(&mut self, stage: Stage) {
-        if let Some(active) = &mut self.active {
+        if let Some(active) = &mut self.active
+            && active.report.stage != stage
+            && active
+                .voice_request
+                .as_ref()
+                .is_none_or(|request| request.failure().is_none())
+        {
             active.tick();
             active.report.stage = stage;
+        }
+    }
+
+    pub fn cancel_voice(&self, id: u64) -> bool {
+        let Some(request) = self
+            .active
+            .as_ref()
+            .and_then(|active| active.voice_request.as_ref())
+            .filter(|request| request.id == id)
+        else {
+            return false;
+        };
+        request.cancel(Failure::Cancelled);
+        true
+    }
+
+    pub fn mute_capture(&self) {
+        if let Some(active) = &self.active
+            && matches!(active.report.stage, Stage::AwaitingWake | Stage::Recording)
+            && let Some(request) = &active.voice_request
+        {
+            request.cancel(Failure::MicrophoneMuted);
+        }
+    }
+
+    pub fn finish_voice(&mut self, request: &VoiceRequest, error: Option<Failure>) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.report.request_id == Some(request.id))
+        {
+            self.finish(request.failure().or(error));
         }
     }
 
@@ -278,7 +316,7 @@ impl State {
         }
     }
 
-    pub fn finish(&mut self, error: Option<Failure>) {
+    fn finish(&mut self, error: Option<Failure>) {
         let Some(mut active) = self.active.take() else {
             return;
         };

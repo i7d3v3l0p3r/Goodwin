@@ -80,6 +80,7 @@ export interface WakeModelCatalog {
 }
 
 export interface Report {
+  request_id?: number;
   stage: Stage;
   source: "chat" | "wake" | "manual_test" | "wake_test" | "push_to_talk";
   timings: { stage: Stage; ms: number }[];

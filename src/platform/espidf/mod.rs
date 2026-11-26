@@ -36,7 +36,7 @@ use crate::{
     builtin_assistant::State,
     model,
     panel_core::{Failure, Source, Stage},
-    voice_core::{self, CAPTURE_HZ, RecordingGain},
+    voice_core::{self, CAPTURE_HZ},
 };
 
 use self::{
@@ -44,7 +44,7 @@ use self::{
     network::{Network, WifiCredentials, WifiStatus},
     panel::{Command, Panel},
     settings::Store,
-    worker::{RequestContext, Worker},
+    worker::{VoiceJob, Worker},
 };
 
 pub(crate) fn run() -> Result<()> {
@@ -182,18 +182,19 @@ fn run_device() -> Result<()> {
                 Command::Chat(message) => {
                     worker.chat(message, &panel, &mut network);
                 }
-                Command::VoiceTest => {
+                Command::VoiceTest(job) => {
                     start_recording(
                         &mut audio,
                         &mut network,
                         Recording::ManualTest,
                         &panel,
                         &worker,
+                        job,
                     );
                 }
                 #[cfg(feature = "wake-tflite")]
-                Command::WakeTest => {
-                    wake_test = Some(Instant::now() + Duration::from_secs(10));
+                Command::WakeTest(job) => {
+                    wake_test = Some((Instant::now() + Duration::from_secs(10), job));
                 }
                 #[cfg(feature = "wake-tflite")]
                 Command::UseWakeModel(candidate, reply) => {
@@ -270,27 +271,30 @@ fn run_device() -> Result<()> {
         }
         if audio.button_pressed()
             && panel.wifi_connected()
-            && start_voice(&panel, Source::PushToTalk)
+            && let Some(job) = start_voice(&panel, Source::PushToTalk)
         {
             #[cfg(feature = "wake-tflite")]
             if let Some(detector) = &mut detector {
                 detector.reset();
             }
-            start_recording(&mut audio, &mut network, Recording::Button, &panel, &worker);
+            start_recording(
+                &mut audio,
+                &mut network,
+                Recording::Button,
+                &panel,
+                &worker,
+                job,
+            );
         }
         #[cfg(feature = "wake-tflite")]
         if let Some(detector) = &mut detector {
-            if let Some(deadline) = wake_test {
-                let mut state = State::lock(&panel.state);
-                let failure = if state.audio.microphone_muted {
-                    Some(Failure::MicrophoneMuted)
-                } else if Instant::now() >= deadline {
-                    Some(Failure::NoWake)
-                } else {
-                    None
-                };
+            if let Some((deadline, job)) = &wake_test {
+                let failure = job
+                    .request
+                    .failure()
+                    .or_else(|| (Instant::now() >= *deadline).then_some(Failure::NoWake));
                 if failure.is_some() {
-                    state.finish(failure);
+                    State::lock(&panel.state).finish_voice(&job.request, failure);
                     wake_test = None;
                 }
             }
@@ -300,9 +304,9 @@ fn run_device() -> Result<()> {
                     (state.audio.listening || wake_test.is_some())
                         && !state.audio.microphone_muted
                         && (!state.busy() || wake_test.is_some())
-                        && panel.voice_ready(&state)
+                        && (wake_test.is_some() || panel.voice_ready(&state))
                         && panel.wifi_connected(),
-                    state.audio,
+                    wake_test.as_ref().map_or(state.audio, |(_, job)| job.audio),
                 )
             };
             if enabled {
@@ -311,20 +315,30 @@ fn run_device() -> Result<()> {
                     profile.wake_gain.unwrap_or(1.0) as f32,
                     profile.sensitivity as f32,
                 ) {
-                    Ok(Some(recording)) if wake_test.take().is_some() => {
-                        State::lock(&panel.state).stage(Stage::Recording);
-                        start_recording(&mut audio, &mut network, recording, &panel, &worker);
-                        continue;
-                    }
-                    Ok(Some(recording)) if start_voice(&panel, Source::Wake) => {
-                        start_recording(&mut audio, &mut network, recording, &panel, &worker);
+                    Ok(Some(recording)) => {
+                        let job = wake_test
+                            .take()
+                            .map(|(_, job)| job)
+                            .or_else(|| start_voice(&panel, Source::Wake));
+                        if let Some(job) = job {
+                            State::lock(&panel.state).stage(Stage::Recording);
+                            start_recording(
+                                &mut audio,
+                                &mut network,
+                                recording,
+                                &panel,
+                                &worker,
+                                job,
+                            );
+                        }
                         continue;
                     }
                     Ok(_) => continue,
                     Err(error) => {
                         log::warn!("Wake capture: {error:#}");
-                        if wake_test.take().is_some() {
-                            State::lock(&panel.state).finish(Some(Failure::Microphone));
+                        if let Some((_, job)) = wake_test.take() {
+                            State::lock(&panel.state)
+                                .finish_voice(&job.request, Some(Failure::Microphone));
                         }
                     }
                 }
@@ -369,19 +383,17 @@ fn restore_wifi(
     network.setup(reason)
 }
 
-fn start_voice(panel: &Panel, source: Source) -> bool {
+fn start_voice(panel: &Panel, source: Source) -> Option<VoiceJob> {
     let mut state = State::lock(&panel.state);
     if state.busy()
         || panel.firmware_busy()
         || panel.wake_model_busy()
         || state.audio.microphone_muted
-        || !panel.voice_ready(&state)
         || (source == Source::Wake && !state.audio.listening)
     {
-        return false;
+        return None;
     }
-    state.start_voice(source);
-    true
+    VoiceJob::admit(&mut state, panel, source).ok()
 }
 
 fn start_recording(
@@ -390,46 +402,19 @@ fn start_recording(
     mode: Recording,
     panel: &Panel,
     worker: &Worker,
+    job: VoiceJob,
 ) {
+    let request = job.request.clone();
     let result = (|| -> std::result::Result<(), Failure> {
-        let (context, gain, wake_word) = {
-            let state = State::lock(&panel.state);
-            if !panel.voice_ready(&state) {
-                return Err(Failure::ProviderUnavailable);
-            }
-            let source = mode.source();
-            #[cfg(feature = "wake-tflite")]
-            let wake_word = state
-                .wake_model
-                .as_ref()
-                .filter(|_| {
-                    matches!(
-                        state.source().unwrap_or(source),
-                        Source::Wake | Source::WakeTest
-                    )
-                })
-                .map(|selection| selection.wake_word.clone());
-            #[cfg(not(feature = "wake-tflite"))]
-            let wake_word = {
-                let _ = source;
-                None
-            };
-            (
-                RequestContext::new(&state),
-                RecordingGain::new(state.audio.transcription_gain.map(|gain| gain as f32), 1.0),
-                wake_word,
-            )
-        };
-        let muted = || State::lock(&panel.state).audio.microphone_muted;
+        request.check()?;
+        let gain = job.gain;
         let mut samples = audio
-            .record(mode, gain.input_gain(), muted)
+            .record(mode, gain.input_gain(), || request.failure().is_some())
             .map_err(|error| {
                 log::warn!("Record I2S audio: {error:#}");
                 Failure::Microphone
             })?;
-        if muted() {
-            return Err(Failure::MicrophoneMuted);
-        }
+        request.check()?;
         if samples.len() < CAPTURE_HZ as usize / 5 {
             return Err(Failure::NoSpeech);
         }
@@ -439,12 +424,15 @@ fn start_recording(
             log::warn!("Encode recording: {error}");
             Failure::Microphone
         })?;
-        State::lock(&panel.state).stage(Stage::Transcribing);
-        worker.voice(context, wav, wake_word, panel, network)
+        worker.voice(job, wav, panel, network)
     })();
     if let Err(error) = result {
-        State::lock(&panel.state).finish(Some(error));
-        log::warn!("Voice turn failed: {error:?}");
+        State::lock(&panel.state).finish_voice(&request, Some(error));
+        if matches!(error, Failure::Cancelled) {
+            log::info!("Voice turn cancelled");
+        } else {
+            log::warn!("Voice turn failed: {error:?}");
+        }
     }
 }
 

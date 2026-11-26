@@ -178,12 +178,14 @@ impl<'d> Network<'d> {
         Ok(self.wifi.wifi().sta_netif().get_ip_info()?.ip)
     }
 
-    pub(super) fn ready(&mut self, https: bool) -> Result<()> {
+    pub(super) fn ready(&mut self, https: bool, cancelled: impl Fn() -> bool) -> Result<()> {
+        ensure!(!cancelled(), "Voice request cancelled");
         self.connect()?;
         if https && !self.clock_synchronized {
             self.start_clock()?;
             let deadline = Instant::now() + Duration::from_secs(15);
             while !self.poll_clock() {
+                ensure!(!cancelled(), "Voice request cancelled");
                 ensure!(
                     Instant::now() < deadline,
                     "Wait for TLS clock synchronization"

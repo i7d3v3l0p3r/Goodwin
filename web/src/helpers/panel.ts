@@ -16,6 +16,9 @@ export function createPanel() {
   const [error, setError] = createSignal("");
   const [microphonePending, setMicrophonePending] = createSignal(false);
   const [microphoneError, setMicrophoneError] = createSignal("");
+  const [voiceCancelPending, setVoiceCancelPending] = createSignal(false);
+  const [voiceCancelError, setVoiceCancelError] = createSignal("");
+  createEffect(() => snapshot()?.active?.request_id, () => { setVoiceCancelError(""); });
   const t = () => words[language()];
   const providerReadiness = createProviderReadiness(snapshot, reachable);
   const builtinProvider = () => device()?.provider_configuration === "builtin";
@@ -164,11 +167,13 @@ export function createPanel() {
   }
 
   async function action(request: () => Promise<unknown>, options: {
-    recheckAccess?: boolean; microphone?: boolean; showError?: boolean; onError?: (code: string) => void;
+    recheckAccess?: boolean; microphone?: boolean; voiceCancel?: boolean; showError?: boolean; onError?: (code: string) => void;
   } = {}) {
     const [isPending, setActionPending, setActionError] = options.microphone
       ? [microphonePending, setMicrophonePending, setMicrophoneError] as const
-      : [pending, setPending, setError] as const;
+      : options.voiceCancel
+        ? [voiceCancelPending, setVoiceCancelPending, setVoiceCancelError] as const
+        : [pending, setPending, setError] as const;
     if (isPending()) return false;
     setActionPending(true);
     setActionError("");
@@ -230,6 +235,15 @@ export function createPanel() {
     },
     busy: () => pending() || !snapshot() || !!snapshot()?.active,
     microphonePending, microphoneError,
+    voiceCancelPending,
+    voiceCancelError,
+    cancelVoice: (request_id: number) => action(async () => {
+      try {
+        await api("voice/cancel", "POST", { request_id });
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.code !== "voice_request_inactive") throw reason;
+      }
+    }, { voiceCancel: true }),
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
     setupPassword: (password: string, confirmation: string) =>
       action(() => apiOperation<void>("setup", "POST", { password, confirmation }, passwordTimeout(), "auth/result"),

@@ -78,6 +78,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/chat", post(chat))
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))
+        .route("/api/voice/cancel", post(cancel_voice))
         .route("/api/plugins", get(plugin_catalog))
         .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
         .route(
@@ -241,6 +242,17 @@ async fn test(State(panel): State<Panel>, Json(test): Json<Test>) -> Response {
             log::warn!("Voice test could not start source={source:?} error={error:?}");
             blocked(error)
         }
+    }
+}
+
+async fn cancel_voice(
+    State(panel): State<Panel>,
+    Json(cancel): Json<crate::panel_core::CancelVoice>,
+) -> Response {
+    if panel.app.cancel_voice(cancel.request_id) {
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        problem(StatusCode::CONFLICT, "voice_request_inactive")
     }
 }
 

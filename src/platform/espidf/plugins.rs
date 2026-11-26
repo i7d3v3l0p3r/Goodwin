@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod provider;
+pub(super) use provider::Binding as ProviderBinding;
 pub(super) use provider::Provider as PluginProvider;
 pub(crate) mod services;
 use services::Host;
@@ -63,6 +64,7 @@ struct Entry {
     connections: Vec<connections::View>,
     settings_revision: u64,
     leased: Option<PluginIdentity>,
+    voice: Arc<()>,
 }
 
 struct PluginIdentity {
@@ -83,6 +85,7 @@ struct Instance {
 
 pub(super) struct VoiceTools<'a> {
     plugins: &'a Plugins,
+    request: &'a crate::voice_core::VoiceRequest,
     tools: BTreeMap<String, (String, String, Tool)>,
     context_tools: Vec<(String, String)>,
     turn: u32,
@@ -231,7 +234,10 @@ impl Plugins {
         self.refresh_wake_targets(&mut runtime);
     }
 
-    pub(super) fn voice_tools(&self) -> VoiceTools<'_> {
+    pub(super) fn voice_tools<'a>(
+        &'a self,
+        request: &'a crate::voice_core::VoiceRequest,
+    ) -> VoiceTools<'a> {
         let runtime = self.lock();
         let mut tools = BTreeMap::new();
         let mut context_tools = Vec::new();
@@ -249,6 +255,7 @@ impl Plugins {
         }
         VoiceTools {
             plugins: self,
+            request,
             tools,
             context_tools,
             turn: self.voice_turn.fetch_add(1, Ordering::Relaxed),
@@ -341,13 +348,7 @@ impl Plugins {
 
     pub(super) fn remove(&self, id: &str) -> Result<(), Failure> {
         let mut runtime = self.lock();
-        if runtime
-            .entries
-            .get(id)
-            .ok_or(Failure::NotFound)?
-            .leased
-            .is_some()
-        {
+        if runtime.entries.get(id).ok_or(Failure::NotFound)?.in_use() {
             return Err(Failure::Busy);
         }
         // Commit removal before cleaning up so a reset cannot restore a partial package.
@@ -440,6 +441,9 @@ impl VoiceTools<'_> {
         let mut context = BTreeMap::new();
         let mut remaining = 8_usize * 1024;
         for (id, name) in &self.context_tools {
+            if self.request.failure().is_some() {
+                break;
+            }
             let value = self.call(name, "{}");
             if value.is_object()
                 && value.get("error").is_none()
@@ -453,6 +457,9 @@ impl VoiceTools<'_> {
     }
 
     pub(super) fn call(&self, name: &str, arguments: &str) -> Value {
+        if self.request.failure().is_some() {
+            return json!({"error": "cancelled"});
+        }
         let Some((id, revision, tool)) = self.tools.get(name) else {
             return json!({"error": "unknown_tool"});
         };
@@ -471,11 +478,15 @@ impl VoiceTools<'_> {
         }) else {
             return json!({"error": "tool_unavailable"});
         };
-        let result = entry.call(
+        let result = entry.call_with(
             "tool",
             json!({
                 "name": tool.name, "arguments": args, "voiceTurn": self.turn,
             }),
+            services::Call {
+                request: Some(self.request.clone()),
+                ..Default::default()
+            },
         );
         self.plugins.refresh_wake_targets(&mut runtime);
         match result {
@@ -496,11 +507,7 @@ impl Runtime {
             return Err(Failure::InvalidPackage);
         }
         let previous = self.entries.contains_key(id);
-        if self
-            .entries
-            .get(id)
-            .is_some_and(|entry| entry.leased.is_some())
-        {
+        if self.entries.get(id).is_some_and(Entry::in_use) {
             return Err(Failure::Busy);
         }
         if !previous && self.entries.len() >= MAX_INSTANCES {
@@ -569,7 +576,12 @@ impl Entry {
             manifest,
             active,
             leased: None,
+            voice: Arc::default(),
         }
+    }
+
+    fn in_use(&self) -> bool {
+        self.leased.is_some() || Arc::strong_count(&self.voice) > 1
     }
 
     fn registration(&self) -> Option<&Registration> {
@@ -595,13 +607,20 @@ impl Entry {
     }
 
     fn call(&mut self, method: &str, params: Value) -> Result<(Value, u32), Failure> {
+        self.call_with(method, params, services::Call::default())
+    }
+
+    fn call_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        call: services::Call,
+    ) -> Result<(Value, u32), Failure> {
         if self.leased.is_some() {
             return Err(Failure::Busy);
         }
         let instance = self.active.as_mut().ok_or(Failure::Unavailable)?;
-        match instance.invoke(method, params, None, None, |value| {
-            serde_json::from_str(value)
-        }) {
+        match instance.invoke(method, params, call, |value| serde_json::from_str(value)) {
             Ok(Some(result)) => Ok(result),
             Ok(None) => Err(Failure::Unavailable),
             Err(error) => {
@@ -658,8 +677,7 @@ impl Instance {
                 json!({
                     "apiVersion": API_VERSION, "state": saved,
                 }),
-                None,
-                None,
+                services::Call::default(),
                 |value| serde_json::from_str(value),
             )?
             .context("WASM plugin initialization failed")?;
@@ -690,8 +708,7 @@ impl Instance {
         &mut self,
         method: &str,
         params: impl serde::Serialize,
-        connection: Option<&str>,
-        chunks: Option<services::StreamChunks>,
+        call: services::Call,
         decode: impl FnOnce(&str) -> std::result::Result<R, E>,
     ) -> Result<Option<(R, u32)>>
     where
@@ -708,7 +725,7 @@ impl Instance {
         })?;
         let mut reply = None;
         let mut decode = Some(decode);
-        let signals = self.exchange(id, method, &frame, connection, chunks, &mut |value| {
+        let signals = self.exchange(id, method, &frame, call, &mut |value| {
             reply =
                 Some(decode.take().context("Repeated WASM result")?(value).map_err(Into::into)?);
             Ok(())
@@ -721,8 +738,7 @@ impl Instance {
         id: u64,
         method: &str,
         frame: &[u8],
-        connection: Option<&str>,
-        chunks: Option<services::StreamChunks>,
+        call: services::Call,
         decode: &mut dyn FnMut(&str) -> Result<()>,
     ) -> Result<Option<u32>> {
         let timeout = if method.starts_with("provider.") {
@@ -730,16 +746,7 @@ impl Instance {
         } else {
             Duration::from_secs(5)
         };
-        let scope = match self.guest.host_mut() {
-            Some(host) => match host.begin(connection, timeout, chunks) {
-                Ok(scope) => Some(scope),
-                Err(error) => {
-                    log::warn!("Plugin provider connection: {error:#}");
-                    return Ok(None);
-                }
-            },
-            None => None,
-        };
+        let scope = self.guest.host_mut().map(|host| host.begin(call, timeout));
         let response_limit = match method {
             "provider.synthesize" => 2 * 1024 * 1024,
             "provider.models" | "provider.complete" => 256 * 1024,

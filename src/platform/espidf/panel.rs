@@ -31,6 +31,7 @@ use super::{
     firmware,
     network::{WifiCredentials, WifiStatus},
     settings::Store,
+    worker::VoiceJob,
 };
 
 mod jobs;
@@ -66,9 +67,9 @@ pub(super) struct Panel {
 
 pub(super) enum Command {
     Chat(String),
-    VoiceTest,
+    VoiceTest(VoiceJob),
     #[cfg(feature = "wake-tflite")]
-    WakeTest,
+    WakeTest(VoiceJob),
     #[cfg(feature = "wake-tflite")]
     UseWakeModel(
         super::wake_models::Candidate,
@@ -535,6 +536,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 return problem(request, 500, "save_failed");
             }
             state.audio = audio;
+            if update.muted {
+                state.mute_capture();
+            }
             drop(state);
             send(request, 204, "text/plain", &[], &[])
         }
@@ -622,10 +626,10 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 return problem(request, 400, "invalid_message");
             };
             let mut state = State::lock(&panel.state);
-            let (command, source) = match test.mode {
-                TestMode::Manual => (Command::VoiceTest, Source::ManualTest),
+            let source = match test.mode {
+                TestMode::Manual => Source::ManualTest,
                 #[cfg(feature = "wake-tflite")]
-                TestMode::Wake if state.wake_loaded() => (Command::WakeTest, Source::WakeTest),
+                TestMode::Wake if state.wake_loaded() => Source::WakeTest,
                 TestMode::Wake => return problem(request, 409, "model"),
             };
             if state.audio.microphone_muted {
@@ -634,19 +638,34 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             if !panel.wifi_connected() {
                 return problem(request, 409, "wifi_unavailable");
             }
-            if !panel.voice_ready(&state) {
-                return problem(request, 409, "provider_unavailable");
-            }
-            if state.busy()
-                || panel.firmware_busy()
-                || panel.wake_model_busy()
-                || panel.command.try_send(command).is_err()
-            {
+            if state.busy() || panel.firmware_busy() || panel.wake_model_busy() {
                 return problem(request, 409, "busy");
             }
-            state.start_voice(source);
+            let Ok(job) = VoiceJob::admit(&mut state, panel, source) else {
+                return problem(request, 409, "provider_unavailable");
+            };
+            let voice = job.request.clone();
+            let command = match source {
+                #[cfg(feature = "wake-tflite")]
+                Source::WakeTest => Command::WakeTest(job),
+                _ => Command::VoiceTest(job),
+            };
+            if panel.command.try_send(command).is_err() {
+                state.finish_voice(&voice, Some(crate::panel_core::Failure::Busy));
+                return problem(request, 409, "busy");
+            }
             drop(state);
             send(request, 202, "text/plain", &[], &[])
+        }
+        (Method::Post, "/api/voice/cancel") => {
+            let Ok(cancel) = read_json::<crate::panel_core::CancelVoice>(&mut request) else {
+                return problem(request, 400, "invalid_message");
+            };
+            if State::lock(&panel.state).cancel_voice(cancel.request_id) {
+                send(request, 202, "text/plain", &[], &[])
+            } else {
+                problem(request, 409, "voice_request_inactive")
+            }
         }
         (Method::Post, "/api/chat/clear") => {
             let mut state = State::lock(&panel.state);

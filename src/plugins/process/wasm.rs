@@ -19,6 +19,12 @@ const MEMORY_LIMIT: usize = 512 * 1024;
 const INSTANCE_LIMIT: usize = 16;
 const STATE_LIMIT: usize = 64 * 1024;
 
+#[derive(Default)]
+struct CallGuards<'a> {
+    stopping: Option<&'a mut watch::Receiver<bool>>,
+    response: Option<&'a mut CallResponse>,
+}
+
 pub(super) async fn start(
     root: &Path,
     data: &Path,
@@ -68,7 +74,7 @@ pub(super) async fn start(
                     ..CallLimits::STANDARD
                 },
                 None,
-                None,
+                CallGuards::default(),
             )
             .await?
             .context("WASM plugin stopped during initialization")?;
@@ -131,7 +137,7 @@ async fn serve(
 ) -> Result<()> {
     let mut id = 0u64;
     loop {
-        let call = tokio::select! {
+        let mut call = tokio::select! {
             biased;
             _ = stopping.changed() => return Ok(()),
             _ = wait_for_deadline(deadline) => Call {
@@ -168,11 +174,17 @@ async fn serve(
                 call.connection,
                 call.limits,
                 call.chunks,
-                Some(stopping),
+                CallGuards {
+                    stopping: Some(stopping),
+                    response: call.response.as_mut(),
+                },
             )
             .await?
         else {
-            return Ok(());
+            if *stopping.borrow() {
+                return Ok(());
+            }
+            continue;
         };
         let effects = Effects::take(&mut reply);
         let subscription = reply.wake_subscription;
@@ -332,7 +344,7 @@ impl Instance {
             None,
             CallLimits::STANDARD,
             None,
-            None,
+            CallGuards::default(),
         )
         .await?
         .context("WASM plugin stopped")
@@ -341,13 +353,13 @@ impl Instance {
     async fn invoke<T: DeserializeOwned + Send + 'static>(
         &self,
         request: plugin_rpc::Request<'_, impl Serialize>,
-        connection: Option<Arc<str>>,
+        connection: Option<ProviderTarget>,
         limits: CallLimits,
         chunks: Option<StreamChunks>,
-        stopping: Option<&mut watch::Receiver<bool>>,
+        CallGuards { stopping, response }: CallGuards<'_>,
     ) -> Result<Option<(T, u32)>> {
         let active = self.0.clone();
-        let shutdown = stopping.as_deref().cloned();
+        let (cancel, shutdown) = watch::channel(false);
         let deadline = Instant::now() + limits.timeout;
         let id = request.id;
         let frame = serde_json::to_vec(&request)?;
@@ -359,7 +371,7 @@ impl Instance {
             );
             let mut active = active.lock().map_err(|_| report!("WASM worker failed"))?;
             if let Some(host) = active.guest.host_mut()
-                && host.select_connection(connection.as_deref()).is_err()
+                && host.select_config(connection).is_err()
             {
                 let reply = serde_json::to_vec(&json!({
                     "jsonrpc": "2.0", "id": id,
@@ -370,7 +382,7 @@ impl Instance {
             if let Some(host) = active.guest.host_mut() {
                 host.deadline = deadline;
                 host.chunks = chunks;
-                host.shutdown = shutdown;
+                host.shutdown = Some(shutdown);
             }
             let result = active.guest.call_as(&frame, limits.response);
             if let Some(host) = active.guest.host_mut() {
@@ -379,17 +391,20 @@ impl Instance {
             result
         });
         let result = tokio::select! {
+            biased;
             result = timeout(limits.timeout, &mut work) => Some(result),
             () = async {
                 if let Some(stopping) = stopping { let _ = stopping.changed().await; }
                 else { std::future::pending::<()>().await; }
             } => None,
+            () = response_closed(response) => None,
         };
         if let Some(Ok(reply)) = result {
             return Ok(Some(reply??));
         }
         // A running blocking job can still have a file operation in flight.
         // Finish it before the manager replaces or copies the plugin data.
+        cancel.send_replace(true);
         work.abort();
         let _ = work.await;
         if result.is_some() {

@@ -17,9 +17,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{
     plugin_wasm::HostServices,
     plugins::{
-        connections,
+        ProviderConfig,
         package::{self, Manifest, WasmHttp},
     },
+    voice_core::VoiceRequest,
 };
 
 mod http;
@@ -31,9 +32,17 @@ pub(super) struct Host {
     storage: bool,
     http: Option<WasmHttp>,
     has_connections: bool,
-    connection: Option<connections::Connection>,
+    config: Option<ProviderConfig>,
+    request: Option<VoiceRequest>,
     deadline: Instant,
     chunks: Option<StreamChunks>,
+}
+
+#[derive(Default)]
+pub(super) struct Call {
+    pub(super) config: Option<ProviderConfig>,
+    pub(super) chunks: Option<StreamChunks>,
+    pub(super) request: Option<VoiceRequest>,
 }
 
 pub(super) enum StreamChunks {
@@ -48,46 +57,51 @@ impl Host {
             storage: manifest.wasm_storage,
             http: manifest.wasm_http.clone(),
             has_connections: manifest.provider_connections,
-            connection: None,
+            config: None,
+            request: None,
             deadline: Instant::now(),
             chunks: None,
         }
     }
 
-    pub(super) fn begin(
-        &mut self,
-        connection: Option<&str>,
-        timeout: Duration,
-        chunks: Option<StreamChunks>,
-    ) -> Result<http::Invocation> {
-        self.connection = connection
-            .map(|id| {
-                ensure!(
-                    self.has_connections,
-                    "Plugin cannot select provider connections"
-                );
-                Ok(connections::Store::read(&self.data)?
-                    .connection(id)
-                    .context("Provider connection is unavailable")?
-                    .clone())
-            })
-            .transpose()?;
+    pub(super) fn begin(&mut self, call: Call, timeout: Duration) -> http::Invocation {
+        self.config = call.config;
+        self.request = call.request;
         self.deadline = Instant::now() + timeout;
-        self.chunks = chunks;
-        Ok(http::Invocation::new())
+        self.chunks = call.chunks;
+        http::Invocation::new()
     }
 
     pub(super) fn finish(&mut self) {
-        self.connection = None;
+        self.config = None;
+        self.request = None;
         self.chunks = None;
+    }
+
+    fn connection(&self) -> Result<&crate::plugins::connections::Connection> {
+        match &self.config {
+            Some(ProviderConfig::Connection(connection)) => Ok(connection),
+            _ => bail!("Select a provider connection"),
+        }
+    }
+
+    fn settings(&self) -> Result<std::sync::Arc<SettingsData>> {
+        match &self.config {
+            Some(ProviderConfig::Settings(settings)) => Ok(settings.clone()),
+            _ => Ok(SettingsData::read(&self.data)?.into()),
+        }
+    }
+
+    fn http_call(&self) -> super::super::http_client::HttpCall<'_> {
+        super::super::http_client::HttpCall {
+            deadline: self.deadline,
+            request: self.request.as_ref(),
+        }
     }
 
     fn destination(&self) -> Result<(String, String, bool)> {
         if self.has_connections {
-            let connection = self
-                .connection
-                .as_ref()
-                .context("Select a provider connection")?;
+            let connection = self.connection()?;
             return Ok((
                 connection.base_url.clone(),
                 connection.key.clone(),
@@ -98,8 +112,7 @@ impl Host {
             .http
             .as_ref()
             .context("Plugin does not declare HTTP access")?;
-        let data: SettingsData =
-            read_json(&self.data.join(goodwin_plugin::settings::SETTINGS_FILE))?;
+        let data = self.settings()?;
         let base = http
             .base_url
             .clone()
@@ -138,30 +151,23 @@ pub(super) fn valid_provider_url(base: &str, key: &str) -> bool {
 
 impl HostServices for Host {
     fn execute(&mut self, request: Request, input: &[u8]) -> Result<Vec<u8>> {
-        ensure!(
-            Instant::now() < self.deadline,
-            "WASM host operation timed out"
-        );
+        self.http_call().check()?;
         match request {
             Request::Settings if self.has_connections => {
-                let connection = self
-                    .connection
-                    .as_ref()
-                    .context("Select a provider connection")?;
+                let connection = self.connection()?;
                 Ok(goodwin_json::to_vec(
                     &serde_json::json!({"protocol": connection.protocol}),
                 )?)
             }
             Request::Settings => {
-                let settings: SettingsData =
-                    read_json(&self.data.join(goodwin_plugin::settings::SETTINGS_FILE))?;
+                let settings = self.settings()?;
                 Ok(goodwin_json::to_vec(&settings.values)?)
             }
             Request::HttpStart { request } => {
                 let (base, key, require_key) = self.destination()?;
-                http::start(request, input, &base, &key, require_key, self.deadline)
+                http::start(request, input, &base, &key, require_key, self.http_call())
             }
-            Request::HttpRead { length } => http::read(length, self.deadline),
+            Request::HttpRead { length } => http::read(length, self.http_call()),
             Request::HttpClose => {
                 http::close();
                 Ok(Vec::new())

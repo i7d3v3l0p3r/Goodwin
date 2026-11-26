@@ -12,6 +12,40 @@ pub(crate) mod store;
 #[cfg(not(target_os = "espidf"))]
 mod tools;
 
+#[cfg(all(
+    feature = "wasm-plugins",
+    any(target_os = "linux", target_os = "espidf")
+))]
+#[derive(Clone)]
+pub(crate) enum ProviderConfig {
+    Connection(std::sync::Arc<connections::Connection>),
+    Settings(std::sync::Arc<goodwin_plugin::settings::SettingsData>),
+}
+
+#[cfg(all(
+    feature = "wasm-plugins",
+    any(target_os = "linux", target_os = "espidf")
+))]
+impl ProviderConfig {
+    pub(crate) fn read(
+        data: &std::path::Path,
+        connection: Option<&str>,
+    ) -> goodwin_error::Result<Self> {
+        use goodwin_error::Context;
+        if let Some(id) = connection {
+            let connection = connections::Store::read(data)?
+                .connection(id)
+                .context("Provider connection is unavailable")?
+                .clone();
+            Ok(Self::Connection(connection.into()))
+        } else {
+            Ok(Self::Settings(
+                goodwin_plugin::settings::SettingsData::read(data)?.into(),
+            ))
+        }
+    }
+}
+
 #[cfg(not(target_os = "espidf"))]
 pub(crate) use connections::Update as ConnectionUpdate;
 pub(crate) use connections::valid_provider_id;
@@ -39,7 +73,6 @@ pub enum Failure {
     PasswordRequired,
     StartFailed,
     RolledBack,
-    #[cfg(target_os = "espidf")]
     Busy,
     Storage,
     Unavailable,
@@ -53,7 +86,6 @@ impl Failure {
             #[cfg(not(target_os = "espidf"))]
             Self::PasswordRequired => 403,
             Self::StartFailed | Self::RolledBack => 409,
-            #[cfg(target_os = "espidf")]
             Self::Busy => 409,
             Self::Storage => 500,
             Self::Unavailable => 503,
@@ -69,7 +101,6 @@ impl Failure {
             Self::PasswordRequired => "plugin_password_required",
             Self::StartFailed => "plugin_start_failed",
             Self::RolledBack => "plugin_update_rolled_back",
-            #[cfg(target_os = "espidf")]
             Self::Busy => "plugin_busy",
             Self::Storage => "plugin_storage_failed",
             Self::Unavailable => "plugin_unavailable",

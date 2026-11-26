@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, btree_map::Entry},
     sync::mpsc::{self, SyncSender},
     thread,
 };
@@ -13,8 +14,37 @@ use goodwin_plugin::provider::{
 use super::{
     Failure, PathBuf, PluginIdentity, Plugins, Runtime, connections, random_id, services, store,
 };
+use crate::{
+    plugins::ProviderConfig,
+    voice_core::{VoiceProviders, VoiceRequest},
+};
+
+pub(in crate::platform::espidf) struct Binding {
+    id: String,
+    revision: String,
+    config: ProviderConfig,
+    streaming: bool,
+    _package: std::sync::Arc<()>,
+}
 
 impl Plugins {
+    pub(in crate::platform::espidf) fn bind_voice(
+        &self,
+        pipeline: &crate::assistant::PipelineSettings,
+    ) -> Result<VoiceProviders<Option<Binding>>, (crate::panel_core::Stage, Failure)> {
+        let runtime = self.lock();
+        let mut configs = BTreeMap::new();
+        VoiceProviders::resolve(|capability| {
+            let stage = pipeline.get(capability);
+            if stage.provider == crate::builtin_assistant::BUILTIN_PROVIDER {
+                return Ok(None);
+            }
+            runtime
+                .bind(&stage.provider, capability, &mut configs)
+                .map(Some)
+        })
+    }
+
     fn supports_streaming(&self, provider: &str, capability: Capability) -> bool {
         let runtime = self.lock();
         let Ok((id, connection)) = runtime.resolve_provider(provider, capability) else {
@@ -114,23 +144,50 @@ impl Plugins {
         method: &str,
         params: impl serde::Serialize,
     ) -> Result<R, Failure> {
-        self.invoke_provider(provider, capability, method, params, None)
+        self.invoke_provider(
+            ProviderTarget::Current(provider, capability),
+            method,
+            params,
+            None,
+        )
     }
 
     fn invoke_provider<R: serde::de::DeserializeOwned>(
         &self,
-        provider: &str,
-        capability: Capability,
+        target: ProviderTarget<'_>,
         method: &str,
         params: impl serde::Serialize,
         chunks: Option<services::StreamChunks>,
     ) -> Result<R, Failure> {
-        if !crate::plugins::valid_provider_id(provider) {
-            return Err(Failure::NotFound);
-        }
-        let (id, connection, mut instance) = {
+        let (id, config, mut instance) = {
             let mut runtime = self.lock();
-            let (id, connection) = runtime.resolve_provider(provider, capability)?;
+            let (id, config) = match target {
+                ProviderTarget::Current(provider, capability) => {
+                    if !crate::plugins::valid_provider_id(provider) {
+                        return Err(Failure::NotFound);
+                    }
+                    let (id, connection) = runtime.resolve_provider(provider, capability)?;
+                    let config = connection
+                        .as_deref()
+                        .map(|connection| {
+                            ProviderConfig::read(
+                                &runtime.store.slot(&id).join("data"),
+                                Some(connection),
+                            )
+                            .map_err(store::storage)
+                        })
+                        .transpose()?;
+                    (id, config)
+                }
+                ProviderTarget::Bound(binding, request) => {
+                    request.check().map_err(|_| Failure::Unavailable)?;
+                    let entry = runtime.entries.get(&binding.id).ok_or(Failure::NotFound)?;
+                    if entry.revision() != Some(&binding.revision) {
+                        return Err(Failure::Unavailable);
+                    }
+                    (binding.id.clone(), Some(binding.config.clone()))
+                }
+            };
             let entry = runtime.entries.get_mut(&id).ok_or(Failure::NotFound)?;
             if entry.leased.is_some() {
                 return Err(Failure::Busy);
@@ -141,13 +198,19 @@ impl Plugins {
                 revision: instance.revision.clone(),
                 subscription: instance.wake_subscription,
             });
-            (id, connection, instance)
+            (id, config, instance)
         };
         let result = instance.invoke(
             method,
             params,
-            connection.as_deref(),
-            chunks,
+            services::Call {
+                config,
+                chunks,
+                request: match target {
+                    ProviderTarget::Bound(_, request) => Some(request.clone()),
+                    ProviderTarget::Current(..) => None,
+                },
+            },
             goodwin_json::from_str,
         );
         let mut runtime = self.lock();
@@ -173,6 +236,48 @@ impl Plugins {
 }
 
 impl Runtime {
+    fn bind<'a>(
+        &self,
+        provider: &'a str,
+        capability: Capability,
+        configs: &mut BTreeMap<&'a str, ProviderConfig>,
+    ) -> Result<Binding, Failure> {
+        let (id, connection) = self.resolve_provider(provider, capability)?;
+        let entry = self.entries.get(&id).ok_or(Failure::NotFound)?;
+        let revision = entry.revision().ok_or(Failure::Unavailable)?.to_owned();
+        let config = match configs.entry(provider) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry
+                .insert(
+                    ProviderConfig::read(&self.store.slot(&id).join("data"), connection.as_deref())
+                        .map_err(store::storage)?,
+                )
+                .clone(),
+        };
+        let registration = entry.registration().ok_or(Failure::Unavailable)?;
+        let streaming = match capability {
+            Capability::Chat => registration.chat_streaming,
+            Capability::Speech => {
+                registration.speech_streaming
+                    && connection.as_ref().is_none_or(|id| {
+                        entry
+                            .connections
+                            .iter()
+                            .find(|view| &view.id == id)
+                            .is_some_and(|view| view.speech_streaming)
+                    })
+            }
+            Capability::Transcription => false,
+        };
+        Ok(Binding {
+            id,
+            revision,
+            config,
+            streaming,
+            _package: entry.voice.clone(),
+        })
+    }
+
     pub(super) fn connections(&self, id: &str) -> Result<(PathBuf, connections::Store), Failure> {
         if !self
             .entries
@@ -220,9 +325,23 @@ impl Runtime {
 pub(in crate::platform::espidf) struct Provider<'a> {
     pub plugin: &'a Plugins,
     pub settings: &'a crate::assistant::StageSettings,
+    pub binding: Option<(&'a Binding, &'a VoiceRequest)>,
+}
+
+#[derive(Clone, Copy)]
+enum ProviderTarget<'a> {
+    Current(&'a str, Capability),
+    Bound(&'a Binding, &'a VoiceRequest),
 }
 
 impl Provider<'_> {
+    fn target(&self, capability: Capability) -> ProviderTarget<'_> {
+        self.binding.map_or(
+            ProviderTarget::Current(&self.settings.provider, capability),
+            |(binding, request)| ProviderTarget::Bound(binding, request),
+        )
+    }
+
     pub(in crate::platform::espidf) fn transcribe(
         &self,
         wav: &[u8],
@@ -257,6 +376,9 @@ impl Provider<'_> {
     }
 
     pub(in crate::platform::espidf) fn streaming(&self, capability: Capability) -> bool {
+        if let Some((binding, _)) = self.binding {
+            return binding.streaming;
+        }
         self.plugin
             .supports_streaming(&self.settings.provider, capability)
     }
@@ -337,8 +459,7 @@ impl Provider<'_> {
                 .stack_size(28 * 1024)
                 .spawn_scoped(scope, move || {
                     self.plugin.invoke_provider::<()>(
-                        &self.settings.provider,
-                        capability,
+                        self.target(capability),
                         method,
                         request,
                         Some(wrap(send)),
@@ -361,12 +482,7 @@ impl Provider<'_> {
         request: impl serde::Serialize,
     ) -> goodwin_error::Result<T> {
         self.plugin
-            .provider_call(
-                &self.settings.provider,
-                capability,
-                capability.method(),
-                request,
-            )
+            .invoke_provider(self.target(capability), capability.method(), request, None)
             .map_err(|error| goodwin_error::report!("{}", error.code()))
     }
 }

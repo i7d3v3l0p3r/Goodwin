@@ -1,4 +1,122 @@
-use std::{future::Future, io};
+use std::{
+    future::Future,
+    io,
+    sync::{Arc, Mutex},
+};
+
+#[cfg(not(target_os = "espidf"))]
+use std::{
+    future::poll_fn,
+    task::{Poll, Waker},
+};
+
+use crate::panel_core::{Failure, Source, Stage};
+
+pub(crate) fn first_voice_stage(source: Source) -> Stage {
+    if source == Source::WakeTest {
+        Stage::AwaitingWake
+    } else {
+        Stage::Recording
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct VoiceRequest {
+    pub(crate) id: u64,
+    state: Arc<Mutex<Cancellation>>,
+}
+
+#[derive(Default)]
+struct Cancellation {
+    reason: Option<Failure>,
+    #[cfg(not(target_os = "espidf"))]
+    waiter: Option<Waker>,
+}
+
+impl VoiceRequest {
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
+            id,
+            state: Arc::default(),
+        }
+    }
+
+    pub(crate) fn cancel(&self, reason: Failure) {
+        let mut state = self.state.lock().expect("voice cancellation");
+        state.reason.get_or_insert(reason);
+        #[cfg(not(target_os = "espidf"))]
+        if let Some(waiter) = state.waiter.take() {
+            drop(state);
+            waiter.wake();
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<Failure> {
+        self.state.lock().expect("voice cancellation").reason
+    }
+
+    pub(crate) fn check(&self) -> Result<(), Failure> {
+        self.failure().map_or(Ok(()), Err)
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    async fn cancelled(&self) -> Failure {
+        poll_fn(|cx| {
+            let mut state = self.state.lock().expect("voice cancellation");
+            if let Some(reason) = state.reason {
+                Poll::Ready(reason)
+            } else {
+                state.waiter = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn step<T>(
+        &self,
+        work: impl Future<Output = Result<T, Failure>>,
+    ) -> Result<T, Failure> {
+        self.check()?;
+        #[cfg(not(target_os = "espidf"))]
+        let result = {
+            let result = tokio::select! {
+                biased;
+                reason = self.cancelled() => Err(reason),
+                result = work => result,
+            };
+            // The request itself is kept by the task waiting here.
+            self.state.lock().expect("voice cancellation").waiter = None;
+            result
+        };
+        #[cfg(target_os = "espidf")]
+        let result = work.await;
+        self.check()?;
+        result
+    }
+}
+
+#[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+pub(crate) struct VoiceProviders<T> {
+    pub(crate) transcription: T,
+    pub(crate) chat: T,
+    pub(crate) speech: T,
+}
+
+#[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+impl<T> VoiceProviders<T> {
+    pub(crate) fn resolve<E>(
+        mut resolve: impl FnMut(goodwin_plugin::provider::Capability) -> Result<T, E>,
+    ) -> Result<Self, (Stage, E)> {
+        use goodwin_plugin::provider::Capability;
+        Ok(Self {
+            transcription: resolve(Capability::Transcription)
+                .map_err(|error| (Stage::Transcribing, error))?,
+            chat: resolve(Capability::Chat).map_err(|error| (Stage::Thinking, error))?,
+            speech: resolve(Capability::Speech).map_err(|error| (Stage::Synthesizing, error))?,
+        })
+    }
+}
 
 pub(crate) use goodwin_plugin::audio::scale_sample;
 use goodwin_plugin::audio::wav_header;
@@ -75,39 +193,37 @@ impl VoiceActivity {
 }
 
 pub(crate) trait Turn {
-    type Error;
     type Speech: Send;
 
-    fn transcribe(
-        &mut self,
-        wav: &[u8],
-    ) -> impl Future<Output = Result<String, Self::Error>> + Send;
-    fn reply(&mut self, text: &str) -> impl Future<Output = Result<String, Self::Error>> + Send;
+    fn stage(&mut self, stage: Stage);
+    fn transcribe(&mut self, wav: &[u8]) -> impl Future<Output = Result<String, Failure>> + Send;
+    fn reply(&mut self, text: &str) -> impl Future<Output = Result<String, Failure>> + Send;
     fn synthesize(
         &mut self,
         answer: String,
-    ) -> impl Future<Output = Result<Self::Speech, Self::Error>> + Send;
-    fn play(
-        &mut self,
-        speech: Self::Speech,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn no_speech(&self) -> Self::Error;
+    ) -> impl Future<Output = Result<Self::Speech, Failure>> + Send;
+    fn play(&mut self, speech: Self::Speech) -> impl Future<Output = Result<(), Failure>> + Send;
 }
 
 pub(crate) async fn run<T: Turn>(
+    request: &VoiceRequest,
     turn: &mut T,
     wav: RecordingWav,
     wake_word: Option<&str>,
-) -> Result<(), T::Error> {
-    let text = turn.transcribe(wav.as_bytes()).await?;
+) -> Result<(), Failure> {
+    request.check()?;
+    turn.stage(Stage::Transcribing);
+    let text = request.step(turn.transcribe(wav.as_bytes())).await?;
     drop(wav);
     let text = wake_word.map_or_else(|| text.trim(), |word| strip_wake_word(&text, word));
     if text.is_empty() {
-        return Err(turn.no_speech());
+        return Err(Failure::NoSpeech);
     }
-    let answer = turn.reply(text).await?;
-    let speech = turn.synthesize(answer).await?;
-    turn.play(speech).await
+    turn.stage(Stage::Thinking);
+    let answer = request.step(turn.reply(text)).await?;
+    turn.stage(Stage::Synthesizing);
+    let speech = request.step(turn.synthesize(answer)).await?;
+    request.step(turn.play(speech)).await
 }
 
 pub(crate) struct RecordingWav(Vec<i16>);
@@ -164,6 +280,41 @@ pub(crate) fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "espidf"))]
+    #[tokio::test]
+    async fn cancelling_a_pending_step_drops_its_work_and_keeps_the_first_reason() {
+        let request = VoiceRequest::new(1);
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let (alive, mut dropped) = tokio::sync::oneshot::channel::<()>();
+        let active = request.clone();
+        let worker = tokio::spawn(async move {
+            active
+                .step(async move {
+                    let _ = entered.send(());
+                    let result = std::future::pending::<Result<(), Failure>>().await;
+                    drop(alive);
+                    result
+                })
+                .await
+        });
+        running.await.unwrap();
+        assert!(
+            dropped
+                .try_recv()
+                .is_err_and(|error| error == tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        request.cancel(Failure::Cancelled);
+        request.cancel(Failure::MicrophoneMuted);
+        assert!(matches!(worker.await.unwrap(), Err(Failure::Cancelled)));
+        assert!(dropped.await.is_err());
+        assert!(matches!(
+            request
+                .step(async { panic!("a cancelled request must not start another step") })
+                .await,
+            Err::<(), _>(Failure::Cancelled)
+        ));
+    }
 
     #[test]
     fn recording_wav_reuses_the_capture_buffer_and_preserves_pcm() {

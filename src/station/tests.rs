@@ -99,6 +99,11 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
     );
     assert!(app.microphone_connected(&app.microphone_mute()));
     let id = app.start(Source::ManualTest).ok().unwrap();
+    let original = app.configuration().request_settings().settings.clone();
+    let mut next = original.clone();
+    next.assistant.pipeline.chat.provider = "another-provider".into();
+    next.assistant.pipeline.speech.selection.model = Some("another-voice".into());
+    app.configuration().update_settings(next).unwrap();
     app.voice(id, vec![1000; 1024], false, RecordingGain::Automatic(4.0))
         .await;
     assert_eq!(sink.lock().unwrap()[0][44..], pcm);
@@ -108,6 +113,7 @@ async fn the_pipeline_passes_the_selected_models_and_voice_to_its_provider() {
         state["plugins"][0]["providers"],
         json!(["transcription", "chat", "speech"])
     );
+    app.configuration().update_settings(original).unwrap();
 
     let id = app.start(Source::Chat).ok().unwrap();
     app.chat(id, "Сколько будет два плюс два?".into()).await;

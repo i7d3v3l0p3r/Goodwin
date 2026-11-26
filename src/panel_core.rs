@@ -50,6 +50,7 @@ pub enum Stage {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(target_os = "espidf", allow(dead_code))]
 pub enum Failure {
+    Cancelled,
     Busy,
     Microphone,
     MicrophoneMuted,
@@ -70,6 +71,8 @@ pub struct Timing {
 
 #[derive(Clone, Serialize)]
 pub struct Report {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_id: Option<u64>,
     pub(crate) source: Source,
     pub(crate) stage: Stage,
     pub(crate) timings: Vec<Timing>,
@@ -81,6 +84,11 @@ pub struct Report {
     #[serde(skip)]
     #[cfg(not(target_os = "espidf"))]
     pub(crate) tested_configuration: Option<[u8; 32]>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CancelVoice {
+    pub(crate) request_id: u64,
 }
 
 impl Report {

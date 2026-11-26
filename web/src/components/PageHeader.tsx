@@ -18,6 +18,15 @@ export function PageHeader(props: ParentProps<{ title: string; showRequestStatus
     </span>
     <div class={styles.actions}>
       {props.children}
+      <Show when={panel.snapshot()?.active?.request_id}>{id =>
+        <div class={styles.microphoneControl}>
+          <Button type="button" variant="secondary" disabled={!panel.reachable() || panel.voiceCancelPending()}
+            onClick={() => void panel.cancelVoice(id())}>{panel.t().cancelVoice}</Button>
+          <Show when={panel.voiceCancelError()}>
+            <p class={styles.microphoneError} role="alert">{errorLabel(panel.t(), panel.voiceCancelError())}</p>
+          </Show>
+        </div>
+      }</Show>
       <div class={styles.microphoneControl}>
         <Button type="button" class={styles.microphone} aria-label={panel.t().muteMicrophone}
           aria-pressed={muted() ? "true" : "false"} title={muted() ? panel.t().unmuteMicrophone : panel.t().muteMicrophone}
