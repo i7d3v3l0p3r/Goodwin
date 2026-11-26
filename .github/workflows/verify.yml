@@ -50,6 +50,12 @@ jobs:
         run: cargo test --locked --workspace
       - name: Lint the default workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test the Windows installer
+        if: runner.os == 'Windows'
+        run: cargo test --locked --release --manifest-path installer/Cargo.toml
+      - name: Test the Windows headless installer
+        if: runner.os == 'Windows'
+        run: cargo test --locked --release --manifest-path installer/Cargo.toml --no-default-features
       - name: Build native and WASM fixtures
         if: matrix.station_runtimes
         shell: bash
@@ -111,7 +117,7 @@ jobs:
           git clone --depth 1 --branch v5.5.2 --recurse-submodules --shallow-submodules \
             https://github.com/espressif/esp-idf.git "$RUNNER_TEMP/esp-idf"
           "$RUNNER_TEMP/esp-idf/install.sh" esp32s3
-      - name: Build ESP32-S3 firmware and package the Timers guest
+      - name: Build ESP32-S3 firmware and package the WASM guests
         if: matrix.station_runtimes
         shell: bash
         run: |
@@ -121,6 +127,8 @@ jobs:
           python scripts/build-esp32s3.py --emulator
           python scripts/package-plugin.py plugins/timers target/wasm32-unknown-unknown/release/goodwin-timers.wasm \
             wasm32 target/plugins/timers-wasm32.tar.gz --wasm-state-file timers.json
+          python scripts/package-plugin.py plugins/wake-dataset target/wasm32-unknown-unknown/release/goodwin-wake-dataset.wasm \
+            wasm32 target/plugins/wake-dataset-wasm32.tar.gz
       - name: Test ESP32-S3 firmware in ESP-EMU
         if: matrix.station_runtimes
         shell: bash
@@ -148,4 +156,5 @@ jobs:
             --wake-build --panel-settings --stream-speech --wifi-during-alarm \
             --alarm-during-stream \
             --wake-catalog-model target/wake-tflite/esp32s3/goodwin-micro-int8.tflite \
-            --timers-package target/plugins/timers-wasm32.tar.gz
+            --timers-package target/plugins/timers-wasm32.tar.gz \
+            --dataset-package target/plugins/wake-dataset-wasm32.tar.gz

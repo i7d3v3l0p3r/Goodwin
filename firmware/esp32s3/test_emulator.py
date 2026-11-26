@@ -487,7 +487,7 @@ class Panel:
         assert self.request(route, status=404) == {"error": "plugin_not_found"}
         print("Verified WASM installation, assets, timer, failed and successful updates, restart and removal")
 
-    def start_dataset(self, path):
+    def install_dataset(self, path, capture):
         self.request("/api/plugin-packages", "POST", path.read_bytes(), 204, timeout=90)
         route = "/api/plugins/wake-dataset"
         page = self.request(f"{route}/clips")
@@ -497,13 +497,17 @@ class Panel:
         assert page["status"]["storageLimitBytes"] == 2 * 1024 * 1024
         self.request(f"{route}/capture-settings", "PUT", {"storageMiB": 3}, 400)
         self.request(f"{route}/capture-settings", "PUT", {"minimumScore": 0.15}, 204)
-        status = self.request(f"{route}/capture", "PUT", {"enabled": True})
-        assert status["collecting"] and status["storageMiB"] == 4
+        if capture:
+            status = self.request(f"{route}/capture", "PUT", {"enabled": True})
+        else:
+            status = self.request(f"{route}/clips")["status"]
+        assert status["collecting"] == capture and status["storageMiB"] == 4
         assert 2 * 1024 * 1024 - 8192 < status["storageLimitBytes"] < 2 * 1024 * 1024
         self.request(f"{route}/capture-settings", "PUT", {"storageMiB": 1}, 204)
         status = self.request(f"{route}/clips")["status"]
-        assert status["collecting"] and status["storageMiB"] == 1
+        assert status["collecting"] == capture and status["storageMiB"] == 1
         assert status["storageLimitBytes"] == 1024 * 1024
+        print("Verified Wake-word dataset storage quota and saved a lower limit")
         self.print_resources("with Wake-word dataset installed")
 
     def stop_dataset(self, expected_model):
@@ -515,10 +519,14 @@ class Panel:
     def verify_dataset(self, expected_model):
         route = "/api/plugins/wake-dataset"
         page = self.request(f"{route}/clips")
-        assert page["clips"], page
         assert page["status"]["storageMiB"] == 1
         assert page["status"]["maxStorageMiB"] == 2
         assert page["status"]["storageLimitBytes"] == 1024 * 1024
+        if expected_model is None:
+            assert not page["clips"] and not page["status"]["collecting"]
+            print("Verified Wake-word dataset storage quota after restart")
+            return
+        assert page["clips"], page
         clip = max(page["clips"], key=lambda row: row["peak"])
         assert clip["info"]["model"]["id"] == expected_model and clip["peak"] >= 0.15
         assert clip["info"]["gainApplied"] is True
@@ -1119,7 +1127,7 @@ def run_emulator(args, flash, board, output, server):
                             selection = panel.install_wake_model((server.catalog_request_started, server.release_catalog))
                             active_model = selection["id"]
                         if args.dataset_package:
-                            panel.start_dataset(args.dataset_package)
+                            panel.install_dataset(args.dataset_package, capture=bool(args.wake_audio))
                         if args.voice_lifecycle:
                             panel.verify_plugin_update(args.provider_package)
                             panel.exercise_voice_lifecycle(port, server)
@@ -1148,7 +1156,7 @@ def run_emulator(args, flash, board, output, server):
                         if args.timers_package:
                             panel.verify_timers_after_restart()
                         if args.dataset_package:
-                            panel.verify_dataset(active_model)
+                            panel.verify_dataset(active_model if args.wake_audio else None)
                         if selection is not None:
                             assert panel.request("/api/state")["wake_model"] == selection
                             print("Verified catalog filtering, rejected checksum mismatch and restored the installed wake model")
@@ -1181,7 +1189,7 @@ def run_emulator(args, flash, board, output, server):
                     source = ("wake_test" if args.wake_test else "wake" if args.wake_audio
                               else "manual_test" if args.manual_test else "push_to_talk")
                     panel.verify_voice(source, args.stream_speech)
-                    if args.dataset_package:
+                    if args.dataset_package and args.wake_audio:
                         panel.stop_dataset(active_model)
                     if args.timers_package:
                         panel.exercise_timers(args.timers_package, args.timer_voice_tool)
@@ -1228,7 +1236,7 @@ def main():
     parser.add_argument("--no-plugins", action="store_true", help="Expect a firmware built without WASM")
     parser.add_argument("--timers-package", type=Path, help="Exercise the real Timers WASM package")
     parser.add_argument("--timer-voice-tool", action="store_true", help="Let the fixture invoke Timers during the voice turn")
-    parser.add_argument("--dataset-package", type=Path, help="Exercise the real Wake-word dataset WASM package")
+    parser.add_argument("--dataset-package", type=Path, help="Check the dataset quota and collect a clip when given wake audio")
     parser.add_argument("--provider-package", type=Path, help="Use the real OpenAI-compatible WASM package")
     activation = parser.add_mutually_exclusive_group()
     activation.add_argument("--wake-audio", type=Path, help="Use a 16 kHz mono PCM WAV containing the wake word")
@@ -1250,8 +1258,6 @@ def main():
         parser.error("--interrupt-update requires --update-image")
     if (args.timers_package or args.dataset_package or args.provider_package) and args.no_plugins:
         parser.error("Plugin packages require plugin support")
-    if args.dataset_package and not args.wake_audio:
-        parser.error("--dataset-package requires --wake-audio")
     if args.wake_test and not args.wake_audio:
         parser.error("--wake-test requires --wake-audio")
     if args.timer_voice_tool and not args.timers_package:

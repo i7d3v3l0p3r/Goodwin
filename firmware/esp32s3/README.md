@@ -174,11 +174,12 @@ that it starts the previous firmware.
 
 The Linux pull request checks build this firmware with ESP-IDF v5.5.2 and
 Xtensa Rust 1.97.0.0. They run ESP-EMU 1.2.0 against the panel contract,
-the installed wake model, streaming speech and the Timers WASM package.
+the installed wake model, streaming speech, Timers and the Wake-word dataset storage quota.
 Use `--emulator-timeout` to allow more wall-clock time on a slower runner.
 
 Use the packages from `python scripts/build-wasm-plugins.py` to exercise the
 plugin host in the same run. Pass `--timers-package` with the Timers archive and
-`--timer-voice-tool` to test a tool call. Pass `--dataset-package` together with
-`--wake-audio` to record a detector clip. Pass `--provider-package` to configure
+`--timer-voice-tool` to test a tool call. Pass `--dataset-package` to check the
+storage quota across a restart, and add `--wake-audio` to record a detector clip.
+Pass `--provider-package` to configure
 the OpenAI-compatible guest and use it for the text and voice requests.
