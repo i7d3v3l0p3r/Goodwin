@@ -18,10 +18,12 @@ jobs:
         include:
           - runner: windows-2022
             station_runtimes: false
+            timeout: 35
           - runner: ubuntu-24.04
             station_runtimes: true
+            timeout: 65
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -77,3 +79,55 @@ jobs:
         run: |
           cargo test --locked --manifest-path installer/Cargo.toml --no-default-features
           sh installer/tests/station-install.sh
+      - name: Install the ESP32-S3 toolchains
+        if: matrix.station_runtimes
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          installer="$RUNNER_TEMP/espup"
+          curl -fsSL --retry 3 https://github.com/esp-rs/espup/releases/download/v0.19.0/espup-x86_64-unknown-linux-gnu -o "$installer"
+          echo "f31411c64dffff4da0f0e23c432b9a5fda48942ff8695b8b21009ceb7007bcc0  $installer" | sha256sum -c
+          chmod +x "$installer"
+          "$installer" install --std --targets esp32s3 --toolchain-version 1.97.0.0 --export-file "$RUNNER_TEMP/export-esp.sh"
+          cargo install ldproxy --locked
+          git clone --depth 1 --branch v5.5.2 --recurse-submodules --shallow-submodules \
+            https://github.com/espressif/esp-idf.git "$RUNNER_TEMP/esp-idf"
+          "$RUNNER_TEMP/esp-idf/install.sh" esp32s3
+      - name: Build ESP32-S3 firmware and package the Timers guest
+        if: matrix.station_runtimes
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/export-esp.sh"
+          source "$RUNNER_TEMP/esp-idf/export.sh"
+          export ESP_IDF_TOOLS_INSTALL_DIR=fromenv
+          python scripts/build-esp32s3.py --emulator
+          python scripts/package-plugin.py plugins/timers target/wasm32-unknown-unknown/release/goodwin-timers.wasm \
+            wasm32 target/plugins/timers-wasm32.tar.gz --wasm-state-file timers.json
+      - name: Test ESP32-S3 firmware in ESP-EMU
+        if: matrix.station_runtimes
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/esp-idf/export.sh"
+          release=https://github.com/espressif/esp-emulator/releases/download/v1.2.0
+          emulator=esp-emu-1.2.0-x86_64-unknown-linux-gnu
+          examples=esp-emu-1.2.0-examples
+          for archive in "$emulator" "$examples"; do
+            curl -fsSL --retry 3 "$release/$archive.tar.gz" -o "$RUNNER_TEMP/$archive.tar.gz"
+          done
+          cat > "$RUNNER_TEMP/esp-emu-SHA256SUMS" <<EOF
+          560236344fd69dc8d74bc862c79aea01f7a69ac626ae3f54b1b0946bbce078c1  $emulator.tar.gz
+          2951a0f7596a2e622cd9c1f034d68fc21549da2614467bde0f4e52115d75fbcb  $examples.tar.gz
+          EOF
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum -c esp-emu-SHA256SUMS
+            tar -xzf "$emulator.tar.gz"
+            tar -xzf "$examples.tar.gz"
+          )
+          python firmware/esp32s3/test_emulator.py \
+            --emulator "$RUNNER_TEMP/$emulator/esp-emu" --examples "$RUNNER_TEMP/$examples" \
+            --firmware target/esp32s3/emulator/merged.bin --emulator-timeout 720 \
+            --wake-build --panel-settings --stream-speech \
+            --wake-catalog-model target/wake-tflite/esp32s3/goodwin-micro-int8.tflite \
+            --timers-package target/plugins/timers-wasm32.tar.gz

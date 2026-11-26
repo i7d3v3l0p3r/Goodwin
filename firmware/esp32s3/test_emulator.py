@@ -977,6 +977,8 @@ def run_emulator(args, flash, board, output, server):
     limit = 420 if has_plugins else 220
     if args.update_image:
         limit = 480 if has_plugins else 360
+    if args.emulator_timeout:
+        limit = args.emulator_timeout
     command = [
         args.emulator, "--chip", "esp32s3", "--firmware", flash, "--psram-size", "8M",
         "--cosim-board", board, "--part-wav", f"amp={output}",
@@ -1142,6 +1144,7 @@ def run_emulator(args, flash, board, output, server):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator", default="esp-emu")
+    parser.add_argument("--emulator-timeout", type=int, help="Override the wall-clock deadline in seconds")
     parser.add_argument("--examples", type=Path, required=True)
     parser.add_argument("--firmware", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
@@ -1163,6 +1166,8 @@ def main():
     parser.add_argument("--wake-catalog-model", type=Path, help="Serve and install a Micro INT8 fixture model from a test catalog")
     parser.add_argument("--voice-lifecycle", action="store_true", help="Cancel recording, WASM provider calls and playback")
     args = parser.parse_args()
+    if args.emulator_timeout is not None and args.emulator_timeout <= 0:
+        parser.error("--emulator-timeout must be positive")
     if args.interrupt_update and not args.update_image:
         parser.error("--interrupt-update requires --update-image")
     if (args.timers_package or args.dataset_package or args.provider_package) and args.no_plugins:

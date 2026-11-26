@@ -163,6 +163,11 @@ filtering, checksum validation, live model replacement and persistence.
 Add `--interrupt-update` to reset the device before OTA verification and check
 that it starts the previous firmware.
 
+The Linux pull request checks build this firmware with ESP-IDF v5.5.2 and
+Xtensa Rust 1.97.0.0. They run ESP-EMU 1.2.0 against the panel contract,
+the installed wake model, streaming speech and the Timers WASM package.
+Use `--emulator-timeout` to allow more wall-clock time on a slower runner.
+
 Use the packages from `python scripts/build-wasm-plugins.py` to exercise the
 plugin host in the same run. Pass `--timers-package` with the Timers archive and
 `--timer-voice-tool` to test a tool call. Pass `--dataset-package` together with
