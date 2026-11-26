@@ -135,6 +135,11 @@ fn run_device() -> Result<()> {
     let worker = Worker::start(panel.clone())?;
     firmware::verify_boot(healthy)?;
     let mut retry_at = Instant::now() + Duration::from_secs(5);
+    let mut clock_retry_at = Instant::now();
+    #[cfg(any(feature = "wasm-plugins", feature = "wake-tflite"))]
+    let prewarm_clock = storage_ready && !cfg!(feature = "esp-emulator");
+    #[cfg(not(any(feature = "wasm-plugins", feature = "wake-tflite")))]
+    let prewarm_clock = false;
     let mut failures = 0;
     #[cfg(feature = "wake-tflite")]
     let mut wake_test = None;
@@ -190,17 +195,10 @@ fn run_device() -> Result<()> {
             }
             match command {
                 Command::Chat(message) => {
-                    worker.chat(message, &panel, &mut network);
+                    worker.chat(message, &panel);
                 }
                 Command::VoiceTest(job) => {
-                    start_recording(
-                        &mut audio,
-                        &mut network,
-                        Recording::ManualTest,
-                        &panel,
-                        &worker,
-                        job,
-                    );
+                    start_recording(&mut audio, Recording::ManualTest, &panel, &worker, job);
                 }
                 #[cfg(feature = "wake-tflite")]
                 Command::WakeTest(job) => {
@@ -256,16 +254,6 @@ fn run_device() -> Result<()> {
         {
             match network.connect() {
                 Ok(ip) => {
-                    #[cfg(all(
-                        any(feature = "wasm-plugins", feature = "wake-tflite"),
-                        not(feature = "esp-emulator")
-                    ))]
-                    if storage_ready {
-                        if let Err(error) = network.start_clock() {
-                            log::warn!("Start clock synchronization: {error:#}");
-                        }
-                        network.poll_clock();
-                    }
                     let mut status = panel.wifi.lock().expect("Wi-Fi status");
                     if !matches!(*status, WifiStatus::Connected { address, .. } if address == ip) {
                         *status = connected(credentials, ip, None);
@@ -278,10 +266,26 @@ fn run_device() -> Result<()> {
                     if failures == 3 {
                         let status = network.setup(Some("wifi_connect_failed"))?;
                         *panel.wifi.lock().expect("Wi-Fi status") = status;
+                    } else {
+                        *panel.wifi.lock().expect("Wi-Fi status") = WifiStatus::Connecting;
                     }
                 }
             }
             retry_at = Instant::now() + Duration::from_secs(5);
+        }
+        if !panel.clock_ready.load(Ordering::Acquire)
+            && (prewarm_clock || panel.clock_requested.load(Ordering::Acquire))
+            && panel.wifi_connected()
+        {
+            if Instant::now() >= clock_retry_at {
+                if let Err(error) = network.start_clock() {
+                    log::warn!("Start clock synchronization: {error:#}");
+                }
+                clock_retry_at = Instant::now() + Duration::from_secs(5);
+            }
+            if network.poll_clock() {
+                panel.clock_ready.store(true, Ordering::Release);
+            }
         }
         if audio.button_pressed()
             && panel.wifi_connected()
@@ -291,14 +295,7 @@ fn run_device() -> Result<()> {
             if let Some(detector) = &mut detector {
                 detector.reset();
             }
-            start_recording(
-                &mut audio,
-                &mut network,
-                Recording::Button,
-                &panel,
-                &worker,
-                job,
-            );
+            start_recording(&mut audio, Recording::Button, &panel, &worker, job);
         }
         #[cfg(feature = "wake-tflite")]
         if let Some(detector) = &mut detector {
@@ -336,14 +333,7 @@ fn run_device() -> Result<()> {
                             .or_else(|| start_voice(&panel, Source::Wake));
                         if let Some(job) = job {
                             State::lock(&panel.state).stage(Stage::Recording);
-                            start_recording(
-                                &mut audio,
-                                &mut network,
-                                recording,
-                                &panel,
-                                &worker,
-                                job,
-                            );
+                            start_recording(&mut audio, recording, &panel, &worker, job);
                         }
                         continue;
                     }
@@ -412,7 +402,6 @@ fn start_voice(panel: &Panel, source: Source) -> Option<VoiceJob> {
 
 fn start_recording(
     audio: &mut Audio<'_>,
-    network: &mut Network<'_>,
     mode: Recording,
     panel: &Panel,
     worker: &Worker,
@@ -438,7 +427,7 @@ fn start_recording(
             log::warn!("Encode recording: {error}");
             Failure::Microphone
         })?;
-        worker.voice(job, wav, panel, network)
+        worker.voice(job, wav)
     })();
     if let Err(error) = result {
         State::lock(&panel.state).finish_voice(&request, Some(error));

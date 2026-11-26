@@ -1,11 +1,8 @@
-use std::{
-    net::Ipv4Addr,
-    time::{Duration, Instant},
-};
+use std::net::Ipv4Addr;
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::{delay::FreeRtos, modem::Modem},
+    hal::modem::Modem,
     nvs::EspDefaultNvsPartition,
     sntp::{EspSntp, SntpConf, SyncStatus},
     sys::{self, esp},
@@ -176,24 +173,6 @@ impl<'d> Network<'d> {
             .wait_netif_up()
             .context("Wait for an IP address")?;
         Ok(self.wifi.wifi().sta_netif().get_ip_info()?.ip)
-    }
-
-    pub(super) fn ready(&mut self, https: bool, cancelled: impl Fn() -> bool) -> Result<()> {
-        ensure!(!cancelled(), "Voice request cancelled");
-        self.connect()?;
-        if https && !self.clock_synchronized {
-            self.start_clock()?;
-            let deadline = Instant::now() + Duration::from_secs(15);
-            while !self.poll_clock() {
-                ensure!(!cancelled(), "Voice request cancelled");
-                ensure!(
-                    Instant::now() < deadline,
-                    "Wait for TLS clock synchronization"
-                );
-                FreeRtos::delay_ms(100);
-            }
-        }
-        Ok(())
     }
 
     pub(super) fn start_clock(&mut self) -> Result<()> {

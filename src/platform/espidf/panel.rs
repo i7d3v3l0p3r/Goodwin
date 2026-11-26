@@ -55,6 +55,8 @@ pub(super) struct Panel {
     pub wifi: Mutex<WifiStatus>,
     pub reboot: AtomicBool,
     firmware_busy: AtomicBool,
+    pub(super) clock_requested: AtomicBool,
+    pub(super) clock_ready: AtomicBool,
     command: SyncSender<Command>,
     #[cfg(feature = "wake-tflite")]
     wake_catalog: bool,
@@ -141,6 +143,8 @@ impl Panel {
             wifi: Mutex::new(WifiStatus::Connecting),
             reboot: AtomicBool::new(false),
             firmware_busy: AtomicBool::new(false),
+            clock_requested: AtomicBool::new(false),
+            clock_ready: AtomicBool::new(false),
             command,
             #[cfg(feature = "wake-tflite")]
             wake_catalog,

@@ -1,11 +1,11 @@
 use std::{
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, atomic::Ordering, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use esp_idf_svc::hal::task::block_on;
-use goodwin_error::{Context, Result};
+use goodwin_error::{Context, Result, ensure};
 
 use crate::{
     builtin_assistant::{ProviderSettings, State},
@@ -13,7 +13,7 @@ use crate::{
     voice_core::{self, RecordingGain, RecordingWav, Turn, VoiceRequest},
 };
 
-use super::{audio::Audio, cascade::Cascade, network::Network, panel::Panel};
+use super::{audio::Audio, cascade::Cascade, panel::Panel};
 
 pub(super) struct Worker {
     jobs: mpsc::SyncSender<Job>,
@@ -149,36 +149,22 @@ impl Worker {
         Ok(Self { jobs, playback })
     }
 
-    pub(super) fn chat(&self, message: String, panel: &Panel, network: &mut Network<'_>) {
+    pub(super) fn chat(&self, message: String, panel: &Panel) {
         let (context, history) = {
             let state = State::lock(&panel.state);
             (RequestContext::new(&state), state.chat_context())
         };
-        let result = network
-            .ready(context.provider(panel, None).https(), || false)
-            .and_then(|()| {
-                crate::diagnostics::Queue::Provider
-                    .send(&self.jobs, Job::Chat(context, message, history))
-                    .map_err(|_| goodwin_error::report!("Provider task is unavailable"))
-            });
-        if let Err(error) = result {
-            State::lock(&panel.state).finish_chat(Err(error));
+        if crate::diagnostics::Queue::Provider
+            .send(&self.jobs, Job::Chat(context, message, history))
+            .is_err()
+        {
+            State::lock(&panel.state)
+                .finish_chat(Err(goodwin_error::report!("Provider task is unavailable")));
         }
     }
 
-    pub(super) fn voice(
-        &self,
-        job: VoiceJob,
-        wav: RecordingWav,
-        panel: &Panel,
-        network: &mut Network<'_>,
-    ) -> Result<(), Failure> {
+    pub(super) fn voice(&self, job: VoiceJob, wav: RecordingWav) -> Result<(), Failure> {
         job.request.check()?;
-        let ready = network.ready(job.provider(panel).https(), || {
-            job.request.failure().is_some()
-        });
-        job.request.check()?;
-        ready.map_err(provider_failure)?;
         crate::diagnostics::Queue::Provider
             .send(&self.jobs, Job::Voice(job, wav))
             .map_err(|_| Failure::ProviderUnavailable)
@@ -246,35 +232,44 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
     let state = &panel.state;
     match job {
         Job::Chat(context, message, history) => {
-            let answer = context
-                .provider(panel, None)
-                .chat(&message, &history, |_chunk| {
+            let provider = context.provider(panel, None);
+            let answer = wait_for_network(panel, provider.https(), || false).and_then(|()| {
+                provider.chat(&message, &history, |_chunk| {
                     #[cfg(feature = "wasm-plugins")]
                     State::lock(state).chat_chunk(_chunk);
-                });
+                })
+            });
             State::lock(state).finish_chat(answer);
         }
         Job::Voice(job, wav) => {
             let provider = job.provider(panel);
             let streaming = provider.streaming();
-            let result = block_on(voice_core::run(
-                &job.request,
-                &mut EspTurn {
-                    request: &job.request,
-                    provider,
-                    output,
-                    state,
-                    transcript: String::new(),
-                    streaming,
-                    #[cfg(feature = "wasm-plugins")]
-                    tools: panel
-                        .plugins
-                        .get()
-                        .map(|plugins| plugins.voice_tools(&job.request)),
-                },
-                wav,
-                job.wake_word.as_deref(),
-            ));
+            let ready =
+                wait_for_network(panel, provider.https(), || job.request.failure().is_some());
+            let result = job
+                .request
+                .check()
+                .and_then(|()| ready.map_err(provider_failure))
+                .and_then(|()| {
+                    block_on(voice_core::run(
+                        &job.request,
+                        &mut EspTurn {
+                            request: &job.request,
+                            provider,
+                            output,
+                            state,
+                            transcript: String::new(),
+                            streaming,
+                            #[cfg(feature = "wasm-plugins")]
+                            tools: panel
+                                .plugins
+                                .get()
+                                .map(|plugins| plugins.voice_tools(&job.request)),
+                        },
+                        wav,
+                        job.wake_word.as_deref(),
+                    ))
+                });
             State::lock(state).finish_voice(&job.request, result.err());
             match result {
                 Ok(()) => log::info!("Voice turn complete"),
@@ -283,6 +278,25 @@ fn process(job: Job, panel: &Panel, output: &mpsc::SyncSender<PlaybackRequest>) 
             }
         }
     }
+}
+
+fn wait_for_network(panel: &Panel, https: bool, cancelled: impl Fn() -> bool) -> Result<()> {
+    ensure!(!cancelled(), "Voice request cancelled");
+    ensure!(panel.wifi_connected(), "Wi-Fi is unavailable");
+    if https && !panel.clock_ready.load(Ordering::Acquire) {
+        panel.clock_requested.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !panel.clock_ready.load(Ordering::Acquire) {
+            ensure!(!cancelled(), "Voice request cancelled");
+            ensure!(panel.wifi_connected(), "Wi-Fi is unavailable");
+            ensure!(
+                Instant::now() < deadline,
+                "Wait for TLS clock synchronization"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Ok(())
 }
 
 struct EspTurn<'a> {

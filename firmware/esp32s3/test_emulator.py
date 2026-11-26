@@ -831,6 +831,16 @@ class Panel:
         resources = self.print_resources("after voice")
         assert resources["psram"]["total_bytes"] == 8 * 1024 * 1024
         assert resources["memory"]["used_bytes"] > 0
+        if source in ("wake", "wake_test"):
+            metrics = self.request("/api/diagnostics/metrics")
+            inference = metrics["wake_inference"]
+            assert inference["count"] > 0
+            assert 0 < inference["p50_upper_us"] <= inference["p95_upper_us"] <= inference["max_us"]
+            print("ESP wake inference", json.dumps({
+                **inference,
+                "capture_skipped_frames": metrics["capture_skipped_frames"],
+                "wake_inference_failed": metrics["wake_inference_failed"],
+            }, sort_keys=True), flush=True)
         self.request("/api/chat/clear", "POST", {}, 204)
         assert self.request("/api/state")["messages"] == []
 

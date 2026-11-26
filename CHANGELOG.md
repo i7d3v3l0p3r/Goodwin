@@ -4,6 +4,7 @@
 
 ### English
 
+- On ESP32-S3, a voice or chat request can wait for the HTTPS clock while the device continues to handle due timer alarms.
 - Streaming chat uses less temporary memory when decoding provider responses.
 - ESP32-S3 restores interrupted WASM plugin data writes before the plugin starts, including files accessed through the plugin storage API.
 - The panel can export diagnostic counters and latencies as JSON. The export contains numeric metrics only.
@@ -25,6 +26,7 @@
 
 ### Русский
 
+- На ESP32-S3 запрос чата или голосовой запрос может ждать синхронизации часов для HTTPS, пока устройство воспроизводит сигналы таймеров.
 - Потоковый чат использует меньше временной памяти при разборе ответов провайдера.
 - ESP32-S3 восстанавливает файлы после прерванной записи до запуска WASM-плагина. Это касается и файлов, доступных через API хранилища плагинов.
 - Из панели можно скачать счётчики и задержки в формате JSON. В выгрузку входят только числовые показатели.
