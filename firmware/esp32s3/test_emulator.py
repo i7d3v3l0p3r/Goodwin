@@ -566,6 +566,39 @@ class Panel:
         assert all(pipeline[stage]["provider"] == connection["providerId"]
                    for stage in ("transcription", "chat", "speech"))
 
+    def verify_plugin_update(self, path):
+        def provider():
+            return next(item for item in self.request("/api/plugins") if item["id"] == "openai-compatible")
+
+        def package(version, broken):
+            output = io.BytesIO()
+            with tarfile.open(path) as source, tarfile.open(fileobj=output, mode="w:gz") as target:
+                for member in source:
+                    contents = source.extractfile(member).read()
+                    if member.name == "manifest.json":
+                        manifest = json.loads(contents)
+                        manifest["version"] = version
+                        contents = json.dumps(manifest).encode()
+                    if broken and member.name.endswith(".wasm"):
+                        contents = b"\0asm\x01\0\0\0"
+                    member.size = len(contents)
+                    target.addfile(member, io.BytesIO(contents))
+            return output.getvalue()
+
+        previous = provider()
+        version = "99.0.0"
+        route = "/api/plugin-packages"
+        assert self.request(route, "POST", package(version, True), 409, timeout=90) == {
+            "error": "plugin_update_rolled_back",
+        }
+        assert provider()["revision"] == previous["revision"]
+        self.verify_plugin_provider()
+        self.request(route, "POST", package(version, False), 204, timeout=90)
+        current = provider()
+        assert current["version"] == version and current["revision"] != previous["revision"]
+        self.verify_plugin_provider()
+        print("Verified plugin update and rollback preserve saved provider connections")
+
     def setup_access(self):
         assert self.request("/api/access") == {
             "protected": True, "authorized": False, "setup_required": True
@@ -954,6 +987,7 @@ def run_emulator(args, flash, board, output, server):
                         if args.dataset_package:
                             panel.start_dataset(args.dataset_package)
                         if args.voice_lifecycle:
+                            panel.verify_plugin_update(args.provider_package)
                             panel.exercise_voice_lifecycle(port, server)
                         if args.wake_test:
                             panel.start_wake_test()

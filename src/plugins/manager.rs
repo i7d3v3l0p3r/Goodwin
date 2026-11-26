@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
-use goodwin_error::{Context, Result};
+use goodwin_error::Result;
 use goodwin_plugin::{
     HttpRequest,
     provider::{Capability, ModelCatalog},
@@ -25,7 +25,7 @@ use super::{
     registration::HttpResponse,
     registry::{Active, Entry, Registry, Status, View},
     settings::{self, Field},
-    store::{Store, copy_data, storage},
+    store::{Store, storage},
 };
 
 #[derive(Clone)]
@@ -139,6 +139,17 @@ impl Plugins {
                 })
             {
                 continue;
+            }
+            match self.0.store.unresolved(&id) {
+                Ok(false) => {}
+                Ok(true) => {
+                    log::warn!("Plugin {id} is awaiting package recovery");
+                    continue;
+                }
+                Err(error) => {
+                    log::warn!("Could not inspect plugin {id} recovery: {error:#}");
+                    continue;
+                }
             }
             let manifest = Manifest::read(&item.path().join("package"));
             match manifest {
@@ -513,6 +524,14 @@ impl Plugins {
     }
 
     pub async fn upload(&self, bytes: axum::body::Bytes) -> Result<(), Failure> {
+        // Once received, an upload must finish even if the HTTP caller leaves.
+        let plugins = self.clone();
+        tokio::spawn(async move { plugins.install(bytes).await })
+            .await
+            .map_err(storage)?
+    }
+
+    async fn install(&self, bytes: axum::body::Bytes) -> Result<(), Failure> {
         let _operation = self.0.lifecycle.lock().await;
         self.0.store.dirs().map_err(storage)?;
         let work = tempfile::tempdir_in(self.0.store.work()).map_err(storage)?;
@@ -526,67 +545,75 @@ impl Plugins {
                 log::warn!("Could not read plugin upload: {error}");
                 Failure::InvalidPackage
             })?;
-        fs::create_dir(staged.join("data")).map_err(storage)?;
         let id = &manifest.id;
+        let update = Arc::new(self.0.store.update(id, work.path()).map_err(storage)?);
         let previous = self.0.store.slot(id);
-        if !previous.exists() {
-            fs::rename(&staged, &previous).map_err(storage)?;
-            return if self.0.activate(manifest, None).await {
-                Ok(())
-            } else {
-                Err(Failure::StartFailed)
-            };
+        let old = previous
+            .try_exists()
+            .map_err(storage)?
+            .then(|| Manifest::read(&previous.join("package")).map_err(storage))
+            .transpose()?;
+        if old.is_some() {
+            self.0.withdraw(id, Status::Updating).await?;
         }
 
-        let backup = self.0.store.backup(id);
-        if backup.exists() {
-            return Err(Failure::Storage);
-        }
-        let old = Manifest::read(&previous.join("package")).map_err(storage)?;
-        self.0.withdraw(id, Status::Updating).await?;
-        let source = previous.join("data");
-        let destination = staged.join("data");
-        let prepared = tokio::task::spawn_blocking(move || {
-            copy_data(&source, &destination).context("Copy plugin data for update")
-        })
-        .await
-        .map_err(goodwin_error::Error::from)
-        .and_then(|result| result)
-        .and_then(|()| fs::rename(&previous, &backup).context("Save the previous plugin package"));
-        if let Err(error) = prepared {
-            self.0.activate(old, Some(Failure::Storage.code())).await;
-            return Err(storage(error));
-        }
-        let ready = match fs::rename(&staged, &previous) {
-            Ok(()) => self.0.start(&manifest).await,
-            Err(error) => Err(error.into()),
+        let staged = {
+            let update = update.clone();
+            tokio::task::spawn_blocking(move || update.prepare().and_then(|()| update.publish()))
+                .await
+                .map_err(storage)
+                .and_then(|result| result.map_err(storage))
         };
-        match ready {
-            Ok(active) => match fs::rename(&backup, work.path().join("retired")) {
-                Ok(()) => {
-                    self.0
-                        .registry
-                        .insert(manifest, Some(active), Status::Ready, None);
-                    return Ok(());
+        let failure = match staged {
+            Ok(()) => match self.0.start(&manifest).await {
+                Ok(active) => {
+                    let commit = {
+                        let update = update.clone();
+                        tokio::task::spawn_blocking(move || update.commit())
+                            .await
+                            .map_err(storage)
+                            .and_then(|result| result.map_err(storage))
+                    };
+                    if let Err(error) = commit {
+                        active.process.stop().await;
+                        error
+                    } else {
+                        self.0
+                            .registry
+                            .insert(manifest, Some(active), Status::Ready, None);
+                        return Ok(());
+                    }
                 }
                 Err(error) => {
-                    active.process.stop().await;
-                    log::error!("Could not commit plugin {id} update: {error}");
+                    log::warn!("Could not start plugin {id}: {error:#}");
+                    if old.is_some() {
+                        Failure::RolledBack
+                    } else {
+                        Failure::StartFailed
+                    }
                 }
             },
-            Err(error) => log::error!("Could not start updated plugin {id}: {error}"),
-        }
-        if let Err(error) = self.0.store.restore_backup(id) {
-            self.0
-                .registry
-                .insert(old, None, Status::Error, Some(Failure::Storage.code()));
-            return Err(storage(error));
-        }
-        if self.0.activate(old, Some(Failure::RolledBack.code())).await {
-            Err(Failure::RolledBack)
+            Err(error) => error,
+        };
+
+        let restored = tokio::task::spawn_blocking(move || update.rollback())
+            .await
+            .map_err(storage)
+            .and_then(|result| result.map_err(storage));
+        if let Some(old) = old {
+            if let Err(error) = restored {
+                self.0
+                    .registry
+                    .insert(old, None, Status::Error, Some(error.code()));
+                return Err(error);
+            }
+            if !self.0.activate(old, Some(failure.code())).await {
+                return Err(Failure::StartFailed);
+            }
         } else {
-            Err(Failure::StartFailed)
+            restored?;
         }
+        Err(failure)
     }
 
     pub async fn remove(&self, id: &str) -> Result<(), Failure> {
@@ -598,7 +625,7 @@ impl Plugins {
         if !slot.is_dir() {
             return Err(Failure::NotFound);
         }
-        if self.0.store.backup(id).exists() {
+        if self.0.store.unresolved(id).map_err(storage)? {
             return Err(Failure::Storage);
         }
         let work = tempfile::tempdir_in(self.0.store.work()).map_err(storage)?;
@@ -649,14 +676,6 @@ impl Manager {
                 })
                 .clone()
         };
-        let (process, registration) = Process::start(
-            &slot.join("package"),
-            &slot.join("data"),
-            manifest,
-            sound,
-            self.registry.changes.clone(),
-        )
-        .await?;
         let connections = if manifest.provider_connections {
             let id = manifest.id.clone();
             let directory = slot.join("data");
@@ -669,6 +688,14 @@ impl Manager {
         } else {
             Vec::new()
         };
+        let (process, registration) = Process::start(
+            &slot.join("package"),
+            &slot.join("data"),
+            manifest,
+            sound,
+            self.registry.changes.clone(),
+        )
+        .await?;
         Ok(Active {
             voice: Arc::default(),
             process,

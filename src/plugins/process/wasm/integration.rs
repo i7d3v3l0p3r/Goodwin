@@ -46,6 +46,86 @@ fn install(root: &Path, mut manifest: Value, module: &[u8]) -> Manifest {
     Manifest::read(root).unwrap()
 }
 
+#[tokio::test]
+async fn upload_commits_a_started_package_and_restores_data_after_a_failed_update() {
+    fn archive(version: &str, module: &[u8]) -> Bytes {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../../../plugins/openai-compatible/manifest.json"
+        ))
+        .unwrap();
+        manifest["target"] = json!("wasm32");
+        manifest["executable"] = json!("bin/plugin.wasm");
+        manifest["version"] = json!(version);
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        // The manifest references these web assets.
+        let files = [
+            ("manifest.json", manifest.as_slice()),
+            ("bin/plugin.wasm", module),
+            ("ui/index.mjs", b"export default null;"),
+            ("ui/style.css", b""),
+        ];
+        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gzip);
+        for (path, contents) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            tar.append_data(&mut header, path, contents).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap().into()
+    }
+
+    use crate::plugins::Failure;
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = crate::plugins::Plugins::new(directory.path(), crate::station::Player::new());
+    let store = crate::plugins::store::Store::new(directory.path());
+    let id = "openai-compatible";
+    let slot = store.slot(id);
+    let invalid = b"\0asm\x01\0\0\0";
+    assert!(matches!(
+        plugins.upload(archive("1.0.0", invalid)).await,
+        Err(Failure::StartFailed)
+    ));
+    assert!(!slot.exists());
+    assert!(plugins.catalog().is_empty());
+
+    assert!(
+        plugins
+            .upload(archive("1.0.0", wasm!("openai-compatible")))
+            .await
+            .is_ok()
+    );
+    fs::write(slot.join("data/saved"), b"original").unwrap();
+    assert!(matches!(
+        plugins.upload(archive("2.0.0", invalid)).await,
+        Err(Failure::RolledBack)
+    ));
+    assert_eq!(fs::read(slot.join("data/saved")).unwrap(), b"original");
+    assert_eq!(
+        Manifest::read(&slot.join("package")).unwrap().version,
+        "1.0.0"
+    );
+    assert!(
+        plugins
+            .provider(crate::assistant::DEFAULT_PROVIDER, Capability::Chat)
+            .is_some()
+    );
+
+    assert!(
+        plugins
+            .upload(archive("2.0.0", wasm!("openai-compatible")))
+            .await
+            .is_ok()
+    );
+    assert_eq!(fs::read(slot.join("data/saved")).unwrap(), b"original");
+    assert_eq!(
+        Manifest::read(&slot.join("package")).unwrap().version,
+        "2.0.0"
+    );
+    assert!(!store.unresolved(id).unwrap());
+    plugins.shutdown().await;
+}
+
 async fn plugin(root: &Path, data: &Path, manifest: &Manifest) -> (Process, Registration) {
     let (sound, _) = mpsc::channel(1);
     let (changes, _) = watch::channel(());

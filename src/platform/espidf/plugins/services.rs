@@ -19,6 +19,7 @@ use crate::{
     plugins::{
         ProviderConfig,
         package::{self, Manifest, WasmHttp},
+        store::quota::{Quota, file_size},
     },
     voice_core::VoiceRequest,
 };
@@ -30,6 +31,7 @@ const STORAGE_LIMIT: usize = 128 * 1024;
 pub(super) struct Host {
     pub(super) data: PathBuf,
     storage: bool,
+    quota: Quota,
     http: Option<WasmHttp>,
     has_connections: bool,
     config: Option<ProviderConfig>,
@@ -55,6 +57,7 @@ impl Host {
         Self {
             data,
             storage: manifest.wasm_storage,
+            quota: Quota::default(),
             http: manifest.wasm_http.clone(),
             has_connections: manifest.provider_connections,
             config: None,
@@ -254,8 +257,15 @@ impl HostServices for Host {
                 );
                 let path = self.path(&path)?;
                 ensure!(replace || !path.try_exists()?, "Plugin file already exists");
+                let next =
+                    self.quota
+                        .projected(&self.data, file_size(&path)?, input.len() as u64)?;
                 fs::create_dir_all(path.parent().context("Missing plugin directory")?)?;
-                replace_file(&path, input)?;
+                if let Err(error) = replace_file(&path, input) {
+                    self.quota.invalidate();
+                    return Err(error);
+                }
+                self.quota.saved(next);
                 Ok(Vec::new())
             }
             Request::Rename { from, to } => {
@@ -263,10 +273,14 @@ impl HostServices for Host {
                 ensure!(from.is_file(), "Plugin data must be a regular file");
                 fs::create_dir_all(to.parent().context("Missing plugin directory")?)?;
                 fs::rename(from, to)?;
+                self.quota.invalidate();
                 Ok(Vec::new())
             }
             Request::Remove { path } => {
-                remove_file(&self.path(&path)?)?;
+                let path = self.path(&path)?;
+                let size = file_size(&path)?;
+                remove_file(&path)?;
+                self.quota.removed(size);
                 Ok(Vec::new())
             }
         }

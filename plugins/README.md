@@ -62,6 +62,20 @@ For plugins that use host services, enable the SDK's `wasm-guest` feature for th
 - `wasmStorage` enables reads and writes relative to the plugin's data directory and lets the guest register for wake events. Wake-word dataset uses the same `.clip` format and `capture.json` as the native plugin.
 - Linear memory can grow up to 512 KiB for base plugins, 8 MiB for storage plugins and 64 MiB for HTTP providers. The provider limit accommodates the existing buffered recording and speech payloads.
 
+### Storage and package updates
+
+The host limits WASM data writes to 132 MiB per plugin on Linux and 2 MiB
+on ESP32-S3. Existing data can be read or removed after a limit is exceeded.
+Goodwin also applies these limits when copying data for an update, including
+native packages on Linux. Old and staged data coexist during startup of the
+candidate, so the device needs free space for a second copy.
+
+Goodwin suspends the plugin being replaced and confirms the candidate only
+after it starts successfully. After an interrupted update, the next startup
+restores the previous package and data. An interrupted first installation is
+discarded. On ESP32-S3, other plugins can continue to run while the package data
+is copied and the candidate is started.
+
 ## Declarative settings
 
 Declare a `settings` array in `manifest.json` for fields that Goodwin should render and store. A plugin with only a settings form can omit `web` entirely. Plugins with their own pages link to the same settings form from their page headers. Settings also open from the Plugins list and can be edited while the plugin process is unavailable. Plugins using declarative settings reserve the `settings` page path for the panel.

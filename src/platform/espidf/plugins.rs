@@ -64,6 +64,7 @@ struct Entry {
     connections: Vec<connections::View>,
     settings_revision: u64,
     leased: Option<PluginIdentity>,
+    updating: bool,
     voice: Arc<()>,
 }
 
@@ -300,8 +301,8 @@ impl Plugins {
             let registration = entry.registration();
             json!({
                 "id": manifest.id, "title": manifest.title, "version": manifest.version,
-                "status": if registration.is_some() { "ready" } else { "error" },
-                "error": registration.is_none().then_some("plugin_unavailable"),
+                "status": if entry.updating { "updating" } else if registration.is_some() { "ready" } else { "error" },
+                "error": (registration.is_none() && !entry.updating).then_some("plugin_unavailable"),
                 "revision": entry.revision(),
                 "settings_revision": entry.settings_revision,
                 "web": registration.and(manifest.web.as_ref()),
@@ -318,14 +319,16 @@ impl Plugins {
     pub(super) fn install(&self, mut archive: impl Read) -> Result<(), Failure> {
         // The upload worker serializes installers. Network reads and archive
         // expansion must not hold the lock shared with plugin calls and ticks.
-        let work = self.lock().store.work().join("incoming");
+        let store = self.lock().store.clone();
+        let work = store.work().join("incoming");
+        let staged = work.join("slot");
         if work.exists() {
             fs::remove_dir_all(&work).map_err(store::storage)?;
         }
-        fs::create_dir(&work).map_err(store::storage)?;
+        fs::create_dir_all(&staged).map_err(store::storage)?;
         let result = (|| {
             let manifest =
-                package::extract_reader(&mut archive, &work.join("package"), EXPANDED_LIMIT)
+                package::extract_reader(&mut archive, &staged.join("package"), EXPANDED_LIMIT)
                     .map_err(|error| {
                         log::warn!("Invalid plugin archive: {error:#}");
                         Failure::InvalidPackage
@@ -336,10 +339,7 @@ impl Plugins {
                 log::warn!("Read plugin archive: {error}");
                 Failure::InvalidPackage
             })?;
-            let mut runtime = self.lock();
-            let result = runtime.install(manifest, &work);
-            self.refresh_wake_targets(&mut runtime);
-            result
+            self.install_staged(&store, &work, &staged, manifest)
         })();
         if work.exists()
             && let Err(error) = fs::remove_dir_all(&work)
@@ -350,10 +350,88 @@ impl Plugins {
         result
     }
 
+    fn install_staged(
+        &self,
+        store: &Store,
+        work: &Path,
+        staged: &Path,
+        manifest: Manifest,
+    ) -> Result<(), Failure> {
+        let id = &manifest.id;
+        if id == crate::builtin_assistant::BUILTIN_PROVIDER {
+            return Err(Failure::InvalidPackage);
+        }
+        let (previous, active) = {
+            let mut runtime = self.lock();
+            let previous = runtime.entries.contains_key(id);
+            if !previous && runtime.entries.len() >= MAX_INSTANCES {
+                return Err(Failure::StartFailed);
+            }
+            let active = if let Some(entry) = runtime.entries.get_mut(id) {
+                if entry.in_use() {
+                    return Err(Failure::Busy);
+                }
+                entry.updating = true;
+                entry.active.take()
+            } else {
+                None
+            };
+            self.refresh_wake_targets(&mut runtime);
+            (previous, active)
+        };
+
+        // The old entry stays reserved while the update worker uses the flash
+        // and starts the candidate. Other plugins can still run and serve HTTP.
+        let update = store.update(id, work).map_err(store::storage);
+        let installed = update.as_ref().map_err(|error| *error).and_then(|update| {
+            update.prepare().map_err(store::storage)?;
+            let mut guest =
+                super::memory::external(|| Instance::open(&manifest, staged)).map_err(|error| {
+                    log::warn!("Start plugin {id}: {error:#}");
+                    if previous {
+                        Failure::RolledBack
+                    } else {
+                        Failure::StartFailed
+                    }
+                })?;
+            update.publish().map_err(store::storage)?;
+            guest.relocate(&manifest, &store.slot(id));
+            update.commit().map_err(store::storage)?;
+            Ok(guest)
+        });
+        match installed {
+            Ok(guest) => {
+                let slot = store.slot(id);
+                let id = id.clone();
+                let entry = Entry::new(manifest, Some(guest), &slot);
+                let mut runtime = self.lock();
+                runtime.entries.insert(id, entry);
+                self.refresh_wake_targets(&mut runtime);
+                Ok(())
+            }
+            Err(error) => {
+                let restored = update.ok().map_or(Ok(()), |update| update.rollback());
+                let mut runtime = self.lock();
+                if let Some(entry) = runtime.entries.get_mut(id) {
+                    entry.updating = false;
+                    if restored.is_ok() {
+                        entry.active = active;
+                    }
+                }
+                self.refresh_wake_targets(&mut runtime);
+                restored.map_err(store::storage)?;
+                Err(error)
+            }
+        }
+    }
+
     pub(super) fn remove(&self, id: &str) -> Result<(), Failure> {
         let mut runtime = self.lock();
         if runtime.entries.get(id).ok_or(Failure::NotFound)?.in_use() {
             return Err(Failure::Busy);
+        }
+        if runtime.store.unresolved(id).map_err(store::storage)? {
+            return Err(Failure::Storage);
         }
         // Commit removal before cleaning up so a reset cannot restore a partial package.
         let removed = runtime.store.work().join("removed");
@@ -417,6 +495,9 @@ impl Plugins {
             .join("data")
             .join(goodwin_plugin::settings::SETTINGS_FILE);
         let entry = runtime.entries.get_mut(id).ok_or(Failure::NotFound)?;
+        if entry.updating {
+            return Err(Failure::Busy);
+        }
         let manifest = &entry.manifest;
         let fields = &manifest.settings;
         if manifest.provider_connections || fields.is_empty() {
@@ -504,66 +585,6 @@ impl VoiceTools<'_> {
     }
 }
 
-impl Runtime {
-    fn install(&mut self, manifest: Manifest, work: &Path) -> Result<(), Failure> {
-        let id = &manifest.id;
-        if id == crate::builtin_assistant::BUILTIN_PROVIDER {
-            return Err(Failure::InvalidPackage);
-        }
-        let previous = self.entries.contains_key(id);
-        if self.entries.get(id).is_some_and(Entry::in_use) {
-            return Err(Failure::Busy);
-        }
-        if !previous && self.entries.len() >= MAX_INSTANCES {
-            return Err(Failure::StartFailed);
-        }
-        let data = work.join("data");
-        let slot = self.store.slot(id);
-        let backup = self.store.backup(id);
-        let committed = self.store.work().join("committed");
-        if committed.exists() {
-            fs::remove_dir_all(&committed).map_err(store::storage)?;
-        }
-        fs::create_dir(&data).map_err(store::storage)?;
-        if previous {
-            store::copy_data(&slot.join("data"), &data).map_err(store::storage)?;
-        }
-        let mut guest =
-            super::memory::external(|| Instance::open(&manifest, work)).map_err(|error| {
-                log::warn!("Start plugin {id}: {error:#}");
-                if previous {
-                    Failure::RolledBack
-                } else {
-                    Failure::StartFailed
-                }
-            })?;
-        // A reboot before the backup is removed restores the previous package and data.
-        if previous {
-            fs::rename(&slot, &backup).map_err(store::storage)?;
-        }
-        if let Err(error) = fs::rename(work, &slot) {
-            if previous {
-                self.store.restore_backup(id).map_err(store::storage)?;
-            }
-            return Err(store::storage(error));
-        }
-        if previous {
-            // Move the entire backup out of its recovery role before recursively deleting.
-            if let Err(error) = fs::rename(&backup, &committed) {
-                self.store.restore_backup(id).map_err(store::storage)?;
-                return Err(store::storage(error));
-            }
-            if let Err(error) = fs::remove_dir_all(&committed) {
-                log::warn!("Clean up committed plugin update: {error}");
-            }
-        }
-        guest.relocate(&manifest, &slot);
-        self.entries
-            .insert(id.clone(), Entry::new(manifest, Some(guest), &slot));
-        Ok(())
-    }
-}
-
 impl Entry {
     fn new(manifest: Manifest, active: Option<Instance>, slot: &Path) -> Self {
         let saved = manifest.provider_connections.then(|| {
@@ -580,12 +601,13 @@ impl Entry {
             manifest,
             active,
             leased: None,
+            updating: false,
             voice: Arc::default(),
         }
     }
 
     fn in_use(&self) -> bool {
-        self.leased.is_some() || Arc::strong_count(&self.voice) > 1
+        self.updating || self.leased.is_some() || Arc::strong_count(&self.voice) > 1
     }
 
     fn registration(&self) -> Option<&Registration> {

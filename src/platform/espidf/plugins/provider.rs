@@ -279,12 +279,13 @@ impl Runtime {
     }
 
     pub(super) fn connections(&self, id: &str) -> Result<(PathBuf, connections::Store), Failure> {
-        if !self
+        let entry = self
             .entries
             .get(id)
-            .is_some_and(|entry| entry.manifest.provider_connections)
-        {
-            return Err(Failure::NotFound);
+            .filter(|entry| entry.manifest.provider_connections)
+            .ok_or(Failure::NotFound)?;
+        if entry.updating {
+            return Err(Failure::Busy);
         }
         let directory = self.store.slot(id).join("data");
         let connections = connections::Store::read(&directory).map_err(store::storage)?;

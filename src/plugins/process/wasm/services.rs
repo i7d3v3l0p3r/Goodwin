@@ -21,7 +21,11 @@ use tokio::sync::mpsc::error::TrySendError;
 use super::*;
 use crate::{
     plugin_wasm::{HostServices, META_LIMIT},
-    plugins::{ProviderConfig, package::WasmHttp},
+    plugins::{
+        ProviderConfig,
+        package::WasmHttp,
+        store::quota::{Quota, file_size},
+    },
 };
 
 const STORAGE_LIMIT: usize = 128 * 1024;
@@ -37,6 +41,7 @@ pub(super) struct Host {
     has_connections: bool,
     config: Option<ProviderConfig>,
     storage: Option<OwnedFd>,
+    quota: Quota,
     response: Option<HttpResponseBody>,
     runtime: tokio::runtime::Handle,
     pub(super) chunks: Option<StreamChunks>,
@@ -56,6 +61,7 @@ impl Host {
             has_connections: manifest.provider_connections,
             config: None,
             storage,
+            quota: Quota::default(),
             response: None,
             runtime: tokio::runtime::Handle::current(),
             chunks: None,
@@ -174,12 +180,18 @@ impl HostServices for Host {
                 let (from_dir, from_name) = self.parent(&from, false)?;
                 let (to_dir, to_name) = self.parent(&to, true)?;
                 fs::renameat(&from_dir, from_name, &to_dir, to_name)?;
+                self.quota.invalidate();
                 Ok(Vec::new())
             }
             Request::Remove { path } => {
                 let (dir, name) = self.parent(&path, false)?;
+                let size = file_size(&descriptor_path(&dir).join(name))?;
                 match fs::unlinkat(&dir, name, AtFlags::empty()) {
-                    Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(Vec::new()),
+                    Ok(()) => {
+                        self.quota.removed(size);
+                        Ok(Vec::new())
+                    }
+                    Err(rustix::io::Errno::NOENT) => Ok(Vec::new()),
                     Err(error) => Err(error.into()),
                 }
             }
@@ -444,25 +456,33 @@ impl Host {
         Ok(data)
     }
 
-    fn write(&self, path: &str, input: &[u8], replace: bool) -> Result<()> {
+    fn write(&mut self, path: &str, input: &[u8], replace: bool) -> Result<()> {
         ensure!(
             input.len() <= STORAGE_LIMIT,
             "Plugin file write is too large"
         );
         let (dir, name) = self.parent(path, true)?;
-        let parent = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+        let parent = descriptor_path(&dir);
+        let path = parent.join(Path::new(name));
+        let next = self
+            .quota
+            .projected(&self.data, file_size(&path)?, input.len() as u64)?;
         let mut file = tempfile::NamedTempFile::new_in(&parent)?;
         file.write_all(input)?;
         file.as_file().sync_data()?;
-        let path = parent.join(Path::new(name));
         if replace {
             file.persist(path)?;
         } else {
             file.persist_noclobber(path)?;
         }
+        self.quota.saved(next);
         fs::fsync(&dir)?;
         Ok(())
     }
+}
+
+fn descriptor_path(dir: &OwnedFd) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()))
 }
 
 struct HttpResponseBody {
