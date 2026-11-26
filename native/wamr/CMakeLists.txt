@@ -24,15 +24,19 @@ set(WAMR_BUILD_LOG 0)
 include("${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake")
 find_package(Git REQUIRED)
 
+set(patched_sources "")
 function(patch_sources patch)
     set(patched "${CMAKE_CURRENT_BINARY_DIR}/patched")
     foreach(relative IN LISTS ARGN)
         set(original "${WAMR_ROOT_DIR}/${relative}")
-        get_filename_component(directory "${patched}/${relative}" DIRECTORY)
-        file(MAKE_DIRECTORY "${directory}")
-        file(COPY_FILE "${original}" "${patched}/${relative}")
-        list(REMOVE_ITEM WAMR_RUNTIME_LIB_SOURCE "${original}")
-        list(APPEND WAMR_RUNTIME_LIB_SOURCE "${patched}/${relative}")
+        if(NOT relative IN_LIST patched_sources)
+            get_filename_component(directory "${patched}/${relative}" DIRECTORY)
+            file(MAKE_DIRECTORY "${directory}")
+            file(COPY_FILE "${original}" "${patched}/${relative}")
+            list(REMOVE_ITEM WAMR_RUNTIME_LIB_SOURCE "${original}")
+            list(APPEND WAMR_RUNTIME_LIB_SOURCE "${patched}/${relative}")
+            list(APPEND patched_sources "${relative}")
+        endif()
     endforeach()
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --no-index "${CMAKE_CURRENT_SOURCE_DIR}/${patch}"
@@ -40,9 +44,14 @@ function(patch_sources patch)
         COMMAND_ERROR_IS_FATAL ANY
     )
     set(WAMR_RUNTIME_LIB_SOURCE "${WAMR_RUNTIME_LIB_SOURCE}" PARENT_SCOPE)
+    set(patched_sources "${patched_sources}" PARENT_SCOPE)
 endfunction()
 
 patch_sources(table-limit.patch core/iwasm/interpreter/wasm_loader.c)
+patch_sources(alignment.patch
+    core/iwasm/interpreter/wasm_interp_fast.c
+    core/iwasm/interpreter/wasm_loader.c
+    core/iwasm/interpreter/wasm_runtime.c)
 if(WAMR_BUILD_PLATFORM STREQUAL "esp-idf")
     patch_sources(esp-idf.patch
         core/shared/platform/esp-idf/espidf_platform.c
@@ -50,7 +59,15 @@ if(WAMR_BUILD_PLATFORM STREQUAL "esp-idf")
 endif()
 
 add_library(goodwin_wamr STATIC ${WAMR_RUNTIME_LIB_SOURCE} bridge.c)
-target_compile_definitions(goodwin_wamr PRIVATE WASM_TABLE_MAX_SIZE=4096)
+# WAMR builds as GNU C99. The bridge needs C11's max_align_t.
+set_property(SOURCE bridge.c APPEND PROPERTY COMPILE_OPTIONS -std=gnu11)
+if(GOODWIN_SANITIZE)
+    # WAMR compares a local variable's address with the actual stack boundary.
+    set_property(SOURCE "${WAMR_ROOT_DIR}/core/iwasm/common/wasm_runtime_common.c"
+        APPEND PROPERTY COMPILE_OPTIONS --param=asan-use-after-return=0)
+endif()
+target_compile_definitions(goodwin_wamr PRIVATE
+    WASM_TABLE_MAX_SIZE=4096 WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS=0)
 target_compile_options(goodwin_wamr PRIVATE -Os -ffunction-sections -fdata-sections)
 target_include_directories(goodwin_wamr PRIVATE
     "${WAMR_ROOT_DIR}/core/iwasm/include"

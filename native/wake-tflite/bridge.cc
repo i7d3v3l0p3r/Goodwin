@@ -11,6 +11,7 @@
 namespace {
 
 constexpr size_t kArenaBytes = 160 * 1024;
+constexpr size_t kModelAlignment = 16;
 
 struct Detector {
     alignas(16) uint8_t arena[kArenaBytes];
@@ -61,6 +62,8 @@ bool valid_signature(const tflite::Model* model) {
 extern "C" {
 
 void* goodwin_tflite_open(const uint8_t* bytes, size_t len) {
+    if (!bytes || !len || reinterpret_cast<uintptr_t>(bytes) % kModelAlignment != 0)
+        return nullptr;
     flatbuffers::Verifier verifier(bytes, len);
     if (!tflite::VerifyModelBuffer(verifier)) return nullptr;
     if (!valid_signature(tflite::GetModel(bytes))) return nullptr;

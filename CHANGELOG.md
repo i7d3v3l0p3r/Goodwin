@@ -4,6 +4,7 @@
 
 ### English
 
+- Fixed memory alignment in the WASM and TensorFlow Lite Micro runtimes on Mini 3 and ESP32-S3.
 - On Mini 3, the panel reports wake model installation by operation ID. Goodwin saves the active selection after the detector switches to it and resumes staged models after restart.
 - Mini 3 and ESP32-S3 keep the selected voice providers and connection settings for the duration of a request. The panel can stop an active voice request during recording, provider calls, or playback.
 - Changing audio settings on ESP32-S3 preserves the current microphone mute state.
@@ -17,6 +18,7 @@
 
 ### Русский
 
+- Исправлено выравнивание памяти в WASM и TensorFlow Lite Micro на Мини 3 и ESP32-S3.
 - На Мини 3 панель показывает результат установки модели активации по ID операции. Гудвин сохраняет активный выбор после переключения детектора и продолжает установку подготовленной модели после перезапуска.
 - Мини 3 и ESP32-S3 фиксируют выбор голосовых провайдеров и параметры подключений на весь запрос. Из панели можно остановить активный голосовой запрос во время записи, обращения к провайдеру или озвучки.
 - Изменение аудионастроек на ESP32-S3 сохраняет текущее состояние переключателя микрофона.

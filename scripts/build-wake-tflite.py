@@ -116,8 +116,10 @@ set(CMAKE_CXX_FLAGS_INIT "-mlongcalls")
     return path
 
 
-def prepare_esp_model(build):
-    for name, sha256 in ESP_MODEL_ASSETS.items():
+def prepare_model_assets(build, names):
+    build.mkdir(exist_ok=True)
+    for name in names:
+        sha256 = ESP_MODEL_ASSETS[name]
         path = build / name
         if path.is_file():
             data = path.read_bytes()
@@ -134,9 +136,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=["native", "aarch64-musl", "esp32s3"], default="native")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--sanitize", action="store_true", help="instrument the native runtime with ASan and UBSan")
     args = parser.parse_args()
+    if args.sanitize and args.target != "native":
+        parser.error("--sanitize requires --target native")
     root = ROOT / "target/wake-tflite"
-    build = root / args.target
+    build = root / ("native-sanitized" if args.sanitize else args.target)
     for name in SOURCES:
         checkout(name, root / name)
     tflm = root / "tflite-micro"
@@ -144,11 +149,16 @@ def main():
     run(sys.executable, tflm / "cmake/download_deps.py", deps, "--deps", "flatbuffers")
     prepare_frontend(root / "livekit-wakeword", root / "frontend")
     options = []
-    if args.target == "aarch64-musl":
+    if args.sanitize:
+        prepare_model_assets(build, ("goodwin-micro-int8.tflite",))
+        flags = "-g -fsanitize=address,undefined -fno-omit-frame-pointer"
+        options = ["-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
+                   f"-DCMAKE_C_FLAGS={flags}", f"-DCMAKE_CXX_FLAGS={flags}",
+                   "-DCMAKE_C_FLAGS_RELEASE=-O1 -DNDEBUG", "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG"]
+    elif args.target == "aarch64-musl":
         options = [f"-DCMAKE_TOOLCHAIN_FILE={zig_toolchain(root)}"]
     elif args.target == "esp32s3":
-        build.mkdir(exist_ok=True)
-        prepare_esp_model(build)
+        prepare_model_assets(build, ESP_MODEL_ASSETS)
         options = [
             f"-DCMAKE_TOOLCHAIN_FILE={esp32s3_toolchain(root)}",
             "-DTFLM_STRIP_ERROR_STRINGS=ON",

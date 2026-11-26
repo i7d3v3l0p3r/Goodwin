@@ -25,15 +25,26 @@ fn main() {
         embuild::espidf::sysenv::output();
     }
     let linux = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+    println!("cargo:rerun-if-env-changed=GOODWIN_NATIVE_SANITIZERS");
+    let sanitize = env::var_os("GOODWIN_NATIVE_SANITIZERS").is_some();
+    if sanitize {
+        assert_eq!(
+            env::var("TARGET").as_deref(),
+            Ok("x86_64-unknown-linux-gnu"),
+            "Native sanitizers require x86-64 GNU/Linux"
+        );
+        println!("cargo:rustc-link-lib=dylib=asan");
+        println!("cargo:rustc-link-lib=dylib=ubsan");
+    }
     if (esp || linux) && env::var_os("CARGO_FEATURE_WASM_PLUGINS").is_some() {
-        wamr::link(esp);
+        wamr::link(esp, sanitize);
     }
     if env::var_os("CARGO_FEATURE_WAKE_TFLITE").is_some() {
-        link_tflite();
+        link_tflite(sanitize);
     }
 }
 
-fn link_tflite() {
+fn link_tflite(sanitize: bool) {
     let target = env::var("TARGET").expect("Cargo sets TARGET");
     let variant = match target.as_str() {
         "aarch64-unknown-linux-musl" => "aarch64-musl",
@@ -43,15 +54,20 @@ fn link_tflite() {
     };
     let dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets manifest dir"))
         .join("target/wake-tflite")
-        .join(variant);
+        .join(if sanitize {
+            "native-sanitized"
+        } else {
+            variant
+        });
     let libraries = dir.join("lib");
     for library in ["goodwin_wake_tflite", "tflm_micro"] {
         let file = libraries.join(format!("lib{library}.a"));
         println!("cargo:rerun-if-changed={}", file.display());
         assert!(
             file.is_file(),
-            "Missing {}. Run python scripts/build-wake-tflite.py --target {variant}",
-            file.display()
+            "Missing {}. Run python scripts/build-wake-tflite.py --target {variant}{}",
+            file.display(),
+            if sanitize { " --sanitize" } else { "" },
         );
     }
     println!("cargo:rerun-if-changed=build.rs");

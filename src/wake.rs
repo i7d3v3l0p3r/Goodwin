@@ -137,8 +137,8 @@ impl WakeModel {
         feature = "wake-tflite",
         feature = "hotpath-alloc"
     ))]
-    pub(crate) fn tflite_buffers(&self) -> Option<[usize; 3]> {
-        if let Backend::Tflite(model) = &self.backend {
+    pub(crate) fn tflite_buffers(&mut self) -> Option<[usize; 3]> {
+        if let Backend::Tflite(model) = &mut self.backend {
             Some(model.buffers())
         } else {
             None
@@ -266,9 +266,13 @@ mod tests {
         assert_eq!(model.threshold(0.5), 0.390625);
         let pcm = std::array::from_fn(|index| (index as i16).wrapping_mul(251));
         let scores = [model.predict(&pcm).unwrap(), model.predict(&pcm).unwrap()];
-        model.reset().unwrap();
-        assert_eq!(model.predict(&pcm).unwrap(), scores[0]);
-        assert_eq!(model.predict(&pcm).unwrap(), scores[1]);
+        std::thread::spawn(move || {
+            model.reset().unwrap();
+            assert_eq!(model.predict(&pcm).unwrap(), scores[0]);
+            assert_eq!(model.predict(&pcm).unwrap(), scores[1]);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

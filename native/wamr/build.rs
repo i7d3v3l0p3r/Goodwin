@@ -8,12 +8,12 @@ use std::{
 const UPSTREAM: &str = "https://github.com/wasm-micro-runtime/wasm-micro-runtime.git";
 const REVISION: &str = include_str!("revision");
 
-pub(super) fn link(esp: bool) {
+pub(super) fn link(esp: bool, sanitize: bool) {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
     let native = root.join("native/wamr");
     let source = prepare_source(&root.join("target/wamr"));
-    let output =
-        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory")).join("wamr");
+    let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"))
+        .join(if sanitize { "wamr-sanitized" } else { "wamr" });
     fs::create_dir_all(&output).expect("Create WAMR build directory");
     for file in [
         "revision",
@@ -21,6 +21,7 @@ pub(super) fn link(esp: bool) {
         "CMakeLists.txt",
         "bridge.c",
         "esp-idf.patch",
+        "alignment.patch",
         "table-limit.patch",
     ] {
         println!("cargo:rerun-if-changed={}", native.join(file).display());
@@ -58,6 +59,14 @@ pub(super) fn link(esp: bool) {
             ));
     } else {
         cmake.arg("-DWAMR_BUILD_PLATFORM=linux");
+        if sanitize {
+            cmake.args([
+                "-DGOODWIN_SANITIZE=ON",
+                "-DCMAKE_C_COMPILER=gcc",
+                "-DCMAKE_ASM_COMPILER=gcc",
+                "-DCMAKE_C_FLAGS=-g -fsanitize=address,undefined -fno-omit-frame-pointer",
+            ]);
+        }
         let arch = if target.starts_with("aarch64-") {
             "AARCH64"
         } else if target.starts_with("x86_64-") {

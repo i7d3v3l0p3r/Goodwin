@@ -102,6 +102,8 @@ The Station binary is `target/aarch64-unknown-linux-musl/release/goodwin`. The n
 
 Run `python scripts/package-station.py` to package the ARM64 binary and launcher in `target/goodwin-mini3-aarch64.tar.gz`. Model assets and their license and notice are distributed in the [Goodwin-wakeword releases](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases).
 
+See the [native runtime notes](native/README.md) for dependency pins, FFI ownership, and checks with AddressSanitizer and UndefinedBehaviorSanitizer.
+
 ### Benchmark wake runtimes
 
 Build the Linux binary with `wake-bench` in addition to the desired wake

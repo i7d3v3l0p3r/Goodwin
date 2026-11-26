@@ -67,6 +67,10 @@ jobs:
       - name: Lint with Station runtimes
         if: matrix.station_runtimes
         run: cargo clippy --locked --workspace --all-targets --features goodwin/wake-tflite,goodwin/wasm-plugins -- -D warnings
+      - name: Check the native runtime boundaries with ASan and UBSan
+        if: matrix.station_runtimes
+        shell: bash
+        run: bash scripts/test-native-boundaries.sh
       - name: Test the Linux headless installer and upgrade script
         if: matrix.station_runtimes
         shell: bash

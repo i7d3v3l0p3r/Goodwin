@@ -1,0 +1,134 @@
+--- a/core/iwasm/interpreter/wasm_runtime.c
++++ b/core/iwasm/interpreter/wasm_runtime.c
+@@ -2433,7 +2433,7 @@
+     mem_offset_t base_offset;
+     uint32 module_inst_struct_size =
+         offsetof(WASMModuleInstance, global_table_data.bytes);
+-    uint64 module_inst_mem_inst_size;
++    uint64 module_inst_mem_inst_size, table_offset;
+     uint64 total_size, table_size = 0;
+     uint8 *global_data, *global_data_end;
+ #if WASM_ENABLE_MULTI_MODULE != 0
+@@ -2463,6 +2463,11 @@
+     /* Size of module inst, memory instances and global data */
+     total_size = (uint64)module_inst_struct_size + module_inst_mem_inst_size
+                  + module->global_data_size;
++
++    /* Global data is packed in 32-bit cells. Align the table header. */
++    const uint64 table_alignment = __alignof__(WASMTableInstance);
++    table_offset = (total_size + table_alignment - 1) & ~(table_alignment - 1);
++    total_size = table_offset;
+
+     /* Calculate the size of table data */
+     for (i = 0; i < module->import_table_count; i++) {
+@@ -2596,8 +2601,7 @@
+     module_inst->global_data = (uint8 *)module_inst + module_inst_struct_size
+                                + module_inst_mem_inst_size;
+     module_inst->global_data_size = module->global_data_size;
+-    first_table = (WASMTableInstance *)(module_inst->global_data
+-                                        + module->global_data_size);
++    first_table = (WASMTableInstance *)((uint8 *)module_inst + table_offset);
+
+     module_inst->memory_count =
+         module->import_memory_count + module->memory_count;
+--- a/core/iwasm/interpreter/wasm_loader.c
++++ b/core/iwasm/interpreter/wasm_loader.c
+@@ -13198,13 +13198,13 @@
+                                 int32 offset =
+                                     (int32)((uint8 *)handle_table[opcode_tmp]
+                                             - (uint8 *)handle_table[0]);
+-                                *(int32 *)(p_code_compiled_tmp
+-                                           - sizeof(int32)) = offset;
++                                memcpy(p_code_compiled_tmp - sizeof(offset),
++                                       &offset, sizeof(offset));
+ #else
+                                 /* emit uint32 label address in 32-bit target */
+-                                *(uint32 *)(p_code_compiled_tmp
+-                                            - sizeof(uint32)) =
+-                                    (uint32)(uintptr_t)handle_table[opcode_tmp];
++                                uint32 address = (uint32)(uintptr_t)handle_table[opcode_tmp];
++                                memcpy(p_code_compiled_tmp - sizeof(address),
++                                       &address, sizeof(address));
+ #endif /* end of WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS */
+ #else  /* else of WASM_ENABLE_LABELS_AS_VALUES */
+ #if WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS != 0
+@@ -13234,13 +13234,13 @@
+                                 int32 offset =
+                                     (int32)((uint8 *)handle_table[opcode_tmp]
+                                             - (uint8 *)handle_table[0]);
+-                                *(int32 *)(p_code_compiled_tmp
+-                                           - sizeof(int32)) = offset;
++                                memcpy(p_code_compiled_tmp - sizeof(offset),
++                                       &offset, sizeof(offset));
+ #else
+                                 /* emit uint32 label address in 32-bit target */
+-                                *(uint32 *)(p_code_compiled_tmp
+-                                            - sizeof(uint32)) =
+-                                    (uint32)(uintptr_t)handle_table[opcode_tmp];
++                                uint32 address = (uint32)(uintptr_t)handle_table[opcode_tmp];
++                                memcpy(p_code_compiled_tmp - sizeof(address),
++                                       &address, sizeof(address));
+ #endif /* end of WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS */
+ #else  /* else of WASM_ENABLE_LABELS_AS_VALUES */
+ #if WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS != 0
+@@ -13371,12 +13371,13 @@
+                         /* emit int32 relative offset in 64-bit target */
+                         int32 offset = (int32)((uint8 *)handle_table[opcode_tmp]
+                                                - (uint8 *)handle_table[0]);
+-                        *(int32 *)(p_code_compiled_tmp - sizeof(int32)) =
+-                            offset;
++                        memcpy(p_code_compiled_tmp - sizeof(offset),
++                               &offset, sizeof(offset));
+ #else
+                         /* emit uint32 label address in 32-bit target */
+-                        *(uint32 *)(p_code_compiled_tmp - sizeof(uint32)) =
+-                            (uint32)(uintptr_t)handle_table[opcode_tmp];
++                        uint32 address = (uint32)(uintptr_t)handle_table[opcode_tmp];
++                        memcpy(p_code_compiled_tmp - sizeof(address),
++                               &address, sizeof(address));
+ #endif
+ #endif /* end of WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS */
+ #else  /* else of WASM_ENABLE_LABELS_AS_VALUES */
+--- a/core/iwasm/interpreter/wasm_interp_fast.c
++++ b/core/iwasm/interpreter/wasm_interp_fast.c
+@@ -1151,6 +1151,13 @@
+     }
+ }
+
++static inline unsigned
++aligned_frame_size(unsigned all_cell_num)
++{
++    return align_uint(wasm_interp_interp_frame_size(all_cell_num),
++                      __alignof__(WASMInterpFrame));
++}
++
+ static inline WASMInterpFrame *
+ ALLOC_FRAME(WASMExecEnv *exec_env, uint32 size, WASMInterpFrame *prev_frame)
+ {
+@@ -1219,7 +1226,7 @@
+     }
+
+     if (!(frame =
+-              ALLOC_FRAME(exec_env, wasm_interp_interp_frame_size(all_cell_num),
++              ALLOC_FRAME(exec_env, aligned_frame_size(all_cell_num),
+                           prev_frame)))
+         return;
+
+@@ -7727,7 +7734,7 @@
+                in loader), all_cell_num must be smaller than 1MB */
+             bh_assert(all_cell_num < 1 * BH_MB);
+
+-            frame_size = wasm_interp_interp_frame_size(all_cell_num);
++            frame_size = aligned_frame_size(all_cell_num);
+             if (!(frame = ALLOC_FRAME(exec_env, frame_size, prev_frame))) {
+                 frame = prev_frame;
+                 goto got_exception;
+@@ -7897,7 +7904,7 @@
+     all_cell_num += (all_cell_num + 3) / 4;
+ #endif
+
+-    frame_size = wasm_interp_interp_frame_size(all_cell_num);
++    frame_size = aligned_frame_size(all_cell_num);
+
+     if (argc < function->param_cell_num) {
+         char buf[128];

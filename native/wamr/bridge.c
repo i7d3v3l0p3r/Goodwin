@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,20 +12,20 @@ extern int32_t goodwin_wamr_host_call(wasm_exec_env_t, uint32_t, uint32_t, uint3
 extern int32_t goodwin_wamr_host_result(wasm_exec_env_t, uint32_t, uint32_t);
 extern void goodwin_wamr_signal(wasm_exec_env_t);
 
-typedef union {
-    size_t size;
-    uint64_t alignment;
+typedef struct {
+    _Alignas(max_align_t) size_t size;
 } Allocation;
 
 static void *allocate(mem_alloc_usage_t usage, unsigned size)
 {
     (void)usage;
-    const size_t bytes = sizeof(Allocation) + (size ? size : 1);
-    if (bytes < size)
+    const size_t payload = size ? size : 1;
+    if (payload > SIZE_MAX - sizeof(Allocation))
         return NULL;
+    const size_t bytes = sizeof(Allocation) + payload;
 #if defined(BH_PLATFORM_ESP_IDF)
     Allocation *allocation = heap_caps_aligned_calloc(
-        8, 1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        _Alignof(Allocation), 1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
     Allocation *allocation = calloc(1, bytes);
 #endif
