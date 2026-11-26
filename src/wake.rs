@@ -249,6 +249,80 @@ mod tests {
 
     #[cfg(feature = "wake-tflite")]
     #[test]
+    #[ignore = "uses pinned public models from scripts/prepare-wake-reference.py"]
+    fn published_models_match_the_synthetic_reference() {
+        #[derive(Deserialize)]
+        struct Fixture {
+            pcm_sha256: String,
+            models: Vec<ModelFixture>,
+        }
+
+        #[derive(Deserialize)]
+        struct ModelFixture {
+            filename: String,
+            #[serde(flatten)]
+            selection: Selection,
+            assistant_threshold: f32,
+            score_tolerance: f32,
+            scores: Vec<f32>,
+        }
+
+        let fixture: Fixture =
+            serde_json::from_str(include_str!("../tests/fixtures/wake_reference.json")).unwrap();
+        let directory =
+            std::env::var_os("GOODWIN_WAKE_REFERENCE_DIR").expect("set GOODWIN_WAKE_REFERENCE_DIR");
+        let directory = Path::new(&directory);
+        let mut random = 0x12ab_34cdu32;
+        let frames: [[i16; FRAME_SAMPLES]; 16] = std::array::from_fn(|frame| {
+            std::array::from_fn(|index| match frame {
+                0..=2 | 12.. => 0,
+                3..=6 => {
+                    let phase = ((frame * FRAME_SAMPLES + index) % 72) as i16;
+                    (36 - (phase - 36).abs()) * 220 - 3960
+                }
+                7..=10 => {
+                    random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (random >> 20) as i16 - 2048
+                }
+                _ if index == FRAME_SAMPLES / 2 => i16::MAX,
+                _ => 0,
+            })
+        });
+        let mut digest = Sha256::new();
+        for samples in &frames {
+            for sample in samples {
+                digest.update(sample.to_le_bytes());
+            }
+        }
+        assert_eq!(crate::checksum::hex(&digest.finalize()), fixture.pcm_sha256);
+        for reference in fixture.models {
+            let path = directory.join(reference.filename);
+            let selection = &reference.selection;
+            let mut model = WakeModel::load_selected(&path, selection).unwrap();
+            let catalog_threshold = selection.score_threshold.unwrap();
+            let assistant_threshold = model.threshold(0.5);
+            assert!((assistant_threshold - reference.assistant_threshold).abs() < 0.000_001);
+            assert_eq!(reference.scores.len(), frames.len());
+            for _ in 0..2 {
+                for (index, (frame, &expected)) in frames.iter().zip(&reference.scores).enumerate()
+                {
+                    let score = model.predict(frame).unwrap();
+                    assert!(
+                        (score - expected).abs() < reference.score_tolerance,
+                        "{} frame {index}: {score} differs from {expected}",
+                        selection.id
+                    );
+                    for threshold in [catalog_threshold, assistant_threshold] {
+                        assert_eq!(score >= threshold, expected >= threshold);
+                    }
+                }
+                model.reset().unwrap();
+            }
+        }
+    }
+
+    #[cfg(feature = "wake-tflite")]
+    #[test]
     #[ignore = "uses the published INT8 model"]
     fn tflite_reset_restores_the_warmed_state_and_uses_the_catalog_threshold() {
         let path = std::env::var_os("GOODWIN_TFLITE_MODEL").expect("set GOODWIN_TFLITE_MODEL");

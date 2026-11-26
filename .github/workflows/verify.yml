@@ -66,6 +66,14 @@ jobs:
       - name: Test with Station runtimes
         if: matrix.station_runtimes
         run: cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins
+      - name: Check published wake model reference scores
+        if: matrix.station_runtimes
+        shell: bash
+        run: |
+          python scripts/prepare-wake-reference.py
+          GOODWIN_WAKE_REFERENCE_DIR="$PWD/target/wake-reference" \
+            cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins \
+            -- --ignored --exact wake::tests::published_models_match_the_synthetic_reference
       - name: Lint with Station runtimes
         if: matrix.station_runtimes
         run: cargo clippy --locked --workspace --all-targets --features goodwin/wake-tflite,goodwin/wasm-plugins -- -D warnings

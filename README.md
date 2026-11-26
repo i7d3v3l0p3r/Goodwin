@@ -122,6 +122,19 @@ sensitivity and the catalog threshold. Compare the same corpus digest and
 report whether audio came from files or the physical microphone. Use a separate
 build with `hotpath-alloc` for Rust allocation measurements.
 
+The synthetic compatibility check uses fixed PCM frames and the published
+Goodwin Standard ONNX, Micro ONNX and Micro INT8 models. It verifies the model
+hashes, frame scores, thresholds and reset behavior. It measures runtime
+compatibility across builds. Use a held-out dataset to measure recognition
+accuracy.
+
+```sh
+python scripts/build-wake-tflite.py
+python scripts/prepare-wake-reference.py
+GOODWIN_WAKE_REFERENCE_DIR="$PWD/target/wake-reference" \
+  cargo test --locked --features wake-tflite -- --ignored --exact wake::tests::published_models_match_the_synthetic_reference
+```
+
 ## Publish a release
 
 Set the release version in the Goodwin and installer Cargo manifests and lockfiles. Add an entry headed `## [<version>] - YYYY-MM-DD` to `CHANGELOG.md` with English and Russian notes. Push the commit, then push a `v<version>` tag on it. GitHub Actions builds the ARM64 Station package, plugin archives and desktop installers, runs the tests, and publishes the downloads and `SHA256SUMS` with the matching changelog entry.

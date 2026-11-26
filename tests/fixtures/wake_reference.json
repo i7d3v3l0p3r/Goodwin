@@ -1,0 +1,60 @@
+{
+  "release": "https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/download/v0.1.0",
+  "pcm_sha256": "9bd91903aefb3eb2155146ab40a4e09986c4c25329c856e5644c4ae806bdca8e",
+  "models": [
+    {
+      "filename": "goodwin-standard.onnx",
+      "size_bytes": 7406179,
+      "id": "goodwin-standard",
+      "wake_word": "Гудвин",
+      "tier": "standard",
+      "runtime": "livekit-v2-standard-onnx",
+      "sha256": "5cd936a70abae5cf877d1ae28326daaeea045fc3e50afa968714daee9ab7e130",
+      "score_threshold": 0.5,
+      "assistant_threshold": 0.575,
+      "score_tolerance": 0.00001,
+      "scores": [
+        0.00023406744, 0.00023323298, 0.00023254752, 0.00021880865,
+        0.00023147464, 0.0002951026, 0.00027570128, 0.00027373433,
+        0.00024288893, 0.00028300285, 0.00028449297, 0.00027894974,
+        0.0002900362, 0.00028553605, 0.00026327372, 0.00024271011
+      ]
+    },
+    {
+      "filename": "goodwin-micro.onnx",
+      "size_bytes": 690607,
+      "id": "goodwin-micro",
+      "wake_word": "Гудвин",
+      "tier": "micro",
+      "runtime": "livekit-v2-micro-onnx",
+      "sha256": "168216967eae3595d90d457c5f0f86c9ffc16e016b338f7f7dcd3a45155edcaf",
+      "score_threshold": 0.5,
+      "assistant_threshold": 0.575,
+      "score_tolerance": 0.0001,
+      "scores": [
+        0.012125552, 0.012247324, 0.012431592, 0.01107198,
+        0.0112553835, 0.012150258, 0.01171422, 0.012002766,
+        0.013332814, 0.022982806, 0.019341826, 0.019535959,
+        0.019070148, 0.019203126, 0.019936532, 0.01688227
+      ]
+    },
+    {
+      "filename": "goodwin-micro-int8.tflite",
+      "size_bytes": 451032,
+      "id": "goodwin-micro-int8",
+      "wake_word": "Гудвин",
+      "tier": "micro",
+      "runtime": "livekit-v2-micro-tflite",
+      "sha256": "985a2f86cc3a7de4ec2489a1709ce70ceac210a3e30c6af858c5b8a5a385c24c",
+      "score_threshold": 0.390625,
+      "assistant_threshold": 0.390625,
+      "score_tolerance": 0.0001,
+      "scores": [
+        0.01171875, 0.01171875, 0.01171875, 0.01171875,
+        0.01171875, 0.01171875, 0.01171875, 0.01171875,
+        0.015625, 0.02734375, 0.01953125, 0.0234375,
+        0.01953125, 0.01953125, 0.0234375, 0.01953125
+      ]
+    }
+  ]
+}
