@@ -86,4 +86,11 @@ float goodwin_tflite_step(void* handle, const int16_t* pcm) {
     return static_cast<Detector*>(handle)->model.Process(pcm);
 }
 
+void goodwin_tflite_buffers(void* handle, size_t* sizes) {
+    auto* detector = static_cast<Detector*>(handle);
+    sizes[0] = sizeof(detector->arena);
+    sizes[1] = detector->model.arena_used();
+    sizes[2] = detector->model.temp_bytes();
+}
+
 }

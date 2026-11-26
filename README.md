@@ -58,6 +58,20 @@ Each platform defaults to its supported model, so existing Mini 3 build commands
 continue to work. Both builds use the same Rust voice pipeline, panel contract,
 and Solid panel assets. `/api/capabilities` describes the selected model to the browser.
 
+| Build | Target | Wake runtimes | Providers and add-ons | Audio and panel |
+| --- | --- | --- | --- | --- |
+| Mini 3 release | `aarch64-unknown-linux-musl` with `wake-tflite,wasm-plugins` | Standard and Micro ONNX, Micro INT8 TFLite | Native ARM64 and WASM | YIO microphone, ALSA playback, logo and clock indicators, panel events |
+| Mini 3 without TFLite | Same target, omit `wake-tflite` | Standard and Micro ONNX | Native ARM64, WASM with `wasm-plugins` | Same Station hardware and panel |
+| Native development | Linux x86-64 and Windows builds | Standard and Micro ONNX by default, optional Micro INT8 on Linux x86-64 | WASM is supported on Linux with `wasm-plugins` | Panel and test fixtures for Station audio |
+| ESP32-S3 N16R8 | `xtensa-esp32s3-espidf`, default firmware script | Micro INT8 TFLite with a bundled model and catalog | WASM or built-in providers | I²S, push-to-talk, Wi-Fi setup, panel polling, OTA |
+| ESP32-S3 button-only | Same target with `--button-only` | None | WASM or built-in providers | Same ESP hardware and panel, activation by button |
+| ESP32-S3 without plug-ins | Same target with `--no-plugins`, optionally with `--button-only` | Micro INT8 TFLite with the default firmware, none with `--button-only` | Built-in provider | Same ESP hardware and panel |
+
+Use `--emulator` with the ESP32-S3 build script for ESP-EMU. Its local
+provider fixture and OTA image tag are specific to the emulator.
+The [desktop installer](#headless-installation) is built separately and deploys
+the Mini 3 package.
+
 Use Rust, Node.js 22.12+ or 24 LTS, and npm.
 
 ```sh
@@ -87,6 +101,24 @@ cargo zigbuild --locked --release --features wake-tflite,wasm-plugins --target a
 The Station binary is `target/aarch64-unknown-linux-musl/release/goodwin`. The native binary runs the panel on a development computer. The live microphone and playback tests require a Station or an audio test fixture.
 
 Run `python scripts/package-station.py` to package the ARM64 binary and launcher in `target/goodwin-mini3-aarch64.tar.gz`. Model assets and their license and notice are distributed in the [Goodwin-wakeword releases](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases).
+
+### Benchmark wake runtimes
+
+Build the Linux binary with `wake-bench` in addition to the desired wake
+runtimes. Prepare the held-out inputs from an existing dataset and release catalog.
+
+```sh
+python scripts/prepare-wake-benchmark.py datasets/goodwin /path/to/release/metadata.json target/wake-benchmark
+goodwin wake-bench target/wake-benchmark/goodwin-standard.onnx target/wake-benchmark/goodwin-standard.json quiet
+goodwin wake-bench target/wake-benchmark/goodwin-standard.onnx target/wake-benchmark/goodwin-standard.json target/wake-benchmark
+```
+
+Use `quiet` for three fresh processes per model to compare load time, warm RSS,
+peak RSS and inference time per 80 ms frame. The corpus run resets the runtime
+between clips and reports hits and false alarms at both the default Goodwin
+sensitivity and the catalog threshold. Compare the same corpus digest and
+report whether audio came from files or the physical microphone. Use a separate
+build with `hotpath-alloc` for Rust allocation measurements.
 
 ## Publish a release
 

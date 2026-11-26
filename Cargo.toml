@@ -24,6 +24,7 @@ esp-emulator = []
 model-mini3 = []
 model-esp32s3-generic = []
 hotpath-alloc = ["dep:hotpath", "hotpath/hotpath-alloc"]
+wake-bench = []
 wake-tflite = ["dep:sha2", "dep:url"]
 wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart", "reqwest/query"]
 

@@ -6,19 +6,18 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},
-        mpsc,
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use goodwin_error::{Context, Result, ensure};
-use goodwin_plugin::{
-    HttpRequest,
-    settings::SettingsData,
-    wake::{EVENT_METHOD, Event, Observation},
-};
+#[cfg(feature = "wake-tflite")]
+use goodwin_plugin::wake::{EVENT_METHOD, Event, Observation};
+use goodwin_plugin::{HttpRequest, settings::SettingsData};
 use serde_json::{Map, Value, json};
+#[cfg(feature = "wake-tflite")]
+use std::sync::mpsc;
 
 use crate::{
     plugin_wasm::{FRAME_LIMIT, Guest},
@@ -48,6 +47,7 @@ pub(super) struct Plugins {
     signals: AtomicU32,
     voice_turn: AtomicU32,
     scheduler: Mutex<Option<thread::Thread>>,
+    #[cfg(feature = "wake-tflite")]
     wake_events: mpsc::SyncSender<(u32, Event)>,
     wake_epoch: AtomicU32,
 }
@@ -119,6 +119,7 @@ impl Plugins {
                 Err(error) => log::warn!("Read plugin {id}: {error:#}"),
             }
         }
+        #[cfg(feature = "wake-tflite")]
         let (wake_events, observations) = mpsc::sync_channel(3);
         let plugins = Arc::new(Self {
             runtime: Mutex::new(Runtime {
@@ -129,6 +130,7 @@ impl Plugins {
             signals: AtomicU32::new(0),
             voice_turn: AtomicU32::new(0),
             scheduler: Mutex::new(None),
+            #[cfg(feature = "wake-tflite")]
             wake_events,
             wake_epoch: AtomicU32::new(0),
         });
@@ -139,6 +141,7 @@ impl Plugins {
             .stack_size(24 * 1024)
             .spawn(move || {
                 while let Some(plugins) = shared.upgrade() {
+                    #[cfg(feature = "wake-tflite")]
                     for _ in 0..3 {
                         let Ok((epoch, event)) = observations.try_recv() else {
                             break;
@@ -209,6 +212,7 @@ impl Plugins {
         }
     }
 
+    #[cfg(feature = "wake-tflite")]
     fn deliver_wake(&self, epoch: u32, event: &Event) {
         let mut runtime = self.lock();
         if self.wake_epoch.load(Ordering::Acquire) != epoch {

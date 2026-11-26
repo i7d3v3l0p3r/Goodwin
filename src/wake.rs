@@ -131,6 +131,20 @@ impl WakeModel {
         }
     }
 
+    #[cfg(all(
+        target_os = "linux",
+        feature = "wake-bench",
+        feature = "wake-tflite",
+        feature = "hotpath-alloc"
+    ))]
+    pub(crate) fn tflite_buffers(&self) -> Option<[usize; 3]> {
+        if let Backend::Tflite(model) = &self.backend {
+            Some(model.buffers())
+        } else {
+            None
+        }
+    }
+
     #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub fn predict(&mut self, frame: &[i16; FRAME_SAMPLES]) -> Result<f32> {
         let score = match &mut self.backend {

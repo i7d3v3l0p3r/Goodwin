@@ -15,6 +15,9 @@ use crate::{
 
 const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin device-capabilities\n  goodwin wake-runtimes\n  goodwin wake-check <model>\n  goodwin wake-check --installed-inference <data-dir>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
 
+#[cfg(all(target_os = "linux", feature = "wake-bench"))]
+mod wake_bench;
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
     feature = "hotpath-alloc",
@@ -25,6 +28,8 @@ pub(crate) async fn run() -> Result<()> {
     std::hint::black_box("goodwin.plugins.wamr.v1");
     let args: Vec<_> = env::args_os().skip(1).collect();
     match args.first().and_then(|arg| arg.to_str()) {
+        #[cfg(all(target_os = "linux", feature = "wake-bench"))]
+        Some("wake-bench") => wake_bench::run(&args[1..]),
         Some("--version" | "-V") if args.len() == 1 => {
             println!("{version}", version = env!("CARGO_PKG_VERSION"));
             Ok(())

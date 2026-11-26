@@ -32,10 +32,12 @@ use esp_idf_svc::{
 };
 use goodwin_error::Result;
 
+#[cfg(feature = "wake-tflite")]
+use crate::panel_core::Stage;
 use crate::{
     builtin_assistant::State,
     model,
-    panel_core::{Failure, Source, Stage},
+    panel_core::{Failure, Source},
     voice_core::{self, CAPTURE_HZ},
 };
 
@@ -201,9 +203,13 @@ fn run_device() -> Result<()> {
                     let result = (|| {
                         let prepared = wake::Detector::prepare(candidate)?;
                         wake_models::save_asset(&prepared.0, &prepared.1)?;
-                        let mut replacement = wake::Detector::new(prepared)?;
+                        let replacement = wake::Detector::new(prepared)?;
                         #[cfg(feature = "wasm-plugins")]
-                        replacement.observe_with(panel.plugins.get().cloned());
+                        let replacement = {
+                            let mut replacement = replacement;
+                            replacement.observe_with(panel.plugins.get().cloned());
+                            replacement
+                        };
                         let selection = replacement.selection.clone();
                         panel.save_wake_selection(&selection)?;
                         detector = Some(replacement);

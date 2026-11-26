@@ -9,6 +9,8 @@ unsafe extern "C" {
     fn goodwin_tflite_close(handle: *mut c_void);
     fn goodwin_tflite_reset(handle: *mut c_void);
     fn goodwin_tflite_step(handle: *mut c_void, pcm: *const i16) -> f32;
+    #[cfg(all(target_os = "linux", feature = "wake-bench", feature = "hotpath-alloc"))]
+    fn goodwin_tflite_buffers(handle: *mut c_void, sizes: *mut usize);
 }
 
 static OPEN: Mutex<()> = Mutex::new(());
@@ -48,6 +50,14 @@ impl TfliteModel {
 
     pub(crate) fn reset(&mut self) {
         unsafe { goodwin_tflite_reset(self.handle.as_ptr()) };
+    }
+
+    #[cfg(all(target_os = "linux", feature = "wake-bench", feature = "hotpath-alloc"))]
+    pub(crate) fn buffers(&self) -> [usize; 3] {
+        let mut sizes = [0; 3];
+        // SAFETY: self owns the interpreter and sizes provides three writable size_t slots.
+        unsafe { goodwin_tflite_buffers(self.handle.as_ptr(), sizes.as_mut_ptr()) };
+        sizes
     }
 }
 
