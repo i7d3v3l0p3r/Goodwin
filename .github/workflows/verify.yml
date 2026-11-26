@@ -46,6 +46,8 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo fmt --manifest-path installer/Cargo.toml --all --check
+      - name: Check wake corpus isolation
+        run: python -m unittest discover -s scripts -p test_wakeword_manifest.py
       - name: Test the default workspace
         run: cargo test --locked --workspace
       - name: Lint the default workspace

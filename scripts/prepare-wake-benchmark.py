@@ -7,39 +7,32 @@ import json
 import math
 from pathlib import Path
 import shutil
-import wave
 
-RATE = 16_000
+from wakeword_manifest import RATE, SPLITS, load_corpus, verified_pcm
+
 FRAME = 1280
 DEFAULT_MODELS = ("goodwin-standard", "goodwin-micro", "goodwin-micro-int8")
 
 
 def pack_corpus(dataset, split, output):
+    corpus = load_corpus(dataset)
+    clips = corpus.splits[split]
+    if {clip.meta["label"] for clip in clips} != {0, 1}:
+        raise ValueError(f"Split {split} must contain positive and negative clips: {dataset}")
     counts = Counter()
     duration_samples = 0
     with (output / "clips.jsonl").open("w", encoding="utf-8", newline="\n") as manifest, (
         output / "clips.pcm"
-    ).open("wb") as pcm, (dataset / "manifest.jsonl").open(encoding="utf-8") as source:
-        for line in source:
-            clip = json.loads(line)
-            if clip["split"] != split:
-                continue
-            with wave.open(str(dataset / clip["path"]), "rb") as audio:
-                if (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) != (RATE, 1, 2):
-                    raise ValueError(f"Expected 16 kHz mono PCM16: {clip['path']}")
-                samples = audio.getnframes()
-                if samples == 0:
-                    raise ValueError(f"Empty clip: {clip['path']}")
-                data = audio.readframes(samples)
-                if len(data) != samples * 2:
-                    raise ValueError(f"Incomplete clip: {clip['path']}")
+    ).open("wb") as pcm:
+        for recording in clips:
+            clip = recording.meta
+            data = verified_pcm(corpus, recording)
+            samples = len(data) // 2
             window = None
             minimum_samples = samples
             category = clip["category"]
-            if category == "positive":
+            if clip["label"] == 1:
                 onset, offset = clip["phrase_onset_s"], clip["phrase_offset_s"]
-                if not 0 <= onset <= offset:
-                    raise ValueError(f"Invalid phrase window: {clip['path']}")
                 window = [math.ceil(max(onset, offset - 0.25) * 1_000),
                           math.floor((offset + 0.5) * 1_000)]
                 minimum_samples = max(samples, math.ceil((offset + 0.5) * RATE))
@@ -51,8 +44,6 @@ def pack_corpus(dataset, split, output):
                                           window_ms=window)) + "\n")
             counts[category] += 1
             duration_samples += samples
-    if not counts or not counts["positive"]:
-        raise ValueError(f"No labelled evaluation set for split {split}")
     return dict(split=split, counts=dict(counts), duration_seconds=duration_samples / RATE)
 
 
@@ -74,7 +65,7 @@ def main():
     parser.add_argument("dataset", type=Path, help="Directory containing manifest.jsonl and its audio files")
     parser.add_argument("catalog", type=Path, help="Release metadata.json next to the model files")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--split", default="test")
+    parser.add_argument("--split", choices=SPLITS, default="test")
     parser.add_argument("--model", action="append", help="Catalog model ID, repeat for every runtime")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)

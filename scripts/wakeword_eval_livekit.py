@@ -21,6 +21,7 @@ from livekit.wakeword_train.export import calibrate, export_streaming
 from livekit.wakeword_train.micro import MicroRuntime, export_micro
 from onnxruntime import SessionOptions
 
+from wakeword_manifest import check_fingerprint, check_heldout, load_corpus, training_fingerprint
 from wakeword_train_livekit import FRAME, PHRASE, RATE, VALIDATION_FPR, Clip, clips_for
 
 THRESHOLD = 0.5
@@ -140,14 +141,15 @@ def summarize(rows: list[dict], threshold: float, details: list[dict] | None = N
     }
 
 
-def export_checkpoint(args: argparse.Namespace) -> tuple[torch.nn.Module, dict, str]:
+def export_checkpoint(args: argparse.Namespace, fingerprint: str) -> tuple[torch.nn.Module, dict, str, bool]:
     os.environ["LIVEKIT_WAKEWORD_ENCODERS"] = str(args.encoders.resolve())
     torch.set_num_threads(4)
     state = torch.load(args.out / "selected.pt", map_location="cpu", weights_only=True)
+    verified = check_fingerprint(state.get("corpus_sha256"), fingerprint, "Selected checkpoint")
     phrase = state.get("phrase", PHRASE)
     det = load_pretrained(args.tier).bake(phrase)
     det.load_state_dict(state["state"])
-    return det.eval(), state["validation"], phrase
+    return det.eval(), state["validation"], phrase, verified
 
 
 def select_threshold(rows: list[dict], budget: int) -> dict:
@@ -178,9 +180,14 @@ def write_test(rows: list[dict], threshold: float, path: Path) -> dict:
 def run(args: argparse.Namespace) -> None:
     if args.tier == "micro" and find_spec("onnxsim") is None:
         raise RuntimeError("Install onnxsim to fold the Micro ONNX padding for the Goodwin runtime")
-    det, selection, phrase = export_checkpoint(args)
+    corpus = load_corpus(args.dataset)
+    fingerprint = training_fingerprint(corpus)
+    det, selection, phrase, verified = export_checkpoint(args, fingerprint)
+    test_dataset = args.test_dataset or args.dataset
+    test_corpus = corpus if test_dataset.resolve() == corpus.root.resolve() else load_corpus(test_dataset)
+    check_heldout(corpus, test_corpus)
     metadata = {"wake_word": phrase, "language": "ru", "format": "livekit-wakeword-v2"}
-    validation = clips_for(args.dataset, "validation")
+    validation = clips_for(corpus, "validation")
     calibration_detector = calibrate(deepcopy(det), 0.0, CALIBRATION_SWEEP_TEMPERATURE)
     if args.tier == "micro":
         path = export_micro(calibration_detector, args.out, "uncalibrated", tflite=False)["onnx"]
@@ -202,18 +209,18 @@ def run(args: argparse.Namespace) -> None:
     validation_result = summarize(validated, THRESHOLD)
     if validation_result["false_alarm_clips"] > budget:
         raise ValueError("Exported model exceeded the validation false-alarm budget")
-    # Freeze the operating point before loading or scoring the held-out split.
+    # Freeze the operating point before scoring the held-out split.
     calibration = {
         "selected_step": selection["step"], "sweep_probability_threshold": raw_threshold,
         "sweep_temperature": CALIBRATION_SWEEP_TEMPERATURE,
         "calibration_logit": logit, "score_threshold": THRESHOLD, "debounce_s": DEBOUNCE_S,
         "tier": args.tier, "phrase": phrase, "output_temperature": output_temperature,
         "validation_dataset": args.dataset.as_posix(),
+        "corpus_sha256": fingerprint, "checkpoint_corpus_verified": verified,
         "validation_false_clip_budget": budget, "validation": validation_result,
     }
     (args.out / "calibration.json").write_text(json.dumps(calibration, indent=2) + "\n", encoding="utf-8")
-    test_dataset = args.test_dataset or args.dataset
-    test = score_streaming(model, clips_for(test_dataset, "test"), args.out / "test_scores.jsonl", args.tier)
+    test = score_streaming(model, clips_for(test_corpus, "test"), args.out / "test_scores.jsonl", args.tier)
     result = write_test(test, THRESHOLD, args.out / "test_predictions.csv")
     comparison = (
         {"test_at_goodwin_default_threshold": summarize(test, GOODWIN_DEFAULT_THRESHOLD)}

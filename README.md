@@ -234,6 +234,14 @@ Copy the exported ONNX file to `goodwin-data/goodwin.onnx`. Check activation wit
 
 The scripts below use the WAV files and split labels in `datasets/goodwin/manifest.jsonl`. They use LiveKit's pretrained Standard encoder, streaming trainer, and ONNX exporter. All augmentation audio comes from the training split, and only the validation split is used for checkpoint and threshold selection.
 
+Export, training, calibration and benchmark preparation use the same validated
+manifest. Voice or source groups belong to one split. Exact PCM duplicates keep
+one copy in the earliest split in `train`, `validation`, `test` order. Copies
+with conflicting labels are excluded. Evaluation rejects an external test split
+whose source groups or PCM hashes overlap training or validation. New checkpoints
+record a fingerprint of the training and validation data, and evaluation checks
+it before calibration. Older checkpoints can be evaluated with a provenance warning.
+
 Extract the [v2.1.3 source archive](https://github.com/livekit/livekit-wakeword/archive/refs/tags/v2.1.3.zip) under `target/wakeword-v2/`. Download the [official encoder archive](https://github.com/livekit/livekit-wakeword/releases/download/v2.0.0/encoders.tar.gz), check the SHA-256 against `ENCODERS_RELEASE` in LiveKit's `encoders.py`, then extract its `encoders/` at the same location. Run these commands from the repository root in a Python 3.12 virtual environment.
 
 ```powershell

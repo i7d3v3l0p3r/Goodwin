@@ -17,6 +17,7 @@ from livekit.wakeword_train.export import calibrate
 from wakeword_eval_livekit import (
     export_checkpoint, score_streaming, select_threshold, summarize, write_test,
 )
+from wakeword_manifest import Corpus, check_fingerprint, check_heldout, load_corpus, training_fingerprint
 from wakeword_train_livekit import clips_for, local_training_data
 
 
@@ -38,11 +39,11 @@ class CalibrationSpeech:
         pass
 
 
-def quantize(args: argparse.Namespace, calibration: dict) -> Path:
-    det, _, _ = export_checkpoint(args)
+def quantize(args: argparse.Namespace, calibration: dict, corpus: Corpus, fingerprint: str) -> Path:
+    det, _, _, _ = export_checkpoint(args, fingerprint)
     calibrate(det, calibration["calibration_logit"], temperature=calibration["output_temperature"])
     model = micro.StreamingMicro(micro._export_form(det)).eval()
-    train = clips_for(args.dataset, "train")
+    train = clips_for(corpus, "train")
     sets, noise, speech = local_training_data(train)
     ambient = CalibrationSpeech(speech[0] + speech[1])
     minimum_noise_samples = 16 * 320000
@@ -63,7 +64,8 @@ def quantize(args: argparse.Namespace, calibration: dict) -> Path:
             )
 
 
-def evaluate(args: argparse.Namespace, model: Path, budget: int) -> None:
+def evaluate(args: argparse.Namespace, model: Path, budget: int, corpus: Corpus) -> None:
+    fingerprint = training_fingerprint(corpus)
     interpreter = Interpreter(model_path=str(model))
     runner = interpreter.get_signature_runner()
     inputs, outputs = runner.get_input_details(), runner.get_output_details()
@@ -74,7 +76,7 @@ def evaluate(args: argparse.Namespace, model: Path, budget: int) -> None:
     if micro.read_mel_params(model) is None:
         raise ValueError("Missing LiveKit log-mel metadata")
     validation = score_streaming(
-        model, clips_for(args.dataset, "validation"), args.out / "tflite_validation_scores.jsonl",
+        model, clips_for(corpus, "validation"), args.out / "tflite_validation_scores.jsonl",
         "micro",
     )
     # Score thresholds for TFLite lie on the int8 output grid.
@@ -86,14 +88,14 @@ def evaluate(args: argparse.Namespace, model: Path, budget: int) -> None:
     if val_result["false_alarm_clips"] > budget:
         raise ValueError("TFLite model exceeded the validation false-alarm budget")
     (args.out / "tflite_calibration.json").write_text(json.dumps({
-        "score_threshold": threshold, "validation": val_result,
+        "score_threshold": threshold, "validation": val_result, "corpus_sha256": fingerprint,
     }, indent=2) + "\n", encoding="utf-8")
-    test = score_streaming(
-        model, clips_for(args.dataset, "test"), args.out / "tflite_test_scores.jsonl", "micro"
-    )
+    check_heldout(corpus, corpus)
+    test = score_streaming(model, clips_for(corpus, "test"), args.out / "tflite_test_scores.jsonl", "micro")
     result = write_test(test, threshold, args.out / "tflite_test_predictions.csv")
     (args.out / "tflite_evaluation.json").write_text(json.dumps({
         "score_threshold": threshold, "validation": val_result, "test": result,
+        "corpus_sha256": fingerprint,
         "model_size_bytes": model.stat().st_size, "input_count": len(inputs),
         "output_count": len(outputs),
     }, indent=2) + "\n", encoding="utf-8")
@@ -108,5 +110,8 @@ if __name__ == "__main__":
     parser.set_defaults(tier="micro")
     args = parser.parse_args()
     calibration = json.loads((args.out / "calibration.json").read_text(encoding="utf-8"))
-    model = quantize(args, calibration)
-    evaluate(args, model, calibration["validation_false_clip_budget"])
+    corpus = load_corpus(args.dataset)
+    fingerprint = training_fingerprint(corpus)
+    check_fingerprint(calibration.get("corpus_sha256"), fingerprint, "ONNX calibration")
+    model = quantize(args, calibration, corpus, fingerprint)
+    evaluate(args, model, calibration["validation_false_clip_budget"], corpus)

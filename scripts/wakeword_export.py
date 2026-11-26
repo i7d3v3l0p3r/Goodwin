@@ -5,12 +5,10 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
-import hashlib
 import io
 import json
 import math
 import re
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +16,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import soundfile as sf
 
-from wakeword_dataset import RATE, read_json, write_json
+from wakeword_dataset import read_json, write_json
+from wakeword_manifest import RATE, load_corpus, verified_pcm
 
 
 def parquet_schema():
@@ -45,25 +44,9 @@ def parquet_schema():
     })
 
 
-def inspect_file(root, row):
-    path = root / row["path"]
-    audio = path.read_bytes()
-    with wave.open(io.BytesIO(audio), "rb") as recording:
-        actual = recording.getframerate(), recording.getnchannels(), recording.getsampwidth()
-        if actual != (RATE, 1, 2) or recording.getnframes() == 0:
-            raise ValueError(f"Invalid WAV: {path}")
-        duration = recording.getnframes() / RATE
-        pcm = recording.readframes(recording.getnframes())
-    if abs(duration - row["duration_s"]) > 0.002 or len(pcm) != round(duration * RATE) * 2:
-        raise ValueError(f"Invalid duration: {path}")
-    if row["label"] == 1 and not 0 <= row["phrase_onset_s"] < row["phrase_offset_s"] <= duration + 0.05:
-        raise ValueError(f"Invalid wake word boundaries: {path}")
-    return hashlib.sha256(pcm).hexdigest()
-
-
-def parquet_row(root, row, schema):
-    path = root / row["path"]
-    audio, _ = sf.read(path, dtype="float32")
+def parquet_row(corpus, recording, schema):
+    row = recording.meta
+    audio = np.frombuffer(verified_pcm(corpus, recording), dtype="<i2").astype(np.float32) / 32768
     flac = io.BytesIO()
     sf.write(flac, audio, RATE, format="FLAC", subtype="PCM_16")
     active = np.flatnonzero(np.abs(audio) > max(0.003, np.max(np.abs(audio)) * 0.02))
@@ -106,34 +89,15 @@ def parquet_row(root, row, schema):
 
 
 def export(root):
-    manifest = root / "manifest.jsonl"
-    with manifest.open(encoding="utf-8") as stream:
-        rows = [json.loads(line) for line in stream]
+    corpus = load_corpus(root)
+    rows = [recording.meta for recording in corpus.recordings]
     expected = {str(row["path"]) for row in rows}
     actual = {path.relative_to(root).as_posix()
               for category in ("positive", "negative", "background")
               for path in (root / category).rglob("*.wav")}
     if actual != expected or len(expected) != len(rows):
         raise ValueError(f"Manifest mismatch: missing={len(expected - actual)}, extra={len(actual - expected)}")
-    by_audio = collections.defaultdict(list)
-    by_group = collections.defaultdict(set)
-    for row in rows:
-        by_audio[inspect_file(root, row)].append(row)
-        by_group[row["group"]].add(row["split"])
-    cross_split_groups = [group for group, splits in by_group.items() if len(splits) != 1]
-    if cross_split_groups:
-        raise ValueError(f"{len(cross_split_groups)} voice/source groups span multiple splits")
-    clean = collections.defaultdict(list)
-    duplicate_rows = []
-    for recordings in by_audio.values():
-        if len({row["label"] for row in recordings}) > 1:
-            duplicate_rows.extend({"path": row["path"], "reason": "conflicting_label"} for row in recordings)
-            continue
-        # A WAV can be kept in the delivery to show provider coverage, but only
-        # the canonical copy is exported so exact copies cannot cross splits.
-        first, *duplicates = recordings
-        clean[first["split"]].append(first)
-        duplicate_rows.extend({"path": row["path"], "duplicate_of": first["path"]} for row in duplicates)
+    clean = {split: items for split, items in corpus.splits.items() if items}
     schema = parquet_schema()
     target = root / "data"
     target.mkdir(exist_ok=True)
@@ -143,7 +107,7 @@ def export(root):
             batch = items[index:index + 250]
             destination = target / f"{split}-{index // 250:05d}.parquet"
             temporary = destination.with_suffix(".parquet.part")
-            pq.write_table(pa.Table.from_pylist([parquet_row(root, row, schema) for row in batch], schema=schema),
+            pq.write_table(pa.Table.from_pylist([parquet_row(corpus, clip, schema) for clip in batch], schema=schema),
                            temporary, row_group_size=100)
             temporary.replace(destination)
             count = pq.ParquetFile(destination).metadata.num_rows
@@ -179,7 +143,7 @@ def export(root):
         "wav_count": len(rows), "categories": dict(counts),
         "split_sizes": {split: len(items) for split, items in sorted(clean.items())},
         "passing_voices_missing_a_class": missing_classes,
-        "duplicate_or_conflicting_rows": duplicate_rows, "parquet_shards": shards,
+        "duplicate_or_conflicting_rows": corpus.duplicates, "parquet_shards": shards,
     }
     write_json(verification, report)
     print(f"Checked {len(rows)} WAV files. Exported {sum(shards.values())} distinct clips to {len(shards)} shards.")

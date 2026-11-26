@@ -9,7 +9,6 @@ import logging
 import math
 import os
 import time
-import wave
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -21,7 +20,8 @@ from livekit.wakeword_train import data, loop
 from livekit.wakeword_train.encoders import load_pretrained
 from livekit.wakeword_train.nn import N_CTX
 
-RATE = 16000
+from wakeword_manifest import Corpus, RATE, check_fingerprint, load_corpus, training_fingerprint, verified_pcm
+
 FRAME = 1280
 WARMUP = 25
 PHRASE = "Гудвин"
@@ -53,15 +53,11 @@ class Clip:
         return np.pad(self.pcm, (0, target - len(self.pcm)))
 
 
-def clips_for(root: Path, split: str) -> list[Clip]:
-    def read(meta: dict) -> Clip:
-        with wave.open(str(root / meta["path"]), "rb") as source:
-            if (source.getframerate(), source.getnchannels(), source.getsampwidth()) != (RATE, 1, 2):
-                raise ValueError(f"Unexpected WAV format: {meta['path']}")
-            return Clip(meta, np.frombuffer(source.readframes(source.getnframes()), dtype="<i2"))
-
-    with (root / "manifest.jsonl").open(encoding="utf-8") as manifest:
-        return [read(row) for line in manifest if (row := json.loads(line))["split"] == split]
+def clips_for(corpus: Corpus, split: str) -> list[Clip]:
+    rows = corpus.splits[split]
+    if {clip.meta["label"] for clip in rows} != {0, 1}:
+        raise ValueError(f"Split {split} must contain positive and negative clips: {corpus.root}")
+    return [Clip(clip.meta, np.frombuffer(verified_pcm(corpus, clip), dtype="<i2")) for clip in rows]
 
 
 def local_training_data(
@@ -147,9 +143,11 @@ def measure_peaks(labels: np.ndarray, peaks: np.ndarray, fpr: float = VALIDATION
     }
 
 
-def save_checkpoint(det: torch.nn.Module, path: Path, metrics: dict, phrase: str) -> None:
+def save_checkpoint(det: torch.nn.Module, path: Path, metrics: dict, phrase: str, fingerprint: str) -> None:
     tmp = path.with_suffix(".tmp")
-    torch.save({"state": det.state_dict(), "validation": metrics, "phrase": phrase}, tmp)
+    torch.save({
+        "state": det.state_dict(), "validation": metrics, "phrase": phrase, "corpus_sha256": fingerprint,
+    }, tmp)
     tmp.replace(path)
 
 
@@ -160,8 +158,10 @@ def train(args: argparse.Namespace) -> None:
     torch.set_num_interop_threads(1)
     torch.manual_seed(args.seed)
     started = time.monotonic()
-    train_clips = clips_for(args.dataset, "train")
-    val_clips = clips_for(args.dataset, "validation")
+    corpus = load_corpus(args.dataset)
+    fingerprint = training_fingerprint(corpus)
+    train_clips = clips_for(corpus, "train")
+    val_clips = clips_for(corpus, "validation")
     sets, noise, pools = local_training_data(train_clips)
     labels = np.array([clip.positive for clip in val_clips])
     detector = load_pretrained(args.tier).bake(args.phrase).eval()
@@ -172,6 +172,7 @@ def train(args: argparse.Namespace) -> None:
         checkpoint = torch.load(args.teacher, map_location="cpu", weights_only=True)
         if checkpoint.get("phrase", PHRASE) != args.phrase:
             raise ValueError("Teacher checkpoint uses a different wake phrase")
+        check_fingerprint(checkpoint.get("corpus_sha256"), fingerprint, "Teacher checkpoint")
         teacher = load_pretrained("standard").bake(args.phrase).eval()
         teacher.load_state_dict(checkpoint["state"])
         teacher_step = checkpoint["validation"]["step"]
@@ -196,6 +197,7 @@ def train(args: argparse.Namespace) -> None:
         "training_loss": "weighted_frame_bce_plus_distillation" if micro else "weighted_frame_bce",
         "fine_tuned_top_blocks": cfg.ft_top_blocks, "checkpoint_every": args.checkpoint_every,
         "train_clips": len(train_clips), "validation_clips": len(val_clips),
+        "corpus_sha256": fingerprint,
         "validation_fpr_budget": VALIDATION_FPR, "room_impulse_response": False,
         "party_probability": cfg.aug.p_party, "distillation_weight": cfg.kd_weight,
         "near_miss_rows_per_batch": cfg.n_adv,
@@ -217,8 +219,8 @@ def train(args: argparse.Namespace) -> None:
             rank = (metrics["recall_at_validation_fpr"], metrics["average_precision"])
             if rank > best_rank:
                 best_rank = rank
-                save_checkpoint(model, args.out / "selected.pt", metrics, args.phrase)
-            save_checkpoint(model, args.out / "latest.pt", metrics, args.phrase)
+                save_checkpoint(model, args.out / "selected.pt", metrics, args.phrase, fingerprint)
+            save_checkpoint(model, args.out / "latest.pt", metrics, args.phrase, fingerprint)
 
         def on_step(step: int, ema: torch.nn.Module, loss: float, lr: float) -> None:
             writer.writerow([step, loss, lr, round(time.monotonic() - started, 3)])
