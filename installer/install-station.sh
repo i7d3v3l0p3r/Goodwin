@@ -32,10 +32,11 @@ data=/data/opt/etc/goodwin
 hook=/data/init.d/S96goodwin
 lock=/data/opt/.goodwin-install-lock
 payload=$upload/payload
-stage=
+stage=$lock/stage
+journal=$lock/journal
+kernel_lock=0
 mode=fresh
 changed=0
-start_attempted=0
 was_running=0
 
 exists() {
@@ -43,8 +44,8 @@ exists() {
 }
 
 rollback() {
-    if [ "$start_attempted" = 1 ]; then
-        "$hook" stop || return 1
+    if [ -x "$hook" ] && "$hook" status; then
+        "$hook" stop 9>&- || return 1
     fi
     if [ "$mode" = fresh ]; then
         if ! exists "$stage/new-hook"; then mv "$hook" "$stage/new-hook" || return 1; fi
@@ -56,7 +57,11 @@ rollback() {
         elif exists "$stage/old-bin"; then
             mv -f "$stage/old-bin" "$bin" || return 1
         fi
-        if exists "$stage/old-hook"; then mv -f "$stage/old-hook" "$hook" || return 1; fi
+        if exists "$stage/old-hook" && [ "$stage/old-hook" -ef "$hook" ]; then
+            rm -f "$stage/old-hook" || return 1
+        elif exists "$stage/old-hook"; then
+            mv -f "$stage/old-hook" "$hook" || return 1
+        fi
         if [ "$choice" = catalog ]; then
             if ! exists "$stage/new-catalog-models"; then
                 mv "$data/wake-models" "$stage/new-catalog-models" || return 1
@@ -64,14 +69,29 @@ rollback() {
             if exists "$stage/old-catalog-models"; then
                 mv "$stage/old-catalog-models" "$data/wake-models" || return 1
             fi
+            if ! exists "$stage/new-catalog-selection"; then
+                mv "$data/wake-model.json" "$stage/new-catalog-selection" || return 1
+            fi
             if exists "$stage/old-catalog-selection"; then
                 mv -f "$stage/old-catalog-selection" "$data/wake-model.json" || return 1
-            elif ! exists "$stage/new-catalog-selection"; then
-                rm -f "$data/wake-model.json" || return 1
             fi
         fi
-        if [ "$was_running" = 1 ]; then "$hook" start || return 1; fi
+        if [ "$was_running" = 1 ]; then "$hook" start 9>&- || return 1; fi
     fi
+}
+
+write_journal() {
+    printf '%s %s %s %s %s\n' "$1" "$mode" "$choice" "$was_running" "$kernel_lock" > "$lock/journal.tmp" &&
+        mv -f "$lock/journal.tmp" "$journal"
+}
+
+finish_transaction() {
+    # Persist the active installation (or restored files) before discarding its backup.
+    sync && write_journal done && sync
+}
+
+remove_transaction() {
+    rm -rf "$stage" && rm -f "$journal" "$lock/journal.tmp" && rmdir "$lock"
 }
 
 cleanup() {
@@ -80,7 +100,7 @@ cleanup() {
     trap '' HUP INT TERM
     if [ "$changed" = 1 ]; then
         echo 'Installation failed. Restoring the previous state.' >&2
-        if ! rollback; then
+        if ! rollback || ! finish_transaction; then
             printf '%s\n' 'GOODWIN_INSTALL_ERROR recovery_failed'
             echo "Automatic recovery failed. Backup: $stage" >&2
             echo "Installation lock retained: $lock" >&2
@@ -89,20 +109,62 @@ cleanup() {
         printf '%s\n' 'GOODWIN_INSTALL_ERROR rolled_back'
         if [ "$choice" = core ]; then printf '%s\n' 'GOODWIN_CORE_ROLLED_BACK'; fi
     fi
-    if [ -n "$stage" ]; then rm -rf "$stage" || :; fi
+    remove_transaction || :
     rm -rf "$payload" || :
-    rmdir "$lock" || :
     exit "$status"
 }
 
-if ! mkdir "$lock"; then
+locked() {
     printf '%s\n' 'GOODWIN_INSTALL_ERROR locked'
     echo "Another installation is in progress or needs recovery: $lock" >&2
     exit 1
+}
+
+recover_transaction() {
+    # A previous installer that used the directory lock alone may still be running.
+    [ "$kernel_lock" = 1 ] && [ -f "$journal" ] || return 1
+    read -r phase mode choice was_running previous_kernel_lock < "$journal" || return 1
+    [ "$previous_kernel_lock" = 1 ] || return 1
+    case "$mode:$choice:$was_running" in
+        fresh:catalog:0|update:catalog:[01]|update:keep:[01]|update:core:[01]) ;;
+        fresh:keep:0|fresh:core:0) [ "$phase" = preparing ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    case "$phase" in
+        mutating)
+            [ -d "$stage" ] || return 1
+            echo 'Recovering an interrupted Goodwin installation…' >&2
+            rollback && finish_transaction || return 1
+            ;;
+        preparing|done) ;;
+        *) return 1 ;;
+    esac
+    remove_transaction
+}
+
+# Keep the guard inode across runs so all flock users lock the same file.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>>/data/opt/.goodwin-install-guard
+    flock -n 9 || locked
+    kernel_lock=1
+elif command -v busybox >/dev/null 2>&1 && busybox --list | grep -qx flock; then
+    exec 9>>/data/opt/.goodwin-install-guard
+    busybox flock -n 9 || locked
+    kernel_lock=1
+fi
+
+if ! mkdir "$lock"; then
+    requested_choice=$choice
+    recover_transaction || locked
+    choice=$requested_choice
+    mode=fresh
+    was_running=0
+    mkdir "$lock" || locked
 fi
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-stage=$(mktemp -d /data/opt/.goodwin-stage.XXXXXX)
+mkdir "$stage"
+write_journal preparing
 if [ "$choice" = core ]; then
     # The panel updater has already verified the release and staged its executable.
     [ -f "$upload/goodwin" ] && [ ! -L "$upload/goodwin" ] || fail 'Missing staged executable.'
@@ -148,22 +210,22 @@ elif [ "$mode" = fresh ]; then
     fail_model 'The selected wake model is missing from the installation payload.'
 fi
 
-if [ "$mode" = update ] && [ "$choice" != catalog ] && [ -f "$data/wake-model.json" ]; then
-    "$stage/new-bin" wake-check --installed "$data" ||
-        fail_model 'The selected Goodwin build could not use the installed wake model.'
-fi
-
 if [ "$mode" = fresh ]; then
     mkdir -p /data/opt/bin /data/opt/etc /data/init.d
     "$stage/new-bin" setup "$stage/new-data"
     mv "$stage/new-catalog-models" "$stage/new-data/wake-models"
     mv "$stage/new-catalog-selection" "$stage/new-data/wake-model.json"
+    write_journal mutating
     changed=1
+    sync
     mv "$stage/new-bin" "$bin"
     mv "$stage/new-data" "$data"
     mv "$stage/new-hook" "$hook"
 else
     if "$hook" status; then was_running=1; fi
+    write_journal mutating
+    changed=1
+    sync
     if ! "$hook" stop; then
         [ "$was_running" = 1 ] || fail 'Could not stop Goodwin.'
         # Older builds can wait up to 60 seconds for a provider request after SIGTERM.
@@ -176,31 +238,40 @@ else
         if "$hook" status; then fail 'The previous Goodwin process did not stop.'; fi
         "$hook" stop
     fi
-    changed=1
-    if [ "$choice" = core ]; then
-        ln "$bin" "$stage/old-bin"
-        mv -f "$stage/new-bin" "$bin"
-    else
-        mv "$bin" "$stage/old-bin"
-        mv "$stage/new-bin" "$bin"
-        mv "$hook" "$stage/old-hook"
-        mv "$stage/new-hook" "$hook"
+    if [ "$choice" != catalog ]; then
+        # Run inference after the old process releases its model. Older
+        # packages still support the original catalog check.
+        if "$stage/new-bin" --help | grep -q -e 'wake-check --installed-inference '; then
+            "$stage/new-bin" wake-check --installed-inference "$data" ||
+                fail_model 'The selected Goodwin build could not use the installed wake model.'
+        elif [ -f "$data/wake-model.json" ]; then
+            "$stage/new-bin" wake-check --installed "$data" ||
+                fail_model 'The selected Goodwin build could not use the installed wake model.'
+        fi
+    fi
+    ln "$bin" "$stage/old-bin"
+    if [ "$choice" != core ]; then ln "$hook" "$stage/old-hook"; fi
+    sync
+    mv -f "$stage/new-bin" "$bin"
+    if [ "$choice" != core ]; then
+        mv -f "$stage/new-hook" "$hook"
     fi
     if [ "$choice" = catalog ]; then
         if exists "$data/wake-models"; then mv "$data/wake-models" "$stage/old-catalog-models"; fi
         if exists "$data/wake-model.json"; then mv "$data/wake-model.json" "$stage/old-catalog-selection"; fi
+        sync
         mv "$stage/new-catalog-models" "$data/wake-models"
         mv "$stage/new-catalog-selection" "$data/wake-model.json"
     fi
 fi
 
-start_attempted=1
-"$hook" start
+"$hook" start 9>&-
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     if "$hook" status &&
         access=$(wget -T 2 -qO- http://127.0.0.1:8787/api/access 2>/dev/null) &&
         printf '%s' "$access" | grep -Eq '"authorized"[[:space:]]*:[[:space:]]*(true|false)' &&
         printf '%s' "$access" | grep -Eq '"protected"[[:space:]]*:[[:space:]]*(true|false)'; then
+        finish_transaction
         changed=0
         if version=$("$bin" --version 2>/dev/null); then
             case "$version" in

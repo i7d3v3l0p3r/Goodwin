@@ -132,6 +132,7 @@ impl Config {
         } else {
             file.persist(Self::path(dir))?;
         }
+        crate::persistence::sync_after_commit(dir);
         Ok(())
     }
 }

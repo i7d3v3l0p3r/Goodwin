@@ -13,7 +13,7 @@ use crate::{
     wake, wake_catalog, wav,
 };
 
-const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin device-capabilities\n  goodwin wake-runtimes\n  goodwin wake-check <model>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
+const USAGE: &str = "Usage:\n  goodwin setup <data-dir> [open|password]\n  goodwin set-password <data-dir>\n  goodwin serve <data-dir> [addr:port]\n  goodwin device-capabilities\n  goodwin wake-runtimes\n  goodwin wake-check <model>\n  goodwin wake-check --installed-inference <data-dir>\n  goodwin wav <input.wav> <output.wav> [data-dir]";
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
@@ -81,6 +81,9 @@ pub(crate) async fn run() -> Result<()> {
         }
         Some("wake-check") if args.len() == 3 && args[1] == "--installed" => {
             wake::WakeModels::check_installed(std::path::Path::new(&args[2]))
+        }
+        Some("wake-check") if args.len() == 3 && args[1] == "--installed-inference" => {
+            wake::WakeModels::check_installed_inference(std::path::Path::new(&args[2]))
         }
         Some("wake-check") if (2..=3).contains(&args.len()) => {
             let path = std::path::Path::new(&args[1]);

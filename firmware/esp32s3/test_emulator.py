@@ -569,6 +569,13 @@ class Panel:
         self.request("/api/settings/system-prompt", "PUT", {"system_prompt": f" {SYSTEM_PROMPT} "}, 204)
         self.verify_panel_settings()
 
+    def verify_microphone_settings(self):
+        original = self.request("/api/state")["settings"]
+        self.request("/api/settings/microphone", "PUT", {"muted": True}, 204)
+        self.request("/api/settings", "PUT", {"settings": original}, 204)
+        assert self.request("/api/state")["settings"]["microphone_muted"]
+        self.request("/api/settings/microphone", "PUT", {"muted": original["microphone_muted"]}, 204)
+
     def verify_panel_settings(self):
         assert self.request("/api/state")["system_prompt"] == SYSTEM_PROMPT
         logs = self.request("/api/diagnostics/logs")
@@ -722,6 +729,7 @@ def run_emulator(args, flash, board, output, release_stream, release_chat=None):
                             panel.setup_access()
                         if args.panel_settings:
                             panel.set_system_prompt()
+                            panel.verify_microphone_settings()
                         panel.configure_and_chat(args.stream_speech, args.provider_package, release_chat)
                         if args.timers_package:
                             panel.install_timers(args.timers_package)

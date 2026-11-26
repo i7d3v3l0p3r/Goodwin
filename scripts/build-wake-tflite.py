@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,19 @@ def run(*args, cwd=None):
     subprocess.run(args, cwd=cwd, check=True)
 
 
+def write_if_changed(path, data):
+    if path.is_file() and path.read_bytes() == data:
+        return
+    file = NamedTemporaryFile(dir=path.parent, delete=False)
+    temporary = Path(file.name)
+    try:
+        with file:
+            file.write(data)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def checkout(name, dest):
     repo, commit = SOURCES[name]
     if not (dest / ".git").is_dir():
@@ -43,7 +57,7 @@ def prepare_frontend(source, generated):
     source /= "client/esp32/livekit_wakeword/src"
     generated.mkdir(exist_ok=True)
     for name in ("lkww_frontend.c", "lkww_micro.h", "lkww_tables.h"):
-        shutil.copyfile(source / name, generated / name)
+        write_if_changed(generated / name, (source / name).read_bytes())
     header = (source / "lkww_tflm.h").read_text(encoding="utf-8")
     destructor = "~LkwwDetector() { free(temp_); }"
     assert header.count(destructor) == 1
@@ -55,7 +69,7 @@ def prepare_frontend(source, generated):
     field = "uint8_t* temp_ = nullptr;"
     assert header.count(field) == 1
     header = header.replace(field, field + "\n  uint8_t* warm_state_ = nullptr;")
-    (generated / "lkww_tflm.h").write_text(header, encoding="utf-8")
+    write_if_changed(generated / "lkww_tflm.h", header.encode("utf-8"))
 
 
 def zig_toolchain(dest):
@@ -64,7 +78,8 @@ def zig_toolchain(dest):
         raise RuntimeError("Install Zig to cross-compile the wake-word runtime")
     zig = Path(zig).as_posix()
     path = dest / "aarch64-musl.cmake"
-    path.write_text(
+    write_if_changed(
+        path,
         fr'''set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_C_COMPILER "{zig}" cc -target aarch64-linux-musl)
@@ -76,8 +91,7 @@ set(CMAKE_C_ARCHIVE_CREATE "\"{zig}\" ar rcs <TARGET> <OBJECTS>")
 set(CMAKE_CXX_ARCHIVE_CREATE "\"{zig}\" ar rcs <TARGET> <OBJECTS>")
 set(CMAKE_C_ARCHIVE_FINISH "")
 set(CMAKE_CXX_ARCHIVE_FINISH "")
-''',
-        encoding="utf-8",
+'''.encode("utf-8"),
     )
     return path
 
@@ -88,7 +102,8 @@ def esp32s3_toolchain(dest):
     if not cc or not cxx:
         raise RuntimeError("Activate the ESP-IDF toolchain to build the ESP32-S3 wake runtime")
     path = dest / "esp32s3.cmake"
-    path.write_text(
+    write_if_changed(
+        path,
         f'''set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR xtensa)
 set(CMAKE_C_COMPILER "{Path(cc).as_posix()}")
@@ -96,8 +111,7 @@ set(CMAKE_CXX_COMPILER "{Path(cxx).as_posix()}")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_C_FLAGS_INIT "-mlongcalls")
 set(CMAKE_CXX_FLAGS_INIT "-mlongcalls")
-''',
-        encoding="utf-8",
+'''.encode("utf-8"),
     )
     return path
 

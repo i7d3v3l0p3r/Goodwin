@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 use crate::{
     app::{App, Failure, Source},
     config::{Settings, normalize_system_prompt},
-    panel_core::Chat,
+    panel_core::{Chat, UpdateMicrophone, UpdateSystemPrompt},
     plugins::SETTINGS_BODY_LIMIT,
 };
 
@@ -154,11 +154,6 @@ async fn settings(State(panel): State<Panel>, Json(update): Json<UpdateSettings>
     }
 }
 
-#[derive(Deserialize)]
-struct UpdateMicrophone {
-    muted: bool,
-}
-
 async fn microphone(State(panel): State<Panel>, Json(update): Json<UpdateMicrophone>) -> Response {
     let saved =
         tokio::task::spawn_blocking(move || panel.app.set_microphone_muted(update.muted)).await;
@@ -172,11 +167,6 @@ async fn microphone(State(panel): State<Panel>, Json(update): Json<UpdateMicroph
             problem(StatusCode::INTERNAL_SERVER_ERROR, "save_failed")
         }
     }
-}
-
-#[derive(Deserialize)]
-struct UpdateSystemPrompt {
-    system_prompt: String,
 }
 
 async fn system_prompt(

@@ -9,11 +9,13 @@ const copy = {
     collecting: "Collection enabled", stopped: "Collection stopped",
     hint: "Recordings stay on this device. The minimum score applies to dataset collection.",
     minimum: "Minimum score to save a clip", minimumHint: "Use 0 to keep every clip.", save: "Save",
+    capacity: "Storage limit (MiB)", usage: (used: string, limit: number) => `${used} of ${limit} MiB used`,
     pending: "Unlabelled", positive: "Wake word heard", negative: "No wake word",
     download: "Download labelled dataset", exporting: "Preparing archive…",
     load: "Loading recordings…", failed: "The request failed. Try again.",
     login: "Open the panel in password mode and sign in to access recordings.",
-    full: "Storage limit reached. Delete recordings to resume collection.",
+    full: "Storage limit reached. Increase the limit or delete recordings to resume collection.",
+    clipsFull: "Recording count limit reached. Delete recordings to resume collection.",
     storage: "Collection stopped because the plugin could not save a recording.",
     empty: "No recordings with this label.", previous: "Previous", next: "Next", filter: "Filter by label",
     listen: "Listen", listening: "Loading audio…", stopAudio: "Stop audio", peak: "Peak score", threshold: "Threshold",
@@ -27,11 +29,13 @@ const copy = {
     collecting: "Сбор включён", stopped: "Сбор остановлен",
     hint: "Записи хранятся на устройстве. Минимальная оценка действует при сборе датасета.",
     minimum: "Минимальная оценка для записи", minimumHint: "Укажите 0, чтобы сохранять все фрагменты.", save: "Сохранить",
+    capacity: "Лимит хранения (МиБ)", usage: (used: string, limit: number) => `Занято ${used} из ${limit} МиБ`,
     pending: "Без разметки", positive: "Слово прозвучало", negative: "Слова не было",
     download: "Скачать размеченный датасет", exporting: "Готовим архив…",
     load: "Загружаем записи…", failed: "Не удалось выполнить запрос. Попробуйте ещё раз.",
     login: "Для доступа к записям включите режим с паролем и войдите в панель.",
-    full: "Достигнут лимит записей. Удалите часть записей, чтобы продолжить сбор.",
+    full: "Достигнут лимит хранения. Увеличьте его или удалите часть записей, чтобы продолжить сбор.",
+    clipsFull: "Достигнут лимит количества записей. Удалите часть записей, чтобы продолжить сбор.",
     storage: "Сбор остановлен. Плагину не удалось сохранить запись.",
     empty: "Записей с такой меткой нет.", previous: "Назад", next: "Вперёд", filter: "Фильтр по метке",
     listen: "Прослушать", listening: "Загружаем звук…", stopAudio: "Остановить звук", peak: "Макс. оценка", threshold: "Порог",
@@ -65,6 +69,9 @@ interface Clip {
 interface Status {
   collecting: boolean;
   storageFailed: boolean;
+  storageFull: boolean;
+  storageMiB: number;
+  usedBytes: number;
   limit: number;
   minimumScore: number;
   pending: number;
@@ -84,6 +91,7 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
   const date = new Intl.DateTimeFormat(language, { dateStyle: "short", timeStyle: "medium" });
   const [status, setStatus] = createSignal<Status>();
   const [minimumDraft, setMinimumDraft] = createSignal<string>();
+  const [capacityDraft, setCapacityDraft] = createSignal<string>();
   const [page, setPage] = createSignal<Page>();
   const savedFilter = new URLSearchParams(window.location.search).get("filter");
   const [filter, setFilter] = createSignal<Label>(labels.find(label => label === savedFilter) ?? "pending");
@@ -105,25 +113,21 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
     const state = status();
     return state ? state.pending + state.positive + state.negative : 0;
   };
-  const full = () => {
+  const clipsFull = () => {
     const limit = status()?.limit;
     return limit !== undefined && total() >= limit;
   };
+  const full = () => status()?.storageFull || clipsFull();
   const minimumChanged = () => {
     const draft = minimumDraft();
     return draft !== undefined && draft !== "" && Number(draft) !== status()?.minimumScore;
   };
-  let unregisterDraft: (() => void) | undefined;
-
-  function editMinimum(value?: string) {
-    setMinimumDraft(value);
-    if (value && Number(value) !== status()?.minimumScore) {
-      unregisterDraft ??= protectDraft(minimumChanged);
-    } else {
-      unregisterDraft?.();
-      unregisterDraft = undefined;
-    }
-  }
+  const capacityChanged = () => {
+    const draft = capacityDraft();
+    return draft !== undefined && draft !== "" && Number(draft) !== status()?.storageMiB;
+  };
+  const settingsChanged = () => minimumChanged() || capacityChanged();
+  const unregisterDraft = protectDraft(settingsChanged);
   const list = (label: Filter, after: number) => request<Page>(`/clips?filter=${label}&after=${after}`);
   const audio = async (id: number) => wavBytes((await request<{ wav: string }>(`/clips/${id}/audio`)).wav);
 
@@ -234,13 +238,16 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
     });
   }
 
-  function saveMinimum(event: SubmitEvent) {
+  function saveCaptureSettings(event: SubmitEvent) {
     event.preventDefault();
-    const minimumScore = Number(minimumDraft());
-    if (!minimumChanged() || !Number.isFinite(minimumScore)) return;
+    if (!settingsChanged()) return;
+    const update: { minimumScore?: number; storageMiB?: number } = {};
+    if (minimumChanged()) update.minimumScore = Number(minimumDraft());
+    if (capacityChanged()) update.storageMiB = Number(capacityDraft());
     void change(async () => {
-      await request("/capture-settings", "PUT", { minimumScore });
-      editMinimum();
+      await request("/capture-settings", "PUT", update);
+      setMinimumDraft(undefined);
+      setCapacityDraft(undefined);
     });
   }
 
@@ -285,7 +292,7 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
   }
 
   onCleanup(() => {
-    unregisterDraft?.();
+    unregisterDraft();
     stopped = true;
     window.clearTimeout(poll);
     stopAudio();
@@ -311,19 +318,26 @@ export default function DatasetPage({ language, request, protectDraft }: PluginC
           </button>
         </div>
         <Show when={status()}>
-          {state => <form class="wake-dataset__minimum" onSubmit={saveMinimum}>
+          {state => <form class="wake-dataset__minimum" onSubmit={saveCaptureSettings}>
             <label class="gw-field">
               <span class="gw-field-label">{text.minimum}</span>
               <input class="gw-control" type="number" inputmode="decimal" min="0" max="1" step="any"
                 required disabled={busy()} value={minimumDraft() ?? state().minimumScore}
                 aria-describedby="wake-dataset-minimum-hint"
-                onInput={event => editMinimum(event.currentTarget.value)} />
+                onInput={event => setMinimumDraft(event.currentTarget.value)} />
             </label>
-            <button type="submit" class="gw-button" disabled={busy() || !minimumChanged()}>{text.save}</button>
+            <label class="gw-field">
+              <span class="gw-field-label">{text.capacity}</span>
+              <input class="gw-control" type="number" inputmode="numeric" min="1" max="128" step="1"
+                required disabled={busy()} value={capacityDraft() ?? state().storageMiB}
+                onInput={event => setCapacityDraft(event.currentTarget.value)} />
+            </label>
+            <button type="submit" class="gw-button" disabled={busy() || !settingsChanged()}>{text.save}</button>
             <p id="wake-dataset-minimum-hint" class="gw-field-hint">{text.minimumHint}</p>
+            <p class="gw-field-hint">{text.usage(decimal.format(state().usedBytes / (1024 * 1024)), state().storageMiB)}</p>
           </form>}
         </Show>
-        <Show when={full()}><InlineError>{text.full}</InlineError></Show>
+        <Show when={full()}><InlineError>{clipsFull() ? text.clipsFull : text.full}</InlineError></Show>
         <Show when={status()?.storageFailed}><InlineError>{text.storage}</InlineError></Show>
       </gw-card>
       <div class="wake-dataset__toolbar">

@@ -17,15 +17,16 @@ mod storage;
 mod wake;
 #[cfg(feature = "wake-tflite")]
 mod wake_models;
+mod worker;
 
 use std::{
     net::Ipv4Addr,
-    sync::{Arc, Mutex, atomic::Ordering, mpsc},
+    sync::{Arc, atomic::Ordering, mpsc},
     time::{Duration, Instant},
 };
 
 use esp_idf_svc::{
-    hal::{delay::FreeRtos, peripherals::Peripherals, task::block_on},
+    hal::{delay::FreeRtos, peripherals::Peripherals},
     nvs::EspDefaultNvsPartition,
     sys,
 };
@@ -34,16 +35,16 @@ use goodwin_error::Result;
 use crate::{
     builtin_assistant::State,
     model,
-    panel_core::{Failure, PlaybackMode, Source, Stage},
-    voice_core::{self, CAPTURE_HZ, RecordingGain, Turn},
+    panel_core::{Failure, Source, Stage},
+    voice_core::{self, CAPTURE_HZ, RecordingGain},
 };
 
 use self::{
     audio::{Audio, Recording},
-    cascade::Cascade,
     network::{Network, WifiCredentials, WifiStatus},
     panel::{Command, Panel},
     settings::Store,
+    worker::{RequestContext, Worker},
 };
 
 pub(crate) fn run() -> Result<()> {
@@ -129,6 +130,7 @@ fn run_device() -> Result<()> {
     let healthy = !cfg!(feature = "wake-tflite") || wake_loaded;
     #[cfg(feature = "wasm-plugins")]
     let healthy = healthy && (panel.plugins.get().is_some() || !storage::has_partition());
+    let worker = Worker::start(panel.clone())?;
     firmware::verify_boot(healthy)?;
     let mut retry_at = Instant::now() + Duration::from_secs(5);
     let mut failures = 0;
@@ -150,6 +152,7 @@ fn run_device() -> Result<()> {
             FreeRtos::delay_ms(20);
             continue;
         }
+        worker.play_ready(&mut audio, &panel);
         #[cfg(feature = "wasm-plugins")]
         if let Some(plugins) = panel.plugins.get() {
             let signals = plugins.take_signals();
@@ -177,35 +180,16 @@ fn run_device() -> Result<()> {
             }
             match command {
                 Command::Chat(message) => {
-                    #[cfg(feature = "wasm-plugins")]
-                    let assistant;
-                    let (settings, history, prompt) = {
-                        let state = State::lock(&panel.state);
-                        #[cfg(feature = "wasm-plugins")]
-                        {
-                            assistant = state.assistant.clone();
-                        }
-                        (
-                            state.provider.clone(),
-                            state.chat_context(),
-                            state.system_prompt.clone(),
-                        )
-                    };
-                    let provider = Cascade::new(&settings, &prompt);
-                    #[cfg(feature = "wasm-plugins")]
-                    let provider = provider
-                        .with_plugins(panel.plugins.get().map(Arc::as_ref), assistant.as_ref());
-                    let answer = network.ready(provider.https()).and_then(|()| {
-                        provider.chat(&message, &history, |chunk| {
-                            #[cfg(feature = "wasm-plugins")]
-                            State::lock(&panel.state).chat_chunk(chunk);
-                            let _ = chunk;
-                        })
-                    });
-                    State::lock(&panel.state).finish_chat(answer);
+                    worker.chat(message, &panel, &mut network);
                 }
                 Command::VoiceTest => {
-                    finish_voice(&mut audio, &mut network, Recording::ManualTest, &panel);
+                    start_recording(
+                        &mut audio,
+                        &mut network,
+                        Recording::ManualTest,
+                        &panel,
+                        &worker,
+                    );
                 }
                 #[cfg(feature = "wake-tflite")]
                 Command::WakeTest => {
@@ -292,7 +276,7 @@ fn run_device() -> Result<()> {
             if let Some(detector) = &mut detector {
                 detector.reset();
             }
-            finish_voice(&mut audio, &mut network, Recording::Button, &panel);
+            start_recording(&mut audio, &mut network, Recording::Button, &panel, &worker);
         }
         #[cfg(feature = "wake-tflite")]
         if let Some(detector) = &mut detector {
@@ -329,11 +313,11 @@ fn run_device() -> Result<()> {
                 ) {
                     Ok(Some(recording)) if wake_test.take().is_some() => {
                         State::lock(&panel.state).stage(Stage::Recording);
-                        finish_voice(&mut audio, &mut network, recording, &panel);
+                        start_recording(&mut audio, &mut network, recording, &panel, &worker);
                         continue;
                     }
                     Ok(Some(recording)) if start_voice(&panel, Source::Wake) => {
-                        finish_voice(&mut audio, &mut network, recording, &panel);
+                        start_recording(&mut audio, &mut network, recording, &panel, &worker);
                         continue;
                     }
                     Ok(_) => continue,
@@ -400,99 +384,68 @@ fn start_voice(panel: &Panel, source: Source) -> bool {
     true
 }
 
-fn finish_voice(audio: &mut Audio<'_>, network: &mut Network<'_>, mode: Recording, panel: &Panel) {
-    let state = &panel.state;
-    #[cfg(feature = "wasm-plugins")]
-    let assistant;
-    let (settings, gain, prompt) = {
-        let state = State::lock(state);
-        #[cfg(feature = "wasm-plugins")]
-        {
-            assistant = state.assistant.clone();
-        }
-        (
-            state.provider.clone(),
-            RecordingGain::new(state.audio.transcription_gain.map(|gain| gain as f32), 1.0),
-            state.system_prompt.clone(),
-        )
-    };
-    let provider = Cascade::new(&settings, &prompt);
-    #[cfg(feature = "wasm-plugins")]
-    let provider = provider.with_plugins(panel.plugins.get().map(Arc::as_ref), assistant.as_ref());
-    let result = voice_request(audio, network, provider, mode, gain, panel);
-    State::lock(state).finish(result.err());
-    match result {
-        Ok(()) => log::info!("Voice turn complete"),
-        Err(error) => log::warn!("Voice turn failed: {error:?}"),
-    }
-}
-
-fn voice_request(
+fn start_recording(
     audio: &mut Audio<'_>,
     network: &mut Network<'_>,
-    provider: Cascade<'_>,
     mode: Recording,
-    gain: RecordingGain,
     panel: &Panel,
-) -> Result<(), Failure> {
-    let state = &panel.state;
-    #[cfg(feature = "wasm-plugins")]
-    let tools = panel.plugins.get().map(|plugins| plugins.voice_tools());
-    if !panel.voice_ready(&State::lock(state)) {
-        return Err(Failure::ProviderUnavailable);
-    }
-    let source = mode.source();
-    #[cfg(feature = "wake-tflite")]
-    let source = State::lock(state).source().unwrap_or(source);
-    let muted = || State::lock(state).audio.microphone_muted;
-    let mut samples = audio
-        .record(mode, gain.input_gain(), muted)
-        .map_err(|error| {
-            log::warn!("Record I2S audio: {error:#}");
+    worker: &Worker,
+) {
+    let result = (|| -> std::result::Result<(), Failure> {
+        let (context, gain, wake_word) = {
+            let state = State::lock(&panel.state);
+            if !panel.voice_ready(&state) {
+                return Err(Failure::ProviderUnavailable);
+            }
+            let source = mode.source();
+            #[cfg(feature = "wake-tflite")]
+            let wake_word = state
+                .wake_model
+                .as_ref()
+                .filter(|_| {
+                    matches!(
+                        state.source().unwrap_or(source),
+                        Source::Wake | Source::WakeTest
+                    )
+                })
+                .map(|selection| selection.wake_word.clone());
+            #[cfg(not(feature = "wake-tflite"))]
+            let wake_word = {
+                let _ = source;
+                None
+            };
+            (
+                RequestContext::new(&state),
+                RecordingGain::new(state.audio.transcription_gain.map(|gain| gain as f32), 1.0),
+                wake_word,
+            )
+        };
+        let muted = || State::lock(&panel.state).audio.microphone_muted;
+        let mut samples = audio
+            .record(mode, gain.input_gain(), muted)
+            .map_err(|error| {
+                log::warn!("Record I2S audio: {error:#}");
+                Failure::Microphone
+            })?;
+        if muted() {
+            return Err(Failure::MicrophoneMuted);
+        }
+        if samples.len() < CAPTURE_HZ as usize / 5 {
+            return Err(Failure::NoSpeech);
+        }
+        log::info!("Recorded {} samples", samples.len());
+        gain.prepare(&mut samples);
+        let wav = voice_core::recording_wav(samples).map_err(|error| {
+            log::warn!("Encode recording: {error}");
             Failure::Microphone
         })?;
-    if muted() {
-        return Err(Failure::MicrophoneMuted);
+        State::lock(&panel.state).stage(Stage::Transcribing);
+        worker.voice(context, wav, wake_word, panel, network)
+    })();
+    if let Err(error) = result {
+        State::lock(&panel.state).finish(Some(error));
+        log::warn!("Voice turn failed: {error:?}");
     }
-    if samples.len() < CAPTURE_HZ as usize / 5 {
-        return Err(Failure::NoSpeech);
-    }
-    log::info!("Recorded {} samples", samples.len());
-    gain.prepare(&mut samples);
-    let wav = voice_core::recording_wav(samples).map_err(|error| {
-        log::warn!("Encode recording: {error}");
-        Failure::Microphone
-    })?;
-    State::lock(state).stage(Stage::Transcribing);
-    network.ready(provider.https()).map_err(provider_failure)?;
-    #[cfg(feature = "wake-tflite")]
-    let wake_word = State::lock(state)
-        .wake_model
-        .as_ref()
-        .filter(|_| matches!(source, Source::Wake | Source::WakeTest))
-        .map(|selection| selection.wake_word.clone());
-    #[cfg(not(feature = "wake-tflite"))]
-    let wake_word = {
-        let _ = source;
-        None
-    };
-    let streaming = provider.streaming();
-    block_on(voice_core::run(
-        &mut EspTurn {
-            provider,
-            audio,
-            state,
-            transcript: String::new(),
-            streaming,
-            #[cfg(feature = "wasm-plugins")]
-            tools,
-        },
-        wav,
-        #[cfg(feature = "wake-tflite")]
-        wake_word.as_deref(),
-        #[cfg(not(feature = "wake-tflite"))]
-        wake_word,
-    ))
 }
 
 #[cfg(feature = "wake-tflite")]
@@ -514,116 +467,4 @@ fn load_detector(store: &Store, storage_ready: bool) -> Result<wake::Detector> {
         }
     }
     wake::Detector::prepare(wake_models::Candidate::builtin()).and_then(wake::Detector::new)
-}
-
-struct EspTurn<'a, 'd> {
-    provider: Cascade<'a>,
-    audio: &'a mut Audio<'d>,
-    state: &'a Mutex<State>,
-    transcript: String,
-    streaming: bool,
-    #[cfg(feature = "wasm-plugins")]
-    tools: Option<plugins::VoiceTools<'a>>,
-}
-
-enum Speech {
-    Buffered(Vec<u8>),
-    Streaming(String),
-}
-
-impl Turn for EspTurn<'_, '_> {
-    type Error = Failure;
-    type Speech = Speech;
-
-    async fn transcribe(&mut self, wav: &[u8]) -> Result<String, Failure> {
-        let text = self.provider.transcribe(wav).map_err(provider_failure)?;
-        State::lock(self.state).transcript(text.clone());
-        Ok(text)
-    }
-
-    async fn reply(&mut self, text: &str) -> Result<String, Failure> {
-        State::lock(self.state).stage(Stage::Thinking);
-        self.transcript = text.to_owned();
-        #[cfg(feature = "wasm-plugins")]
-        if let Some(tools) = &self.tools
-            && tools.definitions().len() != 0
-        {
-            return voice_core::tools::complete(
-                &self.provider.voice_instructions(),
-                text,
-                tools.definitions(),
-                tools.context(),
-                |request| std::future::ready(self.provider.complete_tools(request)),
-                |call| std::future::ready(tools.call(&call.name, &call.arguments)),
-            )
-            .await
-            .map_err(provider_failure);
-        }
-        self.provider.reply(text).map_err(provider_failure)
-    }
-
-    async fn synthesize(&mut self, answer: String) -> Result<Self::Speech, Failure> {
-        {
-            let mut state = State::lock(self.state);
-            state.voice_answer(&self.transcript, &answer);
-            state.stage(Stage::Synthesizing);
-        }
-        if self.streaming {
-            Ok(Speech::Streaming(answer))
-        } else {
-            self.provider
-                .synthesize(&answer)
-                .map(Speech::Buffered)
-                .map_err(provider_failure)
-        }
-    }
-
-    async fn play(&mut self, speech: Self::Speech) -> Result<(), Failure> {
-        match speech {
-            Speech::Buffered(pcm) => {
-                State::lock(self.state).playing(PlaybackMode::Buffered);
-                self.audio.play(&pcm).map_err(playback_failure)
-            }
-            Speech::Streaming(text) => {
-                let mut playback = self.audio.playback();
-                let mut started = false;
-                let mut output_failed = false;
-                self.provider
-                    .stream_speech(&text, |pcm| {
-                        let first = !started && !pcm.is_empty();
-                        if first {
-                            State::lock(self.state).playing(PlaybackMode::Streaming);
-                            started = true;
-                        }
-                        playback.push(pcm).inspect_err(|_| output_failed = true)?;
-                        if first {
-                            log::info!("Streamed playback started");
-                        }
-                        Ok(())
-                    })
-                    .map_err(|error| {
-                        if output_failed {
-                            playback_failure(error)
-                        } else {
-                            provider_failure(error)
-                        }
-                    })?;
-                playback.finish().map_err(playback_failure)
-            }
-        }
-    }
-
-    fn no_speech(&self) -> Failure {
-        Failure::NoSpeech
-    }
-}
-
-fn playback_failure(error: goodwin_error::Error) -> Failure {
-    log::warn!("Play I2S audio: {error:#}");
-    Failure::Playback
-}
-
-fn provider_failure(error: goodwin_error::Error) -> Failure {
-    log::warn!("Voice provider: {error:#}");
-    Failure::ProviderFailed
 }

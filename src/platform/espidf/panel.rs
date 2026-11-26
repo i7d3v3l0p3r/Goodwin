@@ -20,8 +20,9 @@ use crate::{
     builtin_assistant::{AudioSettings, ProviderUpdate, State},
     model,
     panel_core::{
-        ASSETS, CONTENT_SECURITY_POLICY, Chat, INDEX, Login, PAGE_PATHS, SetupPassword, Source,
-        same_origin, session_cookie, session_token, valid_password_length,
+        ASSET_CACHE_CONTROL, ASSETS, CONTENT_SECURITY_POLICY, Chat, INDEX, Login, PAGE_PATHS,
+        SetupPassword, Source, UpdateMicrophone, UpdateSystemPrompt, same_origin, session_cookie,
+        session_token, valid_password_length,
     },
     password,
 };
@@ -71,16 +72,6 @@ pub(super) enum Command {
 #[derive(Deserialize)]
 struct UpdateAudio {
     settings: AudioSettings,
-}
-
-#[derive(Deserialize)]
-struct UpdateMicrophone {
-    muted: bool,
-}
-
-#[derive(Deserialize)]
-struct UpdateSystemPrompt {
-    system_prompt: String,
 }
 
 #[derive(Deserialize)]
@@ -267,8 +258,19 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
     let path = uri.split('?').next().unwrap_or("/");
     if !path.starts_with("/api/") && !path.starts_with("/plugin-assets/") {
         if method == Method::Get {
-            if let Some((_, mime, data)) = ASSETS.iter().find(|(asset, _, _)| path == *asset) {
-                return send(request, 200, mime, data, &[("Content-Encoding", "gzip")]);
+            if let Some(asset) = ASSETS.iter().find(|asset| path == asset.path) {
+                let cache = [("Cache-Control", ASSET_CACHE_CONTROL), ("ETag", asset.etag)];
+                if asset.cached(request.header("If-None-Match")) {
+                    return send(request, 304, asset.mime, &[], &cache);
+                }
+                let [policy, etag] = cache;
+                return send(
+                    request,
+                    200,
+                    asset.mime,
+                    asset.gzip,
+                    &[policy, etag, ("Content-Encoding", "gzip")],
+                );
             }
             if path == "/"
                 || PAGE_PATHS.contains(&path.trim_end_matches('/'))
@@ -340,15 +342,33 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
                 return problem(request, 500, "password_save_failed");
             }
             credentials.0.set_password(hash);
-            return create_session(request, &mut credentials.0);
+            let cookie = credentials.0.create_session();
+            drop(credentials);
+            return send_session(request, cookie);
         }
         (Method::Post, "/api/login") => {
             let Ok(data) = read_json::<Login>(&mut request) else {
                 return problem(request, 400, "invalid_password");
             };
-            let mut credentials = panel.credentials.lock().expect("panel credentials");
-            return match credentials.0.login(&data.password) {
-                Ok(()) => create_session(request, &mut credentials.0),
+            let hash = panel
+                .credentials
+                .lock()
+                .expect("panel credentials")
+                .0
+                .reserve_login();
+            return match hash
+                .and_then(|hash| Auth::verify_login(&hash, &data.password).map(|()| hash))
+            {
+                Ok(hash) => {
+                    let mut credentials = panel.credentials.lock().expect("panel credentials");
+                    if !credentials.0.uses_hash(&hash) {
+                        drop(credentials);
+                        return problem(request, 401, "wrong_password");
+                    }
+                    let cookie = credentials.0.create_session();
+                    drop(credentials);
+                    send_session(request, cookie)
+                }
                 Err("setup_required") => problem(request, 409, "setup_required"),
                 Err("password_reprovision_required") => {
                     problem(request, 409, "password_reprovision_required")
@@ -457,6 +477,10 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Panel) -> Re
             if state.busy() {
                 return problem(request, 409, "busy");
             }
+            let audio = AudioSettings {
+                microphone_muted: state.audio.microphone_muted,
+                ..audio
+            };
             if panel.save_audio(audio).is_err() {
                 return problem(request, 500, "save_failed");
             }
@@ -705,8 +729,11 @@ fn read_json_body(request: &mut Request<&mut EspHttpConnection<'_>>) -> Result<V
     Ok(bytes)
 }
 
-fn create_session(request: Request<&mut EspHttpConnection<'_>>, auth: &mut Auth) -> Result<()> {
-    match auth.create_session() {
+fn send_session(
+    request: Request<&mut EspHttpConnection<'_>>,
+    cookie: Result<String>,
+) -> Result<()> {
+    match cookie {
         Ok(cookie) => send(request, 204, "text/plain", &[], &[("Set-Cookie", &cookie)]),
         Err(_) => problem(request, 500, "internal"),
     }
@@ -744,6 +771,7 @@ fn send(
         201 => "Created",
         202 => "Accepted",
         204 => "No Content",
+        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -757,10 +785,12 @@ fn send(
     };
     let mut headers = vec![
         ("Content-Type", mime),
-        ("Cache-Control", "no-store"),
         ("Content-Security-Policy", CONTENT_SECURITY_POLICY),
         ("X-Content-Type-Options", "nosniff"),
     ];
+    if !extra.iter().any(|(name, _)| *name == "Cache-Control") {
+        headers.push(("Cache-Control", "no-store"));
+    }
     headers.extend_from_slice(extra);
     let mut response = request.into_response(status, Some(reason), &headers)?;
     for block in content.chunks(4096) {

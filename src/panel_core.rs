@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 pub(crate) const CHAT_INSTRUCTIONS: &str =
     "You are Goodwin, a home assistant. Reply concisely in the user's language.";
 
+#[derive(Deserialize)]
+pub(crate) struct UpdateMicrophone {
+    pub muted: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct UpdateSystemPrompt {
+    pub system_prompt: String,
+}
+
 pub(crate) fn normalize_system_prompt(prompt: &str) -> goodwin_error::Result<String> {
     let prompt = prompt.trim().replace("\r\n", "\n").replace('\r', "\n");
     goodwin_error::ensure!(
@@ -227,27 +237,42 @@ pub(crate) const INDEX: (&str, &[u8]) = (
     include_bytes!("../web/dist/index.html.gz"),
 );
 
-pub(crate) const ASSETS: &[(&str, &str, &[u8])] = &[
-    (
-        "/panel.js",
-        "text/javascript; charset=utf-8",
-        include_bytes!("../web/dist/panel.js.gz"),
-    ),
-    (
-        "/plugin-runtime-v1.js",
-        "text/javascript; charset=utf-8",
-        include_bytes!("../web/dist/plugin-runtime-v1.js.gz"),
-    ),
-    (
-        "/panel.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../web/dist/panel.css.gz"),
-    ),
-    (
-        "/panel-licenses.md",
-        "text/plain; charset=utf-8",
-        include_bytes!("../web/dist/panel-licenses.md.gz"),
-    ),
+pub(crate) const ASSET_CACHE_CONTROL: &str = "public, max-age=0, must-revalidate";
+
+pub(crate) struct Asset {
+    pub path: &'static str,
+    pub mime: &'static str,
+    pub gzip: &'static [u8],
+    pub etag: &'static str,
+}
+
+impl Asset {
+    pub fn cached(&self, if_none_match: Option<&str>) -> bool {
+        if_none_match.is_some_and(|header| {
+            header
+                .split(',')
+                .map(str::trim)
+                .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == self.etag)
+        })
+    }
+}
+
+macro_rules! embedded_asset {
+    ($name:literal, $mime:literal) => {
+        Asset {
+            path: concat!("/", $name),
+            mime: $mime,
+            gzip: include_bytes!(concat!("../web/dist/", $name, ".gz")),
+            etag: include_str!(concat!("../web/dist/", $name, ".etag")),
+        }
+    };
+}
+
+pub(crate) const ASSETS: &[Asset] = &[
+    embedded_asset!("panel.js", "text/javascript; charset=utf-8"),
+    embedded_asset!("plugin-runtime-v1.js", "text/javascript; charset=utf-8"),
+    embedded_asset!("panel.css", "text/css; charset=utf-8"),
+    embedded_asset!("panel-licenses.md", "text/plain; charset=utf-8"),
 ];
 
 pub(crate) fn valid_password_length(password: &str) -> bool {

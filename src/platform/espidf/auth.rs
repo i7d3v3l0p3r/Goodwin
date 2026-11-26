@@ -42,7 +42,7 @@ impl Auth {
         self.password = Some(hash);
     }
 
-    pub fn login(&mut self, password: &str) -> Result<(), &'static str> {
+    pub fn reserve_login(&mut self) -> Result<String, &'static str> {
         let hash = self.password.as_ref().ok_or("setup_required")?;
         if !password::uses_current_algorithm(hash) {
             return Err("password_reprovision_required");
@@ -52,6 +52,10 @@ impl Auth {
             return Err("login_retry");
         }
         self.next_login = Some(now + Duration::from_secs(2));
+        Ok(hash.clone())
+    }
+
+    pub fn verify_login(hash: &str, password: &str) -> Result<(), &'static str> {
         let verified = password::verify(hash, password).map_err(|error| {
             log::error!("Verify panel password: {error:#}");
             "internal"
@@ -61,6 +65,10 @@ impl Auth {
         } else {
             Err("wrong_password")
         }
+    }
+
+    pub fn uses_hash(&self, hash: &str) -> bool {
+        self.password.as_deref() == Some(hash)
     }
 
     pub fn create_session(&mut self) -> Result<String> {

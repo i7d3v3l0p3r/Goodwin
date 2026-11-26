@@ -88,15 +88,23 @@ pub fn from_str<T: DeserializeOwned>(input: &str) -> Result<T, DecodeError> {
     // syntax and has no nesting limit of its own.
     let strings = syntax::validate(input.as_bytes()).ok_or(DecodeError::Syntax)?;
     let normalized;
-    let input = if strings.surrogate_pairs {
+    let input = if strings.surrogate_bytes_saved != 0 {
         // serde-json-core doesn't join UTF-16 escape pairs. Pass those code
         // points as UTF-8, preserving every other escape in the document.
-        normalized = join_surrogate_pairs(input.as_bytes());
+        normalized = join_surrogate_pairs(input.as_bytes(), strings.surrogate_bytes_saved);
         &normalized
     } else {
         input.as_bytes()
     };
-    let escaped = strings.escaped;
+    decode(input, strings.escaped)
+}
+
+fn decode<T: DeserializeOwned>(input: &[u8], escaped: usize) -> Result<T, DecodeError> {
+    if escaped == 0 {
+        return serde_json_core::from_slice(input)
+            .map(|(value, _)| value)
+            .map_err(DecodeError::Data);
+    }
     let mut scratch = [0; 128];
     let mut extended = Vec::new();
     let buffer = if escaped <= scratch.len() {
@@ -110,8 +118,8 @@ pub fn from_str<T: DeserializeOwned>(input: &str) -> Result<T, DecodeError> {
         .map_err(DecodeError::Data)
 }
 
-fn join_surrogate_pairs(mut input: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(input.len());
+fn join_surrogate_pairs(mut input: &[u8], bytes_saved: usize) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len() - bytes_saved);
     while let Some(begin) = input.iter().position(|&byte| byte == b'\\') {
         output.extend_from_slice(&input[..begin]);
         input = &input[begin..];

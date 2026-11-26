@@ -73,6 +73,8 @@ rustup target add aarch64-unknown-linux-musl wasm32-unknown-unknown
 .\scripts\build-station.ps1
 ```
 
+The Windows script reuses installed panel dependencies while the Node.js version, platform, and npm lockfiles match. It also reuses the built panel while its inputs and generated files match. Pass `-CleanWebDependencies` to reinstall the dependencies and rebuild the panel.
+
 On Linux, use [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) with Zig.
 
 ```sh

@@ -22,6 +22,8 @@ mod model;
 mod panel;
 mod panel_core;
 mod password;
+#[cfg(not(target_os = "espidf"))]
+mod persistence;
 mod platform;
 #[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
 mod plugin_rpc;

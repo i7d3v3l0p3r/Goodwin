@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::files;
 
 pub const LIMIT: usize = 1024;
+pub const MIB: usize = 1024 * 1024;
+pub const DEFAULT_STORAGE_MIB: usize = 4;
+pub const MAX_STORAGE_MIB: usize = 128;
 pub const WINDOW_FRAMES: usize = 32;
 pub const FRAME_SAMPLES: usize = 1280;
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -58,12 +61,17 @@ pub struct Clip {
     pub peak: f32,
     #[serde(skip)]
     wav_offset: u64,
+    #[serde(skip)]
+    stored_bytes: usize,
 }
 
 pub struct Store {
     root: PathBuf,
     pub clips: BTreeMap<u64, Clip>,
     last_id: u64,
+    pub used_bytes: usize,
+    byte_limit: usize,
+    quota_blocked: bool,
 }
 
 impl Store {
@@ -72,6 +80,9 @@ impl Store {
             root: root.into(),
             clips: BTreeMap::new(),
             last_id: 0,
+            used_bytes: 0,
+            byte_limit: DEFAULT_STORAGE_MIB * MIB,
+            quota_blocked: false,
         };
         for label in Label::ALL {
             let directory = root.join(label.directory());
@@ -94,11 +105,10 @@ impl Store {
                     .ok_or_else(|| goodwin_error::report!("Incomplete wake sample header"))?
                     + 1;
                 let info = goodwin_plugin::json_codec::from_slice(&bytes[..header_end])?;
+                let clip = make_clip(id, label, info, header_end)?;
+                store.used_bytes += clip.stored_bytes;
                 ensure!(
-                    store
-                        .clips
-                        .insert(id, make_clip(id, label, info, header_end as u64))
-                        .is_none(),
+                    store.clips.insert(id, clip).is_none(),
                     "Duplicate wake sample id"
                 );
                 store.last_id = store.last_id.max(id);
@@ -107,11 +117,21 @@ impl Store {
         Ok(store)
     }
 
+    pub fn set_storage_mib(&mut self, limit: usize) {
+        self.byte_limit = limit * MIB;
+        self.quota_blocked = false;
+    }
+
+    pub fn full(&self) -> bool {
+        self.clips.len() >= LIMIT
+            || self.quota_blocked
+            || self.byte_limit.saturating_sub(self.used_bytes) < 44 + FRAME_SAMPLES * 2
+    }
+
     pub fn save(&mut self, info: ClipInfo, pcm: &[u8]) -> Result<()> {
         let frames = info.scores.len();
         ensure!(
-            self.clips.len() < LIMIT
-                && (1..=WINDOW_FRAMES).contains(&frames)
+            (1..=WINDOW_FRAMES).contains(&frames)
                 && info.sample_rate == SAMPLE_RATE
                 && info.frame_samples == FRAME_SAMPLES
                 && pcm.len() == frames * FRAME_SAMPLES * 2,
@@ -122,13 +142,18 @@ impl Store {
         let mut clip = goodwin_plugin::json_codec::to_vec(&info)?;
         clip.push(b'\n');
         ensure!(clip.len() <= 8192, "Wake sample metadata is too large");
-        let offset = clip.len() as u64;
+        let entry = make_clip(id, label, info, clip.len())?;
+        if entry.stored_bytes > self.byte_limit.saturating_sub(self.used_bytes) || self.full() {
+            self.quota_blocked = true;
+            return Ok(());
+        }
         let header = wav_header(SAMPLE_RATE, 1, pcm.len())?;
         clip.reserve_exact(header.len() + pcm.len());
         clip.extend_from_slice(&header);
         clip.extend_from_slice(pcm);
         files::write(&self.path(label, id), &clip, false)?;
-        self.clips.insert(id, make_clip(id, label, info, offset));
+        self.used_bytes += entry.stored_bytes;
+        self.clips.insert(id, entry);
         self.last_id = id;
         Ok(())
     }
@@ -155,7 +180,9 @@ impl Store {
 
     pub fn remove(&mut self, id: u64) -> Result<()> {
         files::remove(&self.path(self.clips[&id].label, id))?;
-        self.clips.remove(&id);
+        let removed = self.clips.remove(&id).expect("known clip");
+        self.used_bytes -= removed.stored_bytes;
+        self.quota_blocked = false;
         Ok(())
     }
 
@@ -171,15 +198,21 @@ impl Store {
     }
 }
 
-fn make_clip(id: u64, label: Label, info: ClipInfo, wav_offset: u64) -> Clip {
+fn make_clip(id: u64, label: Label, info: ClipInfo, wav_offset: usize) -> Result<Clip> {
+    ensure!(
+        (1..=WINDOW_FRAMES).contains(&info.scores.len()),
+        "Invalid wake sample frame count"
+    );
+    let stored_bytes = wav_offset + 44 + info.scores.len() * FRAME_SAMPLES * 2;
     let peak = info.scores.iter().copied().reduce(f32::max).unwrap_or(0.0);
-    Clip {
+    Ok(Clip {
         id,
         label,
         info,
         peak,
-        wav_offset,
-    }
+        wav_offset: wav_offset as u64,
+        stored_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -210,5 +243,52 @@ mod tests {
         assert_eq!(clip.info.gain, 2.0);
         assert!(!clip.info.gain_applied);
         assert_eq!(&store.wav(clip).unwrap()[header.len()..], pcm);
+        assert_eq!(
+            store.used_bytes,
+            std::fs::metadata(pending.join("10.clip")).unwrap().len() as usize
+        );
+    }
+
+    #[test]
+    fn reaching_the_byte_limit_preserves_clips_and_deleting_one_frees_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        store.set_storage_mib(1);
+        let pcm = vec![0; WINDOW_FRAMES * FRAME_SAMPLES * 2];
+        for captured_at_ms in 1..=20 {
+            store
+                .save(
+                    ClipInfo {
+                        model: Model {
+                            id: "fixture".into(),
+                            wake_word: "Goodwin".into(),
+                            kind: "micro".into(),
+                            sha256: "test".into(),
+                        },
+                        captured_at_ms,
+                        sample_rate: SAMPLE_RATE,
+                        frame_samples: FRAME_SAMPLES,
+                        gain: 1.0,
+                        gain_applied: true,
+                        threshold: 0.5,
+                        scores: vec![0.6; WINDOW_FRAMES],
+                    },
+                    &pcm,
+                )
+                .unwrap();
+        }
+        assert!(store.full());
+        assert_eq!(store.clips.len(), 12);
+        assert!(store.used_bytes <= MIB);
+        let before = store.used_bytes;
+        store.label(1, Label::Positive).unwrap();
+        assert_eq!(store.used_bytes, before);
+        store.remove(1).unwrap();
+        assert!(!store.full());
+        assert!(store.used_bytes < before);
+        assert_eq!(
+            Store::open(dir.path()).unwrap().used_bytes,
+            store.used_bytes
+        );
     }
 }

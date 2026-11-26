@@ -35,6 +35,14 @@ fn accepts_long_escaped_strings_and_grows_the_output() {
 }
 
 #[test]
+fn normalizes_surrogates_and_unescapes_mixed_width_text() {
+    let input = r#"{"id":1,"text":"\u0041\u0410\u20AC\uD83C\uDF19\\\n"}"#;
+    assert_eq!(from_str::<Message>(input).unwrap().text, "AА€🌙\\\n");
+    let input = r#"{"id":1,"text":"\uD83C\uDF19"}"#;
+    assert_eq!(from_str::<Message>(input).unwrap().text, "🌙");
+}
+
+#[test]
 fn rejects_malformed_values_even_in_unknown_fields() {
     for invalid in [
         r#"{"ignored":tru,"id":7,"text":"ok"}"#,

@@ -177,6 +177,24 @@ async fn panel_serves_precompressed_assets_at_their_original_urls() {
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
         assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        if path == "/" {
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        } else {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                crate::panel_core::ASSET_CACHE_CONTROL
+            );
+            let tag = response.headers()[header::ETAG].to_str().unwrap();
+            let cached = client
+                .get(format!("{panel}{path}"))
+                .header(header::IF_NONE_MATCH, format!("W/{tag}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+            assert_eq!(cached.headers()[header::ETAG], tag);
+            assert!(cached.bytes().await.unwrap().is_empty());
+        }
         assert_eq!(response.content_length(), Some(compressed.len() as u64));
         let body = response.bytes().await.unwrap();
         assert_eq!(body.as_ref(), compressed);

@@ -70,6 +70,7 @@ impl Auth {
         goodwin_json::to_writer(&mut file, &sessions)?;
         file.as_file().sync_all()?;
         file.persist(dir.join(SESSION_FILE))?;
+        crate::persistence::sync_after_commit(dir);
         self.sessions = sessions;
         self.changes.send_replace(());
         Ok(())
@@ -79,7 +80,9 @@ impl Auth {
 pub(super) async fn response_headers(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

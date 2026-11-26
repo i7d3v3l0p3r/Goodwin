@@ -14,18 +14,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use collector::Collector;
-use store::{Clip, LIMIT, Label, Store};
+use store::{Clip, DEFAULT_STORAGE_MIB, LIMIT, Label, MAX_STORAGE_MIB, Store};
 
 const PAGE_SIZE: usize = 20;
 
 #[derive(Deserialize, Serialize)]
 struct CaptureSettings {
     minimum_score: f64,
+    #[serde(default = "default_storage_mib")]
+    storage_mib: usize,
+}
+
+fn default_storage_mib() -> usize {
+    DEFAULT_STORAGE_MIB
 }
 
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self { minimum_score: 0.1 }
+        Self {
+            minimum_score: 0.1,
+            storage_mib: DEFAULT_STORAGE_MIB,
+        }
     }
 }
 
@@ -41,7 +50,7 @@ struct Dataset {
 
 impl Dataset {
     fn open(root: &Path) -> Result<Self> {
-        let store = Store::open(&root.join("clips"))?;
+        let mut store = Store::open(&root.join("clips"))?;
         let settings_path = root.join("capture.json");
         let bytes = files::read(&settings_path, 0, 8192, true)?;
         let settings: CaptureSettings = if bytes.is_empty() {
@@ -53,6 +62,11 @@ impl Dataset {
             (0.0..=1.0).contains(&settings.minimum_score),
             "Invalid minimum wake score"
         );
+        ensure!(
+            (1..=MAX_STORAGE_MIB).contains(&settings.storage_mib),
+            "Invalid wake dataset storage limit"
+        );
+        store.set_storage_mib(settings.storage_mib);
         Ok(Self {
             store,
             collector: Collector::default(),
@@ -78,6 +92,9 @@ impl Dataset {
         json!({
             "collecting": self.active,
             "storageFailed": self.storage_failed,
+            "storageFull": self.store.full(),
+            "storageMiB": self.settings.storage_mib,
+            "usedBytes": self.store.used_bytes,
             "limit": LIMIT,
             "minimumScore": self.settings.minimum_score,
             "pending": pending,
@@ -118,7 +135,7 @@ impl Dataset {
         let Some(enabled) = body["enabled"].as_bool() else {
             return Ok(invalid());
         };
-        if enabled && self.store.clips.len() >= LIMIT {
+        if enabled && self.store.full() {
             return Ok(HttpResponse::json(409, json!({"error": "dataset_full"})));
         }
         if enabled && !self.active {
@@ -136,20 +153,46 @@ impl Dataset {
         Ok(HttpResponse::json(200, self.status()))
     }
 
-    fn set_minimum_score(&mut self, body: &Value) -> Result<HttpResponse> {
-        let Some(minimum_score) = body["minimumScore"]
-            .as_f64()
-            .filter(|score| (0.0..=1.0).contains(score))
-        else {
+    fn set_capture_settings(&mut self, body: &Value) -> Result<HttpResponse> {
+        if body.get("minimumScore").is_none() && body.get("storageMiB").is_none() {
             return Ok(invalid());
+        }
+        let minimum_score = match body.get("minimumScore") {
+            Some(value) => {
+                let Some(score) = value.as_f64().filter(|score| (0.0..=1.0).contains(score)) else {
+                    return Ok(invalid());
+                };
+                score
+            }
+            None => self.settings.minimum_score,
         };
-        let settings = CaptureSettings { minimum_score };
+        let storage_mib = match body.get("storageMiB") {
+            Some(value) => {
+                let Some(limit) = value
+                    .as_u64()
+                    .and_then(|limit| usize::try_from(limit).ok())
+                    .filter(|limit| (1..=MAX_STORAGE_MIB).contains(limit))
+                else {
+                    return Ok(invalid());
+                };
+                limit
+            }
+            None => self.settings.storage_mib,
+        };
+        let settings = CaptureSettings {
+            minimum_score,
+            storage_mib,
+        };
         files::write(
             &self.settings_path,
             &goodwin_plugin::json_codec::to_vec(&settings)?,
             true,
         )?;
+        if storage_mib != self.settings.storage_mib {
+            self.store.set_storage_mib(storage_mib);
+        }
         self.settings = settings;
+        self.record_result(Ok(()))?;
         Ok(HttpResponse::empty(204))
     }
 
@@ -165,7 +208,7 @@ impl Dataset {
         if result.is_err() {
             self.storage_failed = true;
         }
-        if self.storage_failed || self.store.clips.len() >= LIMIT {
+        if self.storage_failed || self.store.full() {
             self.active = false;
             self.collector = Collector::default();
         }
@@ -222,7 +265,7 @@ impl Plugin for Dataset {
             }
             ("DELETE", "/clips") => return self.delete_all(),
             ("PUT", "/capture") => return self.collect(&request.body),
-            ("PUT", "/capture-settings") => return self.set_minimum_score(&request.body),
+            ("PUT", "/capture-settings") => return self.set_capture_settings(&request.body),
             _ => {}
         }
         let Some(path) = request.path.strip_prefix("/clips/") else {
@@ -544,5 +587,38 @@ mod tests {
         let collector = dataset(dir.path());
         assert!(collector.store.clips.is_empty());
         assert_eq!(collector.settings.minimum_score, 0.0);
+    }
+
+    #[test]
+    fn loads_legacy_settings_and_saves_the_quota_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("capture.json"),
+            br#"{"minimum_score":0.42}"#,
+        )
+        .unwrap();
+        let mut collector = dataset(dir.path());
+        assert_eq!(collector.status()["storageMiB"], DEFAULT_STORAGE_MIB);
+        assert_eq!(
+            request(
+                &mut collector,
+                "PUT",
+                "/capture-settings",
+                json!({"storageMiB": 6})
+            )["status"],
+            204
+        );
+        assert_eq!(
+            request(
+                &mut collector,
+                "PUT",
+                "/capture-settings",
+                json!({"storageMiB": 0})
+            )["status"],
+            400
+        );
+        let reopened = dataset(dir.path());
+        assert_eq!(reopened.status()["storageMiB"], 6);
+        assert_eq!(reopened.status()["minimumScore"], 0.42);
     }
 }

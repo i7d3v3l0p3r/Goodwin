@@ -5,7 +5,7 @@ use goodwin_plugin::{
     wake::{Event, Frame, Model},
 };
 
-use crate::store::{ClipInfo, FRAME_SAMPLES, LIMIT, SAMPLE_RATE, Store, WINDOW_FRAMES};
+use crate::store::{ClipInfo, FRAME_SAMPLES, SAMPLE_RATE, Store, WINDOW_FRAMES};
 
 const FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const STRIDE: usize = WINDOW_FRAMES / 2;
@@ -52,7 +52,7 @@ impl Collector {
         {
             self.flush(store, minimum_score)?;
         }
-        if store.clips.len() >= LIMIT {
+        if store.full() {
             return Ok(());
         }
         if frame.gain != 1.0 {
@@ -88,7 +88,7 @@ impl Collector {
 
     pub fn flush(&mut self, store: &mut Store, minimum_score: f32) -> Result<()> {
         if let Some(window) = self.0.take()
-            && store.clips.len() < LIMIT
+            && !store.full()
         {
             window.save_if_qualified(store, minimum_score)?;
         }

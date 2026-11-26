@@ -27,6 +27,17 @@ if [ -f "$TEST_ROOT/stopping" ]; then
     rm -f "$TEST_ROOT/running" "$TEST_ROOT/stopping"
 fi
 EOF
+real_mv=$(command -v mv)
+export real_mv
+cat > "$TEST_ROOT/tools/mv" <<'EOF'
+#!/bin/sh
+set -eu
+"$real_mv" "$@"
+if [ -f "$TEST_ROOT/interrupt-model" ] && [ "$1" = "$TEST_ROOT/data/opt/.goodwin-install-lock/stage/new-catalog-selection" ]; then
+    rm "$TEST_ROOT/interrupt-model"
+    kill -KILL "$PPID"
+fi
+EOF
 chmod 755 "$TEST_ROOT/tools/"*
 upload="$TEST_ROOT/data/opt/.goodwin-upload.test01"
 mkdir "$upload" "$TEST_ROOT/payload"
@@ -60,6 +71,14 @@ package() {
 case "\$1" in
     wake-check)
         case "\$2" in
+            --installed-inference)
+                test ! -e "\$TEST_ROOT/running" || exit 1
+                if [ -f "\$3/wake-model.json" ]; then
+                    "\$0" wake-check --installed "\$3" || exit 1
+                elif [ -f "\$3/goodwin.onnx" ]; then
+                    test -s "\$3/goodwin.onnx" || exit 1
+                fi
+                ;;
             --installed)
                 test -f "\$3/wake-model.json" || exit 1
                 if grep -q 'livekit-v2-micro-tflite' "\$3/wake-model.json"; then
@@ -75,6 +94,7 @@ case "\$1" in
         esac
         ;;
     version|--version) echo "$version" ;;
+    --help) echo 'goodwin wake-check --installed-inference <data-dir>' ;;
     setup) mkdir "\$2" && echo settings > "\$2/config.json" ;;
 esac
 EOF
@@ -151,6 +171,30 @@ test "$(cat "$data/config.json")" = retained
 test -d "$data/plugins"
 test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
 
+package interrupted goodwin-micro catalog
+touch "$TEST_ROOT/interrupt-model"
+if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/interrupted.out" 2>&1; then
+    echo 'The forced interruption did not stop the installation' >&2
+    exit 1
+fi
+grep 'mutating update catalog 1 1' "$TEST_ROOT/data/opt/.goodwin-install-lock/journal"
+grep 'goodwin-micro' "$data/wake-model.json"
+test "$("$TEST_ROOT/data/opt/bin/goodwin" --version)" = interrupted
+
+upload="$TEST_ROOT/tmp/.goodwin-upload.test03"
+mkdir "$upload"
+cp "$install_init" "$upload/init.sh"
+package recovered
+sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/recovered.out" 2>&1
+grep 'Recovering an interrupted Goodwin installation' "$TEST_ROOT/recovered.out"
+grep 'GOODWIN_INSTALL_OK update' "$TEST_ROOT/recovered.out"
+test "$(cat "$TEST_ROOT/running")" = recovered
+grep 'egor-micro' "$data/wake-model.json"
+test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
+test "$(cat "$data/config.json")" = retained
+test -d "$data/plugins"
+test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
+
 hook=$TEST_ROOT/data/init.d/S96goodwin
 web_upload="$TEST_ROOT/data/opt/.goodwin-upload.web001"
 mkdir "$web_upload"
@@ -163,10 +207,10 @@ if sh "$TEST_ROOT/install-test.sh" "$web_upload" core stale > "$TEST_ROOT/stale.
     exit 1
 fi
 grep 'The installed Goodwin version changed' "$TEST_ROOT/stale.out"
-test "$(cat "$TEST_ROOT/running")" = catalog-keep
+test "$(cat "$TEST_ROOT/running")" = recovered
 cp "$TEST_ROOT/payload/goodwin" "$web_upload/goodwin"
 chmod 755 "$web_upload/goodwin"
-sh "$TEST_ROOT/install-test.sh" "$web_upload" core catalog-keep
+sh "$TEST_ROOT/install-test.sh" "$web_upload" core recovered
 test "$(cat "$TEST_ROOT/running")" = web-release
 test "$(stat -c %i "$hook")" = "$hook_inode"
 test "$(cat "$data/wake-models/$selected_hash.onnx")" = egor-micro
@@ -222,5 +266,19 @@ if sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/unsupported-keep
 fi
 grep 'could not use the installed wake model' "$TEST_ROOT/unsupported-keep.out"
 test "$(cat "$TEST_ROOT/running")" = with-int8
+
+mv "$data/wake-model.json" "$TEST_ROOT/selected-model.json"
+: > "$data/goodwin.onnx"
+package legacy-model-update
+if sh "$TEST_ROOT/install-test.sh" "$upload" keep > "$TEST_ROOT/legacy-failure.out" 2>&1; then
+    echo 'An update succeeded with an unreadable legacy model' >&2
+    exit 1
+fi
+grep 'GOODWIN_INSTALL_ERROR model' "$TEST_ROOT/legacy-failure.out"
+test "$(cat "$TEST_ROOT/running")" = with-int8
+rm "$data/goodwin.onnx"
+package model-free-update
+sh "$TEST_ROOT/install-test.sh" "$upload" keep
+test "$(cat "$TEST_ROOT/running")" = model-free-update
 
 printf '%s\n' 'Catalog installs, web updates and rollback passed.'

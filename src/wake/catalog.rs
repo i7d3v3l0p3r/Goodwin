@@ -96,6 +96,22 @@ impl WakeModels {
         Ok(())
     }
 
+    pub(crate) fn check_installed_inference(dir: &Path) -> Result<()> {
+        let mut model = if let Some(selection) = read_selection(dir)? {
+            WakeModel::load_selected(&model_path(dir, &selection), &selection)?
+        } else {
+            let path = local_model_path(dir);
+            if std::env::var_os("GOODWIN_WAKE_MODEL").is_none()
+                && matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == ErrorKind::NotFound)
+            {
+                return Ok(());
+            }
+            WakeModel::load(&path)?
+        };
+        model.predict(&[0; FRAME_SAMPLES])?;
+        Ok(())
+    }
+
     pub(crate) fn install(
         &self,
         tag: &str,
@@ -142,6 +158,7 @@ impl WakeModels {
         manifest.as_file().sync_all()?;
         model_file.as_file().sync_all()?;
         model_file.persist(&target)?;
+        crate::persistence::sync_directory(&models)?;
         if let Err(error) = manifest.persist(self.dir.join(MANIFEST)) {
             if previous
                 .as_ref()
@@ -152,8 +169,11 @@ impl WakeModels {
             return Err(error.into());
         }
 
+        let durable = crate::persistence::sync_directory(&self.dir);
         let activated = self.queue_model(selected.clone(), model);
-        if let Some(old) = previous
+        if let Err(error) = durable {
+            log::warn!("Could not synchronize wake model selection: {error}");
+        } else if let Some(old) = previous
             .map(|old| model_path(&self.dir, &old))
             .filter(|old| *old != target)
             && let Err(error) = fs::remove_file(old)

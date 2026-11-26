@@ -24,7 +24,7 @@ use serde_json::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot, watch},
     time::timeout,
 };
@@ -40,6 +40,8 @@ mod wasm;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_LIMIT: usize = 128 * 1024;
+const SPEECH_DEADLINE: Duration = Duration::from_secs(180);
+const SPEECH_DRAIN_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 pub struct Process {
@@ -215,60 +217,59 @@ impl Process {
         if let Some(value) = std::env::var_os("SystemRoot") {
             command.env("SystemRoot", value);
         }
-        let mut child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .context("Start plugin process")?;
-        let mut input = child.stdin.take().context("Open plugin stdin")?;
-        let mut output = Frames {
-            reader: BufReader::new(child.stdout.take().context("Open plugin stdout")?),
-            partial: Vec::new(),
-        };
-        let ready = async {
-            let initialize = json!({
-                "jsonrpc": "2.0", "id": 0, "method": "initialize",
-                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true },
-            });
-            write(&mut input, &initialize, FRAME_LIMIT).await?;
-            let ready: Registration =
-                serde_json::from_str(decode_reply(output.read(FRAME_LIMIT).await?, 0)??.get())?;
-            ready.validate(manifest)?;
-            Ok::<_, goodwin_error::Error>(ready)
-        };
-        let registration = match timeout(START_TIMEOUT, ready)
-            .await
-            .context("Plugin readiness timed out")
-            .and_then(|ready| ready)
-        {
-            Ok(registration) => registration,
-            Err(error) => {
-                let _ = child.kill().await;
-                return Err(error);
-            }
-        };
+            .kill_on_drop(true);
+        let (mut native, registration, contract) =
+            NativeProcess::start(&mut command, manifest).await?;
         let (requests, mut incoming) = mpsc::channel(8);
         let (stop, mut stopping) = watch::channel(false);
-        let id = manifest.id.clone();
+        let manifest = manifest.clone();
         let wake_subscription = registration
             .wake_events
             .then(|| Arc::new(AtomicU64::new(registration.wake_subscription)));
         let subscription = wake_subscription.clone();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = stopping.changed() => {}
-                result = run(&mut input, &mut output, &mut incoming, sound, subscription.as_deref()) => {
-                    if let Err(error) = result { log::warn!("Plugin {id} stopped: {error}"); }
+            loop {
+                let result = tokio::select! {
+                    _ = stopping.changed() => Ok(false),
+                    result = run(&mut native.input, &mut native.output, &mut incoming, &sound, subscription.as_deref()) => result,
+                };
+                native.close().await;
+                match result {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(error) => {
+                        log::warn!("Plugin {} stopped: {error}", manifest.id);
+                        break;
+                    }
                 }
-            }
-            drop(input);
-            if timeout(Duration::from_millis(500), child.wait())
-                .await
-                .is_err()
-            {
-                let _ = child.kill().await;
+                let restarted = tokio::select! {
+                    _ = stopping.changed() => break,
+                    result = NativeProcess::start(&mut command, &manifest) => result,
+                };
+                match restarted {
+                    Ok((next, registration, new_contract)) if new_contract == contract => {
+                        if let Some(subscription) = &subscription {
+                            subscription.store(registration.wake_subscription, Ordering::Release);
+                        }
+                        native = next;
+                    }
+                    Ok((next, _, _)) => {
+                        log::warn!(
+                            "Plugin {} changed its registration after restart",
+                            manifest.id
+                        );
+                        next.close().await;
+                        break;
+                    }
+                    Err(error) => {
+                        log::warn!("Could not restart plugin {}: {error:#}", manifest.id);
+                        break;
+                    }
+                }
             }
             drop(incoming);
             catalog_changes.send_replace(());
@@ -456,19 +457,90 @@ impl Process {
     }
 }
 
+struct NativeProcess {
+    child: Child,
+    input: ChildStdin,
+    output: Frames,
+}
+
+impl NativeProcess {
+    async fn start(
+        command: &mut Command,
+        manifest: &Manifest,
+    ) -> Result<(Self, Registration, Value)> {
+        let mut child = command.spawn().context("Start plugin process")?;
+        let mut input = child.stdin.take().context("Open plugin stdin")?;
+        let mut output = Frames {
+            reader: BufReader::new(child.stdout.take().context("Open plugin stdout")?),
+            partial: Vec::new(),
+        };
+        let ready = async {
+            let initialize = json!({
+                "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true },
+            });
+            write(&mut input, &initialize, FRAME_LIMIT).await?;
+            let reply = decode_reply(output.read(FRAME_LIMIT).await?, 0)??;
+            let registration: Registration = serde_json::from_str(reply.get())?;
+            registration.validate(manifest)?;
+            let mut contract: Value = serde_json::from_str(reply.get())?;
+            if let Some(fields) = contract.as_object_mut() {
+                fields.remove("wakeSubscription");
+            }
+            Ok::<_, goodwin_error::Error>((registration, contract))
+        };
+        let (registration, contract) = match timeout(START_TIMEOUT, ready)
+            .await
+            .context("Plugin readiness timed out")
+            .and_then(|result| result)
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        };
+        Ok((
+            Self {
+                child,
+                input,
+                output,
+            },
+            registration,
+            contract,
+        ))
+    }
+
+    async fn close(self) {
+        let Self {
+            mut child,
+            input,
+            output,
+        } = self;
+        drop(input);
+        drop(output);
+        if timeout(Duration::from_millis(500), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+        }
+    }
+}
+
 async fn run(
     input: &mut ChildStdin,
     output: &mut Frames,
     incoming: &mut mpsc::Receiver<Call>,
-    sound: mpsc::Sender<()>,
+    sound: &mpsc::Sender<()>,
     wake_subscription: Option<&AtomicU64>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut id = 0u64;
     loop {
         tokio::select! {
-            frame = output.read(FRAME_LIMIT) => notify(frame?, &sound)?,
+            frame = output.read(FRAME_LIMIT) => notify(frame?, sound)?,
             call = incoming.recv() => {
-                let Some(call) = call else { return Ok(()); };
+                let Some(call) = call else { return Ok(false); };
                 if call.response.as_ref().is_some_and(oneshot::Sender::is_closed) { continue; }
                 id += 1;
                 let message = plugin_rpc::Request {
@@ -481,9 +553,16 @@ async fn run(
                         continue;
                     }
                 };
-                let exchange = exchange(input, output, &sound, wake_subscription, id, &call, &request);
-                let result = if matches!(call.chunks, Some(StreamChunks::Speech(_))) {
-                    exchange.await?
+                let exchange = exchange(input, output, sound, wake_subscription, id, &call, &request);
+                let result = if let Some(StreamChunks::Speech(chunks)) = &call.chunks {
+                    match finish_speech_exchange(exchange, chunks).await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            log::warn!("Restarting native speech plugin: {error:#}");
+                            complete(call.response, Err(error));
+                            return Ok(true);
+                        }
+                    }
                 } else {
                     timeout(call.limits.timeout, exchange).await.context("Plugin RPC timed out")??
                 };
@@ -491,6 +570,24 @@ async fn run(
             }
         }
     }
+}
+
+async fn finish_speech_exchange<T>(
+    exchange: impl Future<Output = Result<T>>,
+    chunks: &mpsc::Sender<SpeechAudio>,
+) -> Result<T> {
+    timeout(SPEECH_DEADLINE, async {
+        let mut exchange = std::pin::pin!(exchange);
+        tokio::select! {
+            biased;
+            result = &mut exchange => result,
+            _ = chunks.closed() => timeout(SPEECH_DRAIN_TIMEOUT, exchange)
+                .await
+                .context("Plugin speech did not finish after cancellation")?,
+        }
+    })
+    .await
+    .context("Plugin speech deadline exceeded")?
 }
 
 fn complete(
@@ -542,7 +639,7 @@ async fn exchange(
                     message.jsonrpc == "2.0" && request_id == id,
                     "Unexpected speech chunk"
                 );
-                // Keep draining RPC frames if the player has already stopped.
+                // The dispatcher bounds this drain when playback has stopped.
                 let _ = chunks.send(audio).await;
             }
             (Some(StreamChunks::Chat(chunks)), Some(CHAT_CHUNK_NOTIFICATION)) => {
@@ -666,6 +763,101 @@ impl Frames {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn abandoned_speech_can_finish_at_the_current_rpc_boundary() {
+        let (chunks, consumer) = mpsc::channel(1);
+        drop(consumer);
+        let result = finish_speech_exchange(
+            async {
+                tokio::task::yield_now().await;
+                Ok("complete")
+            },
+            &chunks,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "complete");
+    }
+
+    #[tokio::test]
+    async fn abandoned_speech_cannot_hold_the_worker_waiting_for_a_reply() {
+        let (chunks, consumer) = mpsc::channel(1);
+        drop(consumer);
+        let error = finish_speech_exchange(std::future::pending::<Result<()>>(), &chunks)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("after cancellation"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_restarted_native_plugin_serves_the_next_queued_request() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("fixture");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+set -eu
+IFS= read -r request
+printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"apiVersion":{API_VERSION},"speechStreaming":true}}}}'
+IFS= read -r request
+if [ ! -f speech-started ]; then
+    : > speech-started
+    IFS= read -r request
+    exit 1
+fi
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":"restarted"}}'
+IFS= read -r request
+"#
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let manifest = serde_json::from_value(json!({
+            "id": "fixture", "title": {"en":"Fixture","ru":"Fixture"},
+            "version": "1.0.0", "apiVersion": API_VERSION,
+            "target": "linux-aarch64", "executable": "fixture",
+        }))
+        .unwrap();
+        let (sound, _signals) = mpsc::channel(1);
+        let (changes, _catalog) = watch::channel(());
+        let (plugin, _) = Process::start(root.path(), root.path(), &manifest, sound, changes)
+            .await
+            .unwrap();
+        let speech = plugin
+            .stream_speech(SpeechRequest {
+                text: "Hello".into(),
+                selection: Default::default(),
+            })
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            while !root.path().join("speech-started").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(speech);
+
+        let reply = timeout(
+            Duration::from_secs(5),
+            plugin.call_with_limits(
+                "health",
+                to_raw_value(&json!({})).unwrap(),
+                CallLimits::STANDARD,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.get(), r#""restarted""#);
+    }
 
     #[test]
     fn provider_error_details_accept_a_numeric_status_and_ignore_freeform_messages() {

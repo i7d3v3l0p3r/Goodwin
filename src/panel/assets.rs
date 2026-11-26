@@ -1,11 +1,11 @@
 use axum::{
     Router,
-    http::header,
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 
-use crate::panel_core::{ASSETS, INDEX, PAGE_PATHS};
+use crate::panel_core::{ASSET_CACHE_CONTROL, ASSETS, Asset, INDEX, PAGE_PATHS};
 
 use super::Panel;
 
@@ -16,25 +16,47 @@ pub(super) fn routes() -> Router<Panel> {
             .route(path, get(index))
             .route(&format!("{path}/"), get(index));
     }
-    for &(path, mime, content) in ASSETS {
-        router = router.route(path, get(move || async move { asset(mime, content) }));
+    for asset in ASSETS {
+        router = router.route(
+            asset.path,
+            get(move |headers: HeaderMap| async move { bundle(asset, &headers) }),
+        );
     }
     // Both plugin pages and /plugins/{id}/settings use the panel entry point.
     router.route("/plugins/{*path}", get(index))
 }
 
 async fn index() -> Response {
-    asset(INDEX.0, INDEX.1)
+    (
+        [
+            (header::CONTENT_TYPE, INDEX.0),
+            (header::CONTENT_ENCODING, "gzip"),
+        ],
+        INDEX.1,
+    )
+        .into_response()
 }
 
 #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
-fn asset(mime: &'static str, content: &'static [u8]) -> Response {
+fn bundle(asset: &Asset, headers: &HeaderMap) -> Response {
+    let unchanged = headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .any(|tag| asset.cached(tag.to_str().ok()));
+    let cache = [
+        (header::ETAG, asset.etag),
+        (header::CACHE_CONTROL, ASSET_CACHE_CONTROL),
+    ];
+    if unchanged {
+        return (StatusCode::NOT_MODIFIED, cache).into_response();
+    }
     (
+        cache,
         [
-            (header::CONTENT_TYPE, mime),
+            (header::CONTENT_TYPE, asset.mime),
             (header::CONTENT_ENCODING, "gzip"),
         ],
-        content,
+        asset.gzip,
     )
         .into_response()
 }

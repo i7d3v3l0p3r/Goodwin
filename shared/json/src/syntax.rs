@@ -10,7 +10,7 @@ enum State {
 
 pub(super) struct Strings {
     pub escaped: usize,
-    pub surrogate_pairs: bool,
+    pub surrogate_bytes_saved: usize,
 }
 
 pub(super) fn validate(input: &[u8]) -> Option<Strings> {
@@ -90,7 +90,7 @@ impl<'a> Scanner<'a> {
             input,
             strings: Strings {
                 escaped: 0,
-                surrogate_pairs: false,
+                surrogate_bytes_saved: 0,
             },
         }
     }
@@ -149,28 +149,39 @@ impl<'a> Scanner<'a> {
 
     fn string(&mut self) -> Option<()> {
         let start = self.input.len();
-        let mut escaped = false;
+        let mut unescape = false;
+        let mut saved = 0;
         loop {
             let (&byte, rest) = self.input.split_first()?;
             self.input = rest;
             match byte {
                 b'"' => break,
                 b'\\' => {
-                    escaped = true;
                     let (&escape, rest) = self.input.split_first()?;
                     self.input = rest;
                     match escape {
-                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => (),
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                            unescape = true;
+                            saved += 1;
+                        }
                         b'u' => {
                             let code = self.hex()?;
                             if (0xd800..=0xdbff).contains(&code) {
-                                self.strings.surrogate_pairs = true;
                                 self.input = self.input.strip_prefix(b"\\u")?;
                                 if !(0xdc00..=0xdfff).contains(&self.hex()?) {
                                     return None;
                                 }
+                                self.strings.surrogate_bytes_saved += 8;
+                                saved += 8;
                             } else if (0xdc00..=0xdfff).contains(&code) {
                                 return None;
+                            } else {
+                                unescape = true;
+                                saved += match code {
+                                    0..=0x7f => 5,
+                                    0x80..=0x7ff => 4,
+                                    _ => 3,
+                                };
                             }
                         }
                         _ => return None,
@@ -180,8 +191,11 @@ impl<'a> Scanner<'a> {
                 _ => (),
             }
         }
-        if escaped {
-            self.strings.escaped = self.strings.escaped.max(start - self.input.len() - 1);
+        if unescape {
+            self.strings.escaped = self
+                .strings
+                .escaped
+                .max(start - self.input.len() - 1 - saved);
         }
         Some(())
     }
