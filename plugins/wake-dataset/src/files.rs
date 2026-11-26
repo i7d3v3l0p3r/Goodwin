@@ -84,20 +84,18 @@ mod platform {
     }
 
     pub fn list(path: &Path) -> Result<Vec<String>> {
-        let mut data = vec![0; 128 * 1024];
-        let count = guest::call(
+        let data = guest::call_vec(
             Request::List {
                 path: path.to_string_lossy().into_owned(),
             },
             &[],
-            &mut data,
+            128 * 1024,
         )?;
-        Ok(goodwin_plugin::json_codec::from_slice(&data[..count])?)
+        Ok(goodwin_plugin::json_codec::from_slice(&data)?)
     }
 
     pub fn read(path: &Path, offset: u64, length: usize, optional: bool) -> Result<Vec<u8>> {
-        let mut data = vec![0; length];
-        let count = guest::call(
+        guest::call_vec(
             Request::Read {
                 path: path.to_string_lossy().into_owned(),
                 offset,
@@ -105,10 +103,8 @@ mod platform {
                 optional,
             },
             &[],
-            &mut data,
-        )?;
-        data.truncate(count);
-        Ok(data)
+            length,
+        )
     }
 
     pub fn write(path: &Path, input: &[u8], replace: bool) -> Result<()> {

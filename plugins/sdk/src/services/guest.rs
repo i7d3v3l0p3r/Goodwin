@@ -18,27 +18,46 @@ unsafe extern "C" {
 }
 
 pub fn call(request: Request, input: &[u8], output: &mut [u8]) -> Result<usize> {
+    let length = response_length(request, input, output.len())?;
+    read_response(&mut output[..length])?;
+    Ok(length)
+}
+
+/// Reads a host response into a vector sized for the returned bytes.
+pub fn call_vec(request: Request, input: &[u8], limit: usize) -> Result<Vec<u8>> {
+    let length = response_length(request, input, limit)?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(length)?;
+    output.resize(length, 0);
+    read_response(&mut output)?;
+    Ok(output)
+}
+
+fn response_length(request: Request, input: &[u8], limit: usize) -> Result<usize> {
     let meta = crate::json_codec::to_vec(&request)?;
     // The import borrows these buffers only for the duration of this call.
     let length = unsafe { host_call(meta.as_ptr(), meta.len(), input.as_ptr(), input.len()) };
     let length = usize::try_from(length).context("Goodwin host operation failed")?;
-    ensure!(
-        length <= output.len(),
-        "Goodwin host response exceeds its limit"
-    );
-    if length != 0 {
-        ensure!(
-            unsafe { host_result(output.as_mut_ptr(), length) } == 0,
-            "Read Goodwin host response"
-        );
-    }
+    ensure!(length <= limit, "Goodwin host response exceeds its limit");
     Ok(length)
 }
 
+fn read_response(output: &mut [u8]) -> Result<()> {
+    if !output.is_empty() {
+        ensure!(
+            unsafe { host_result(output.as_mut_ptr(), output.len()) } == 0,
+            "Read Goodwin host response"
+        );
+    }
+    Ok(())
+}
+
 pub fn read_settings<T: DeserializeOwned>() -> Result<T> {
-    let mut buffer = vec![0; 32 * 1024];
-    let used = call(Request::Settings, &[], &mut buffer)?;
-    Ok(serde_json::from_slice(&buffer[..used])?)
+    Ok(serde_json::from_slice(&call_vec(
+        Request::Settings,
+        &[],
+        32 * 1024,
+    )?)?)
 }
 
 /// Maximum total size of guest data files, in bytes. Requires `wasmStorage`.
