@@ -11,7 +11,7 @@
 - ESP32-S3 can play timer alarms while Wi-Fi reconnects or applies new settings.
 - Mini 3 can be built with only the Micro INT8 wake runtime. On a fresh installation from this package, the installer selects the Micro INT8 model by default.
 - On ESP32-S3, a voice or chat request can wait for the HTTPS clock while the device continues to handle due timer alarms.
-- Streaming chat uses less temporary memory when decoding provider responses.
+- Streaming chat uses less temporary memory when decoding provider responses. The JSON parser scans long runs of plain text and Base64 in groups of bytes.
 - ESP32-S3 restores interrupted WASM plugin data writes before the plugin starts, including files accessed through the plugin storage API.
 - The panel can export diagnostic counters and latencies as JSON. The export contains numeric metrics only.
 - An open panel refreshes device capabilities after reconnecting and while it stays open. ESP32-S3 clients can read a completed wake model operation more than once.
@@ -39,7 +39,7 @@
 - ESP32-S3 воспроизводит сигналы таймеров во время переподключения Wi-Fi и применения новых сетевых настроек.
 - Мини 3 можно собрать только с движком активации Micro INT8. При первой установке из такого пакета установщик по умолчанию выбирает модель Micro INT8.
 - На ESP32-S3 запрос чата или голосовой запрос может ждать синхронизации часов для HTTPS, пока устройство воспроизводит сигналы таймеров.
-- Потоковый чат использует меньше временной памяти при разборе ответов провайдера.
+- Потоковый чат использует меньше временной памяти при разборе ответов провайдера. JSON-парсер проверяет длинные участки обычного текста и Base64 группами байтов.
 - ESP32-S3 восстанавливает файлы после прерванной записи до запуска WASM-плагина. Это касается и файлов, доступных через API хранилища плагинов.
 - Из панели можно скачать счётчики и задержки в формате JSON. В выгрузку входят только числовые показатели.
 - Открытая панель обновляет список возможностей устройства после переподключения и во время работы. На ESP32-S3 результат установки модели активации можно запросить повторно.

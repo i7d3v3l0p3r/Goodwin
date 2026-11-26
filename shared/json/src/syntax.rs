@@ -149,6 +149,12 @@ impl<'a> Scanner<'a> {
 
     fn string(&mut self) -> Option<()> {
         let start = self.input.len();
+        // Scan by word only after finding a plain prefix in a large input.
+        // Most keys and escaped strings reach the byte scanner immediately.
+        if start >= 512 && self.input[0] != b'\\' && skip_plain_words(&self.input[..32]).is_empty()
+        {
+            self.input = skip_plain_words(self.input);
+        }
         let mut unescape = false;
         let mut saved = 0;
         loop {
@@ -241,6 +247,25 @@ impl<'a> Scanner<'a> {
         }
         Some(())
     }
+}
+
+fn skip_plain_words(mut input: &[u8]) -> &[u8] {
+    const ONES: usize = usize::MAX / 255;
+    const HIGHS: usize = ONES * 0x80;
+    while let Some((head, tail)) = input.split_first_chunk::<{ size_of::<usize>() }>() {
+        let word = usize::from_ne_bytes(*head);
+        let has_zero = |value: usize| value.wrapping_sub(ONES) & !value & HIGHS;
+        // XOR detects quotes and backslashes. Mask the low five bits to detect controls.
+        if has_zero(word ^ (ONES * b'"' as usize))
+            | has_zero(word ^ (ONES * b'\\' as usize))
+            | has_zero(word & (ONES * 0xe0))
+            != 0
+        {
+            break;
+        }
+        input = tail;
+    }
+    input
 }
 
 pub(super) fn hex(digits: &[u8]) -> Option<u16> {

@@ -43,6 +43,23 @@ fn normalizes_surrogates_and_unescapes_mixed_width_text() {
 }
 
 #[test]
+fn long_string_prefix_leaves_special_bytes_for_the_decoder() {
+    for extra in 0..size_of::<usize>() {
+        let prefix = "x".repeat(512 + extra);
+        let json = format!(r#"{{"id":7,"text":"{prefix}\"\ud83c\udf19\\"}}"#);
+        assert_eq!(
+            from_str::<Message>(&json).unwrap().text,
+            format!("{prefix}\"🌙\\"),
+        );
+
+        let input = format!(r#"{{"ignored":"{prefix}{}","id":7}}"#, '\u{1f}');
+        assert!(validate(input.as_bytes()).is_err());
+        assert!(object_fields(input.as_bytes(), ["id"]).is_err());
+    }
+    assert!(validate(format!("\"{}", "x".repeat(1024)).as_bytes()).is_err());
+}
+
+#[test]
 fn rejects_malformed_values_even_in_unknown_fields() {
     for invalid in [
         r#"{"ignored":tru,"id":7,"text":"ok"}"#,
