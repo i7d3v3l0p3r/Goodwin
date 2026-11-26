@@ -4,17 +4,21 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use goodwin_error::{Context, Result, ensure};
 #[cfg(feature = "wake-tflite")]
 use goodwin_plugin::wake::{EVENT_METHOD, Event, Observation};
-use goodwin_plugin::{HttpRequest, settings::SettingsData};
+use goodwin_plugin::{
+    HttpRequest,
+    settings::SettingsData,
+    timer::{POLL_METHOD, Status as TimerStatus},
+};
 use serde_json::{Map, Value, json};
 #[cfg(feature = "wake-tflite")]
 use std::sync::mpsc;
@@ -27,6 +31,7 @@ use crate::{
         registration::{HttpResponse, Registration, Tool},
         settings,
         store::{self, Store},
+        timer::Schedule,
     },
 };
 
@@ -79,9 +84,16 @@ struct Instance {
     registration: Arc<Registration>,
     state: Option<PathBuf>,
     deadline: Option<u64>,
+    timer: Schedule,
     revision: String,
     next_id: u64,
     wake_subscription: u64,
+}
+
+pub(super) struct TimerAlarm {
+    plugin: String,
+    revision: String,
+    id: u64,
 }
 
 pub(super) struct VoiceTools<'a> {
@@ -182,6 +194,31 @@ impl Plugins {
         self.signals.swap(0, Ordering::Relaxed)
     }
 
+    pub(super) fn take_timer_alarm(&self) -> Option<TimerAlarm> {
+        self.lock().entries.iter_mut().find_map(|(plugin, entry)| {
+            let instance = entry.active.as_mut()?;
+            let id = instance.timer.take_alarm()?;
+            Some(TimerAlarm {
+                plugin: plugin.clone(),
+                revision: instance.revision.clone(),
+                id,
+            })
+        })
+    }
+
+    pub(super) fn finish_timer_alarm(&self, alarm: TimerAlarm, success: bool) {
+        if let Some(instance) = self
+            .lock()
+            .entries
+            .get_mut(&alarm.plugin)
+            .and_then(|entry| entry.active.as_mut())
+            .filter(|instance| instance.revision == alarm.revision)
+        {
+            instance.timer.finish(alarm.id, success);
+        }
+        self.wake_scheduler();
+    }
+
     #[cfg(feature = "wake-tflite")]
     pub(super) fn observe_wake(&self, make_event: impl FnOnce() -> Event) {
         let epoch = self.wake_epoch.load(Ordering::Acquire);
@@ -270,6 +307,33 @@ impl Plugins {
     fn tick(&self) -> Duration {
         let mut runtime = self.lock();
         for entry in runtime.entries.values_mut() {
+            if let Some(instance) = entry
+                .active
+                .as_mut()
+                .filter(|instance| instance.timer.enabled())
+            {
+                if instance
+                    .timer
+                    .next()
+                    .is_some_and(|next| next <= Instant::now())
+                {
+                    let poll = instance.timer.poll();
+                    match instance.invoke(POLL_METHOD, poll, services::Call::default(), |value| {
+                        serde_json::from_str::<TimerStatus>(value)
+                    }) {
+                        Ok(Some((status, signals))) => {
+                            instance.timer.update(status);
+                            self.add_signals(signals);
+                        }
+                        Ok(None) => instance.timer.retry(),
+                        Err(error) => {
+                            log::warn!("Poll plugin timer alarms: {error:#}");
+                            instance.timer.retry();
+                        }
+                    }
+                }
+                continue;
+            }
             if entry
                 .active
                 .as_ref()
@@ -288,10 +352,22 @@ impl Plugins {
         let delay = runtime
             .entries
             .values()
-            .filter_map(|entry| entry.active.as_ref()?.deadline)
+            .filter_map(|entry| {
+                let instance = entry.active.as_ref()?;
+                if instance.timer.enabled() {
+                    instance
+                        .timer
+                        .next()
+                        .map(|next| next.saturating_duration_since(Instant::now()))
+                } else {
+                    instance
+                        .deadline
+                        .map(|next| Duration::from_millis(next.saturating_sub(now_ms())))
+                }
+            })
             .min()
-            .map_or(1_000, |next| next.saturating_sub(now_ms()).clamp(10, 1_000));
-        Duration::from_millis(delay)
+            .unwrap_or(Duration::from_secs(1));
+        delay.clamp(Duration::from_millis(10), Duration::from_secs(1))
     }
 
     pub(super) fn catalog(&self) -> Vec<Value> {
@@ -607,7 +683,13 @@ impl Entry {
     }
 
     fn in_use(&self) -> bool {
-        self.updating || self.leased.is_some() || Arc::strong_count(&self.voice) > 1
+        self.updating
+            || self.leased.is_some()
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|instance| instance.timer.playing())
+            || Arc::strong_count(&self.voice) > 1
     }
 
     fn registration(&self) -> Option<&Registration> {
@@ -693,6 +775,7 @@ impl Instance {
             registration: Arc::new(serde_json::from_value(json!({"apiVersion": API_VERSION}))?),
             state,
             deadline: None,
+            timer: Schedule::new(false),
             revision: random_id()?,
             next_id: 0,
             wake_subscription: 0,
@@ -701,7 +784,7 @@ impl Instance {
             .invoke(
                 "initialize",
                 json!({
-                    "apiVersion": API_VERSION, "state": saved,
+                    "apiVersion": API_VERSION, "state": saved, "timerAlarms": true,
                 }),
                 services::Call::default(),
                 |value| serde_json::from_str(value),
@@ -709,6 +792,7 @@ impl Instance {
             .context("WASM plugin initialization failed")?;
         instance.registration = Arc::new(serde_json::from_value(registration)?);
         instance.registration.validate_wasm(manifest)?;
+        instance.timer = Schedule::new(instance.registration.timer_alarms);
         if instance.registration.wake_events {
             ensure!(
                 cfg!(feature = "wake-tflite"),
@@ -748,6 +832,7 @@ impl Instance {
             method,
             params,
             now: Some(now_ms()),
+            timer_clock: (self.timer.enabled() || method == "initialize").then(timer_clock),
         })?;
         let mut reply = None;
         let mut decode = Some(decode);
@@ -832,15 +917,27 @@ impl Instance {
         } else if method == "tick" {
             self.deadline = None;
         }
+        if method != POLL_METHOD {
+            self.timer.changed();
+        }
         Ok(Some(signals))
     }
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    goodwin_plugin::timer::countdown_time_ms()
+}
+
+fn timer_clock() -> goodwin_plugin::timer::ClockSample {
+    static SESSION: OnceLock<Option<u64>> = OnceLock::new();
+    let mut sample = goodwin_plugin::timer::clock_sample();
+    sample.session = *SESSION.get_or_init(|| {
+        let mut bytes = [0; 8];
+        getrandom::fill(&mut bytes).ok()?;
+        let id = u64::from_le_bytes(bytes) & ((1_u64 << 53) - 1);
+        (id != 0).then_some(id)
+    });
+    sample
 }
 
 fn random_id() -> Result<String> {

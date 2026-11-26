@@ -15,6 +15,7 @@ use goodwin_plugin::{
         MAX_RECORDING_BYTES, MAX_SPEECH_BYTES, MODELS_METHOD, ModelCatalog, ModelsRequest,
         SPEECH_CHUNK_NOTIFICATION, SPEECH_STREAM_METHOD, SpeechAudio, SpeechRequest,
     },
+    timer::{POLL_METHOD, Poll},
     wake::{EVENT_METHOD, Event, Observation},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -30,6 +31,7 @@ use tokio::{
 };
 
 use super::package::{API_VERSION, Manifest};
+use super::timer::{Delivery, Signal};
 use crate::plugin_rpc;
 
 pub(crate) use super::registration::{Page, Registration, Tool};
@@ -69,6 +71,20 @@ struct Call {
     response: Option<CallResponse>,
     chunks: Option<StreamChunks>,
     limits: CallLimits,
+}
+
+impl Call {
+    fn timer(poll: Poll) -> Result<Self> {
+        Ok(Self {
+            method: POLL_METHOD,
+            params: to_raw_value(&poll)?,
+            #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
+            connection: None,
+            response: None,
+            chunks: None,
+            limits: CallLimits::STANDARD,
+        })
+    }
 }
 
 type CallResponse = oneshot::Sender<Result<Box<RawValue>>>;
@@ -206,7 +222,7 @@ impl Process {
         root: &Path,
         data: &Path,
         manifest: &Manifest,
-        sound: mpsc::Sender<()>,
+        sound: mpsc::Sender<Signal>,
         catalog_changes: watch::Sender<()>,
     ) -> Result<(Self, Registration)> {
         if manifest.is_wasm() {
@@ -240,11 +256,12 @@ impl Process {
             .wake_events
             .then(|| Arc::new(AtomicU64::new(registration.wake_subscription)));
         let subscription = wake_subscription.clone();
+        let timer_alarms = registration.timer_alarms;
         tokio::spawn(async move {
             loop {
                 let result = tokio::select! {
                     _ = stopping.changed() => Ok(false),
-                    result = run(&mut native.input, &mut native.output, &mut incoming, &sound, subscription.as_deref()) => result,
+                    result = run(&mut native.input, &mut native.output, &mut incoming, &sound, subscription.as_deref(), timer_alarms) => result,
                 };
                 native.close().await;
                 match result {
@@ -495,7 +512,7 @@ impl NativeProcess {
         let ready = async {
             let initialize = json!({
                 "jsonrpc": "2.0", "id": 0, "method": "initialize",
-                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true },
+                "params": { "apiVersion": API_VERSION, "chatStreaming": true, "speechStreaming": true, "wakeEvents": true, "timerAlarms": true },
             });
             write(&mut input, &initialize, FRAME_LIMIT).await?;
             let reply = decode_reply(output.read(FRAME_LIMIT).await?, 0)??;
@@ -550,50 +567,76 @@ async fn run(
     input: &mut ChildStdin,
     output: &mut Frames,
     incoming: &mut mpsc::Receiver<Call>,
-    sound: &mpsc::Sender<()>,
+    sound: &mpsc::Sender<Signal>,
     wake_subscription: Option<&AtomicU64>,
+    timer_alarms: bool,
 ) -> Result<bool> {
     let mut id = 0u64;
+    let mut timer = Delivery::new(timer_alarms);
     loop {
-        tokio::select! {
-            frame = output.read(FRAME_LIMIT) => notify(frame?, sound)?,
-            call = incoming.recv() => {
-                let Some(mut call) = call else { return Ok(false); };
-                if call.response.as_ref().is_some_and(oneshot::Sender::is_closed) { continue; }
-                id += 1;
-                let message = plugin_rpc::Request {
-                    jsonrpc: "2.0", id, method: call.method, params: &call.params, now: None,
-                };
-                let request = match encode(&message, call.limits.request) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        complete(call.response, Err(error));
-                        continue;
-                    }
-                };
-                let mut response = call.response.take();
-                let exchange = exchange(input, output, sound, wake_subscription, id, &call, &request);
-                let result = if let Some(StreamChunks::Speech(chunks)) = &call.chunks {
-                    match finish_speech_exchange(exchange, chunks).await {
-                        Ok(result) => result,
-                        Err(error) => {
-                            log::warn!("Restarting native speech plugin: {error:#}");
-                            complete(response, Err(error));
-                            return Ok(true);
-                        }
-                    }
-                } else {
-                    tokio::select! {
-                        biased;
-                        result = timeout(call.limits.timeout, exchange) => result.context("Plugin RPC timed out")??,
-                        () = response_closed(response.as_mut()) => {
-                            // A cancelled exchange can leave a partial frame in either pipe.
-                            return Ok(true);
-                        }
-                    }
-                };
-                complete(response, result);
+        let mut call = tokio::select! {
+            frame = output.read(FRAME_LIMIT) => {
+                notify(frame?, sound)?;
+                continue;
             }
+            call = incoming.recv() => {
+                let Some(call) = call else { return Ok(false); };
+                call
+            }
+            poll = timer.wait(), if timer.enabled() => Call::timer(poll)?,
+        };
+        if call
+            .response
+            .as_ref()
+            .is_some_and(oneshot::Sender::is_closed)
+        {
+            continue;
+        }
+        id += 1;
+        let message = plugin_rpc::Request {
+            jsonrpc: "2.0",
+            id,
+            method: call.method,
+            params: &call.params,
+            now: None,
+            timer_clock: None,
+        };
+        let request = match encode(&message, call.limits.request) {
+            Ok(request) => request,
+            Err(error) => {
+                complete(call.response, Err(error));
+                continue;
+            }
+        };
+        let mut response = call.response.take();
+        let exchange = exchange(input, output, sound, wake_subscription, id, &call, &request);
+        let result = if let Some(StreamChunks::Speech(chunks)) = &call.chunks {
+            match finish_speech_exchange(exchange, chunks).await {
+                Ok(result) => result,
+                Err(error) => {
+                    log::warn!("Restarting native speech plugin: {error:#}");
+                    complete(response, Err(error));
+                    return Ok(true);
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                result = timeout(call.limits.timeout, exchange) => result.context("Plugin RPC timed out")??,
+                () = response_closed(response.as_mut()) => {
+                    // A cancelled exchange can leave a partial frame in either pipe.
+                    return Ok(true);
+                }
+            }
+        };
+        if call.method == POLL_METHOD {
+            timer.update(
+                result.and_then(|reply| Ok(serde_json::from_str(reply.get())?)),
+                sound,
+            );
+        } else {
+            timer.changed();
+            complete(response, result);
         }
     }
 }
@@ -635,7 +678,7 @@ fn complete(response: Option<CallResponse>, result: Result<Box<RawValue>>) {
 async fn exchange(
     input: &mut ChildStdin,
     output: &mut Frames,
-    sound: &mpsc::Sender<()>,
+    sound: &mpsc::Sender<Signal>,
     wake_subscription: Option<&AtomicU64>,
     id: u64,
     call: &Call,
@@ -738,14 +781,14 @@ fn response(message: Value, id: u64) -> Result<Result<Value>> {
     Ok(decode_reply(message, id)?.and_then(|value| Ok(serde_json::from_str(value.get())?)))
 }
 
-fn notify(message: WireReply, sound: &mpsc::Sender<()>) -> Result<()> {
+fn notify(message: WireReply, sound: &mpsc::Sender<Signal>) -> Result<()> {
     ensure!(
         message.jsonrpc == "2.0"
             && message.id.is_none()
             && message.method.as_deref() == Some("play_timer_signal"),
         "Unexpected plugin notification"
     );
-    if sound.try_send(()).is_err() {
+    if sound.try_send(Signal::default()).is_err() {
         log::warn!("Timer signal queue is full or unavailable");
     }
     Ok(())

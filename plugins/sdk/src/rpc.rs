@@ -118,6 +118,7 @@ pub struct Frame<'input> {
     pub id: u64,
     pub method: String,
     pub now_ms: Option<u64>,
+    pub timer_clock: Option<crate::timer::ClockSample>,
     params: &'input [u8],
 }
 
@@ -127,14 +128,17 @@ impl<'input> Frame<'input> {
         if input.len() > BULK_FRAME {
             return Self::read_bulk(input);
         }
-        let [version, id, method, params, now_ms] =
-            json_codec::object_fields(input, ["jsonrpc", "id", "method", "params", "nowMs"])?;
+        let [version, id, method, params, now_ms, timer_clock] = json_codec::object_fields(
+            input,
+            ["jsonrpc", "id", "method", "params", "nowMs", "timerClock"],
+        )?;
         let version: Option<String> = version.map(json_codec::from_slice).transpose()?;
         check_version(version.as_deref())?;
         Ok(Self {
             id: json_codec::from_slice(id.ok_or(FrameError::MissingId)?)?,
             method: json_codec::from_slice(method.ok_or(FrameError::MissingMethod)?)?,
             now_ms: now_ms.map(json_codec::from_slice).transpose()?,
+            timer_clock: timer_clock.map(json_codec::from_slice).transpose()?,
             params: params.ok_or(FrameError::MissingParameters)?,
         })
     }
@@ -148,6 +152,7 @@ impl<'input> Frame<'input> {
             id: u64,
             method: String,
             now_ms: Option<u64>,
+            timer_clock: Option<crate::timer::ClockSample>,
             #[serde(borrow)]
             params: &'a RawValue,
         }
@@ -160,6 +165,7 @@ impl<'input> Frame<'input> {
             id: frame.id,
             method: frame.method,
             now_ms: frame.now_ms,
+            timer_clock: frame.timer_clock,
             params: frame.params.get().as_bytes(),
         })
     }
@@ -205,4 +211,7 @@ pub(crate) struct Initialize {
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(default)]
     pub wake_events: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(default)]
+    pub timer_alarms: bool,
 }

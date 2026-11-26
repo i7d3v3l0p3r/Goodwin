@@ -189,7 +189,12 @@ impl Plugins {
                 }
             };
             let entry = runtime.entries.get_mut(&id).ok_or(Failure::NotFound)?;
-            if entry.leased.is_some() {
+            if entry.leased.is_some()
+                || entry
+                    .active
+                    .as_ref()
+                    .is_some_and(|instance| instance.timer.playing())
+            {
                 return Err(Failure::Busy);
             }
             let instance = entry.active.take().ok_or(Failure::Unavailable)?;

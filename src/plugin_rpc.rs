@@ -9,6 +9,8 @@ pub(crate) struct Request<'a, T> {
     pub params: T,
     #[serde(rename = "nowMs", skip_serializing_if = "Option::is_none")]
     pub now: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "timerClock")]
+    pub timer_clock: Option<goodwin_plugin::timer::ClockSample>,
 }
 
 #[derive(Deserialize)]

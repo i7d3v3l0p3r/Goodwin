@@ -122,6 +122,21 @@ For incremental PCM playback, implement `supports_speech_streaming` and `synthes
 
 To stream plain text replies to the panel, implement `supports_chat_streaming` and `complete_stream`. The SDK advertises `chatStreaming: true` when the host sends that flag in `initialize`. The host calls `provider.complete_stream` with the chat request and no tools. Emit nonempty UTF-8 text chunks of up to 16 KiB and no more than 256,000 bytes total. The SDK sends each chunk as a `provider.chat_chunk` notification with `{requestId, text}`, followed by a null result or an RPC error. Keep `provider.complete` available for the voice pipeline and hosts without streaming support.
 
+## Timer alarms
+
+The host offers `timerAlarms` during initialization. A plugin that accepts it
+returns `timerAlarms: true` in its registration and handles `timer.poll`. The
+request carries the optional `played` ID. The response carries an optional
+`alarm` ID and `wakeAfterMs` duration. Persist a pending alarm before offering
+it, accept repeated acknowledgements, and clear the alarm after the host
+reports successful playback. The host schedules elapsed time using a monotonic
+clock. After reboot the timer plugin uses the saved wall-clock deadline once
+the clock is available. A timer started offline uses a boot-relative deadline
+and resumes from its last saved remaining duration if the device reboots
+before synchronization. An interruption after playback and before the
+acknowledgement is saved can cause the sound to repeat. Existing packages can
+keep using the original timer signal contract.
+
 ## Wake-word events
 
 Goodwin offers `wakeEvents` during initialization. Implement `supports_wake_events`, `wake_subscription`, and `wake_event` in the Rust SDK to observe the wake detector. Return zero from `wake_subscription` to disable delivery and a fresh nonzero token to subscribe. The SDK reports the initial token in the initialize result and any changes on subsequent RPC responses. Observations include that token so a plugin can discard queued events from a previous subscription. Require a signed-in session on panel routes that control a subscription or expose microphone data.

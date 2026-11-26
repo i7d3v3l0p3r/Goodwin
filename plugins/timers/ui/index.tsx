@@ -7,7 +7,7 @@ const copy = {
     minutes: "Minutes", seconds: "Seconds", name: "Name (optional)", start: "Start timer",
     active: "Active", completed: "Completed", unnamed: "Timer", cancel: "Cancel",
     loading: "Loading timers…", empty: "No active timers.", failed: "Could not reach the timer plugin.",
-    stale: "Showing the last available timer data.", cancelNamed: (name: string) => `Cancel timer “${name}”?`,
+    stale: "Showing the last available timer data.", waitingForClock: "Waiting for the device clock", cancelNamed: (name: string) => `Cancel timer “${name}”?`,
     errors: {
       invalid_timer_duration: "Enter a duration between one second and seven days.",
       invalid_timer_name: "Enter a name of up to 64 characters.",
@@ -19,7 +19,7 @@ const copy = {
     minutes: "Минуты", seconds: "Секунды", name: "Имя (необязательно)", start: "Поставить таймер",
     active: "Активные", completed: "Завершённые", unnamed: "Таймер", cancel: "Отменить",
     loading: "Загружаем таймеры…", empty: "Активных таймеров нет.", failed: "Не удалось обратиться к плагину таймеров.",
-    stale: "Показаны последние доступные данные.", cancelNamed: (name: string) => `Отменить таймер «${name}»?`,
+    stale: "Показаны последние доступные данные.", waitingForClock: "Ждём синхронизации часов устройства", cancelNamed: (name: string) => `Отменить таймер «${name}»?`,
     errors: {
       invalid_timer_duration: "Укажите длительность от одной секунды до семи дней.",
       invalid_timer_name: "Введите имя длиной до 64 символов.",
@@ -34,6 +34,7 @@ interface Timer {
   name: string | null;
   expiresAt: number;
   completed: boolean;
+  waitingForClock?: boolean;
 }
 
 interface TimerSnapshot {
@@ -172,7 +173,9 @@ export default function TimersPage({ language, request }: PluginContext) {
                 const remaining = createMemo(() => Math.max(0, Math.ceil((timer().expiresAt - now()) / 1000)));
                 return <li class="timer-active">
                   <span>{timer().name || text.unnamed}</span>
-                  <time datetime={`PT${remaining()}S`}>{countdown(remaining())}</time>
+                  <Show when={!timer().waitingForClock} fallback={<StatusIndicator tone="pending">{text.waitingForClock}</StatusIndicator>}>
+                    <time datetime={`PT${remaining()}S`}>{countdown(remaining())}</time>
+                  </Show>
                   <button class="gw-button" type="button" disabled={busy() || connectionFailed()}
                     aria-label={text.cancelNamed(timer().name || text.unnamed)} onClick={() => {
                       if (window.confirm(text.cancelNamed(timer().name || text.unnamed))) {
@@ -195,7 +198,9 @@ export default function TimersPage({ language, request }: PluginContext) {
               {timer => (
                 <li class="timer-completed">
                   <span>{timer().name || text.unnamed}</span>
-                  <time datetime={new Date(timer().expiresAt).toISOString()}>{formatter.format(timer().expiresAt)}</time>
+                  <Show when={timer().expiresAt >= Date.UTC(2020, 0, 1)}>
+                    <time datetime={new Date(timer().expiresAt).toISOString()}>{formatter.format(timer().expiresAt)}</time>
+                  </Show>
                 </li>
               )}
             </For>

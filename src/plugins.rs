@@ -9,6 +9,7 @@ pub(crate) mod registration;
 mod registry;
 pub(crate) mod settings;
 pub(crate) mod store;
+pub(crate) mod timer;
 #[cfg(not(target_os = "espidf"))]
 mod tools;
 

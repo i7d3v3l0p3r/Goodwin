@@ -122,6 +122,8 @@ pub struct Registration {
     pub(crate) wake_events: bool,
     #[serde(default)]
     pub(crate) wake_subscription: u64,
+    #[serde(default)]
+    pub(crate) timer_alarms: bool,
 }
 
 impl Registration {

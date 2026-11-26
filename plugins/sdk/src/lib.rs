@@ -36,6 +36,7 @@ pub mod rpc;
 pub mod services;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod settings;
+pub mod timer;
 pub mod wake;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +55,16 @@ pub trait Plugin {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn ready(&mut self, _host: Host) {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_timer_alarms(&self) -> bool {
+        false
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_timer(&mut self, _poll: timer::Poll) -> Result<timer::Status> {
+        goodwin_error::bail!("Timer alarms are unavailable")
+    }
 
     fn http(&mut self, _request: HttpRequest) -> Result<HttpResponse> {
         Ok(HttpResponse::json(404, json!({"error": "not_found"})))
@@ -162,10 +173,15 @@ type SendFrame = dyn FnMut(&[u8]) -> Result<()> + Send;
 struct Output {
     send: Box<SendFrame>,
     pending_signals: Option<usize>,
+    timer_alarms: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Host {
+    pub fn timer_alarms(&self) -> bool {
+        self.0.lock().expect("plugin output").timer_alarms
+    }
+
     pub fn play_timer_signal(&self) -> Result<()> {
         let mut output = self.0.lock().expect("plugin output");
         if let Some(count) = &mut output.pending_signals {
@@ -219,15 +235,20 @@ fn run_protocol(
         init.method == "initialize" && params.api_version == 1,
         "Unsupported Goodwin protocol"
     );
+    let timer_alarms = params.timer_alarms && plugin.supports_timer_alarms();
     let host = Host(Arc::new(Mutex::new(Output {
         send: Box::new(send),
         pending_signals: Some(0),
+        timer_alarms,
     })));
     plugin.ready(host.clone());
     let speech_streaming = params.speech_streaming && plugin.supports_speech_streaming();
     let chat_streaming = params.chat_streaming && plugin.supports_chat_streaming();
     let wake_events = params.wake_events && plugin.supports_wake_events();
     let mut registration = plugin.registration();
+    if timer_alarms {
+        registration["timerAlarms"] = json!(true);
+    }
     if speech_streaming {
         registration["speechStreaming"] = json!(true);
     }
@@ -245,6 +266,11 @@ fn run_protocol(
         let request = rpc::Frame::read(line.as_bytes())?;
         let previous_subscription = wake_events.then(|| plugin.wake_subscription());
         let result = match request.method.as_str() {
+            timer::POLL_METHOD if timer_alarms => dispatch(&request, |poll| {
+                Ok(Payload::Json(serde_json::to_value(
+                    plugin.poll_timer(poll)?,
+                )?))
+            }),
             "http" => dispatch(&request, |request| plugin.http(request).map(Payload::Http)),
             "tool" => request
                 .params()

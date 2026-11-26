@@ -6,7 +6,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use goodwin_plugin::rpc::{Frame, FrameError};
+use goodwin_plugin::{
+    rpc::{Frame, FrameError},
+    timer::{ClockSample, MIN_TRUSTED_WALL_MS, POLL_METHOD, Poll},
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use spin::Mutex;
@@ -19,6 +22,8 @@ use crate::{
 const FRAME_LIMIT: usize = 128 * 1024;
 static mut BUFFER: [u8; FRAME_LIMIT] = [0; FRAME_LIMIT];
 static TIME: AtomicU64 = AtomicU64::new(0);
+static WALL: AtomicU64 = AtomicU64::new(0);
+static SESSION: AtomicU64 = AtomicU64::new(0);
 static PLUGIN: Mutex<Option<Timers>> = Mutex::new(None);
 
 #[global_allocator]
@@ -34,14 +39,22 @@ unsafe extern "C" {
     fn play_timer_signal();
 }
 
-pub fn now() -> u64 {
-    TIME.load(Ordering::Relaxed)
+pub fn sample() -> ClockSample {
+    let wall = WALL.load(Ordering::Relaxed);
+    let session = SESSION.load(Ordering::Relaxed);
+    ClockSample {
+        elapsed_ms: TIME.load(Ordering::Relaxed),
+        wall_ms: (wall != 0).then_some(wall),
+        session: (session != 0).then_some(session),
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Request {
     state: Option<State>,
+    #[serde(default)]
+    timer_alarms: bool,
 }
 
 #[derive(Debug)]
@@ -102,15 +115,26 @@ impl From<serde_json::Error> for CallError {
 
 fn dispatch(request: Frame<'_>) -> Result<Value, CallError> {
     let mut plugin = PLUGIN.try_lock().ok_or(CallError::Busy)?;
-    TIME.store(
-        request.now_ms.ok_or(CallError::MissingTime)?,
-        Ordering::Relaxed,
-    );
+    let sample = if let Some(sample) = request.timer_clock {
+        sample
+    } else {
+        let timestamp = request.now_ms.ok_or(CallError::MissingTime)?;
+        ClockSample {
+            elapsed_ms: timestamp,
+            wall_ms: (timestamp >= MIN_TRUSTED_WALL_MS).then_some(timestamp),
+            session: None,
+        }
+    };
+    TIME.store(sample.elapsed_ms, Ordering::Relaxed);
+    WALL.store(sample.wall_ms.unwrap_or_default(), Ordering::Relaxed);
+    SESSION.store(sample.session.unwrap_or_default(), Ordering::Relaxed);
+    let mut timer_alarms = false;
     if request.method == "initialize" {
         if plugin.is_some() {
             return Err(CallError::AlreadyInitialized);
         }
         let parameters: Request = request.params()?;
+        timer_alarms = parameters.timer_alarms;
         *plugin = Some(Timers {
             clock: Clock::from_state(parameters.state.unwrap_or_default()),
             choices: None,
@@ -118,13 +142,22 @@ fn dispatch(request: Frame<'_>) -> Result<Value, CallError> {
     }
     let plugin = plugin.as_mut().ok_or(CallError::NotInitialized)?;
     let result = match request.method.as_str() {
-        "initialize" => plugin.registration(),
+        "initialize" => {
+            let mut registration = plugin.registration();
+            if timer_alarms {
+                registration["timerAlarms"] = json!(true);
+            }
+            registration
+        }
         "http" => serde_json::to_value(plugin.http(request.params()?)?)?,
         "tool" => plugin.tool(request.params()?)?,
+        POLL_METHOD => serde_json::to_value(plugin.clock.poll(request.params()?)?)?,
         "tick" => {
-            for _ in 0..plugin.clock.finish_due()? {
-                // The host queues sounds after persisting the new state.
+            let mut poll = Poll::default();
+            while let Some(alarm) = plugin.clock.poll(poll)?.alarm {
+                // Legacy hosts enqueue sounds after saving this reply.
                 unsafe { play_timer_signal() };
+                poll.played = Some(alarm);
             }
             Value::Null
         }

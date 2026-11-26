@@ -158,12 +158,20 @@ fn run_device() -> Result<()> {
         #[cfg(feature = "wasm-plugins")]
         if let Some(plugins) = panel.plugins.get() {
             let signals = plugins.take_signals();
-            if signals != 0 {
+            let alarm = plugins.take_timer_alarm();
+            if signals != 0 || alarm.is_some() {
                 #[cfg(feature = "wake-tflite")]
                 if let Some(detector) = &mut detector {
                     detector.reset();
                 }
                 let _ = audio.set_receiving(false);
+                if let Some(alarm) = alarm {
+                    let played = audio.play_timer_signal();
+                    if let Err(error) = &played {
+                        log::warn!("Play plugin timer signal: {error:#}");
+                    }
+                    plugins.finish_timer_alarm(alarm, played.is_ok());
+                }
                 for _ in 0..signals {
                     if let Err(error) = audio.play_timer_signal() {
                         log::warn!("Play plugin timer signal: {error:#}");

@@ -3,7 +3,7 @@ use std::{
     io::Read,
     path::PathBuf,
     sync::{LazyLock, Mutex},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 use crate::plugin_wasm::Guest;
@@ -29,7 +29,7 @@ pub(super) async fn start(
     root: &Path,
     data: &Path,
     manifest: &Manifest,
-    sound: mpsc::Sender<()>,
+    sound: mpsc::Sender<Signal>,
     catalog_changes: watch::Sender<()>,
 ) -> Result<(Process, Registration)> {
     let state_path = manifest
@@ -62,8 +62,9 @@ pub(super) async fn start(
             jsonrpc: "2.0",
             id: 0,
             method: "initialize",
-            params: json!({ "apiVersion": API_VERSION, "state": state }),
+            params: json!({ "apiVersion": API_VERSION, "state": state, "timerAlarms": true }),
             now: Some(now_ms()),
+            timer_clock: Some(goodwin_plugin::timer::clock_sample()),
         };
         let (mut reply, _) = instance
             .invoke::<WireReply>(
@@ -95,6 +96,7 @@ pub(super) async fn start(
         .wake_events
         .then(|| Arc::new(AtomicU64::new(registration.wake_subscription)));
     let subscription = wake_subscription.clone();
+    let timer_alarms = registration.timer_alarms;
     tokio::spawn(async move {
         if let Err(error) = serve(
             &instance,
@@ -102,7 +104,7 @@ pub(super) async fn start(
             &mut stopping,
             &sound,
             state_path.as_deref(),
-            deadline,
+            (deadline, timer_alarms),
             subscription.as_deref(),
         )
         .await
@@ -130,17 +132,20 @@ async fn serve(
     instance: &Instance,
     incoming: &mut mpsc::Receiver<Call>,
     stopping: &mut watch::Receiver<bool>,
-    sound: &mpsc::Sender<()>,
+    sound: &mpsc::Sender<Signal>,
     state_path: Option<&Path>,
-    mut deadline: Option<u64>,
+    timing: (Option<u64>, bool),
     wake_subscription: Option<&AtomicU64>,
 ) -> Result<()> {
+    let (mut deadline, timer_alarms) = timing;
+    let mut timer = Delivery::new(timer_alarms);
     let mut id = 0u64;
     loop {
         let mut call = tokio::select! {
             biased;
             _ = stopping.changed() => return Ok(()),
-            _ = wait_for_deadline(deadline) => Call {
+            poll = timer.wait(), if timer_alarms => Call::timer(poll)?,
+            _ = wait_for_deadline(deadline), if !timer_alarms => Call {
                 method: "tick",
                 params: RawValue::from_string("{}".to_owned())?,
                 connection: None,
@@ -167,6 +172,7 @@ async fn serve(
             method: call.method,
             params: call.params,
             now: Some(now_ms()),
+            timer_clock: timer_alarms.then(goodwin_plugin::timer::clock_sample),
         };
         let Some((mut reply, signals)) = instance
             .invoke::<WireReply>(
@@ -201,7 +207,7 @@ async fn serve(
                 deadline = deadline.map(|wake_at| wake_at.max(now_ms().saturating_add(10)));
             }
             for _ in 0..signals {
-                if sound.try_send(()).is_err() {
+                if sound.try_send(Signal::default()).is_err() {
                     log::warn!("Timer signal queue is full or unavailable");
                     break;
                 }
@@ -210,11 +216,17 @@ async fn serve(
             // Retry scheduled work after a recoverable guest error.
             deadline = Some(now_ms().saturating_add(1000));
         }
-        if call.method == "tick" {
+        if call.method == POLL_METHOD {
+            timer.update(
+                result.and_then(|reply| Ok(serde_json::from_str(reply.get())?)),
+                sound,
+            );
+        } else if call.method == "tick" {
             if let Err(error) = result {
                 log::warn!("WASM plugin scheduled call failed: {error}");
             }
         } else {
+            timer.changed();
             if call.method == EVENT_METHOD
                 && let Err(error) = &result
             {
@@ -226,10 +238,7 @@ async fn serve(
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    goodwin_plugin::timer::countdown_time_ms()
 }
 
 async fn wait_for_deadline(deadline: Option<u64>) {
@@ -340,6 +349,7 @@ impl Instance {
                 method: request["method"].as_str().unwrap(),
                 params: &request["params"],
                 now: Some(now_ms()),
+                timer_clock: Some(goodwin_plugin::timer::clock_sample()),
             },
             None,
             CallLimits::STANDARD,
@@ -474,23 +484,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["created"]["seconds"], 1);
-        assert_eq!(
-            timeout(Duration::from_secs(3), audio.recv()).await.unwrap(),
-            Some(())
-        );
+        let signal = timeout(Duration::from_secs(3), audio.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        signal.finish(false);
+        let in_flight = timeout(Duration::from_secs(3), audio.recv())
+            .await
+            .unwrap()
+            .unwrap();
         plugin.stop().await;
+        drop(in_flight);
         let saved: Value = goodwin_plugin::read_json(&state_file).unwrap();
         assert_eq!(saved["next_id"], 42);
         assert_eq!(saved["timers"][1]["completed"], true);
-        let (restarted, _) = Process::start(dir.path(), dir.path(), &manifest, sound, changes)
-            .await
-            .unwrap();
+        assert_eq!(saved["pending_alarms"], json!([42]));
+        let (restarted, _) = Process::start(
+            dir.path(),
+            dir.path(),
+            &manifest,
+            sound.clone(),
+            changes.clone(),
+        )
+        .await
+        .unwrap();
         let result = restarted
             .call("http", json!({"method":"GET","path":"/timers","body":null}))
             .await
             .unwrap();
         assert_eq!(result["body"]["timers"][0]["name"], "Чай");
         assert_eq!(result["body"]["timers"][1]["completed"], true);
+        let replay = timeout(Duration::from_secs(3), audio.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        replay.finish(true);
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let saved: Value = goodwin_plugin::read_json(&state_file).unwrap();
+                if saved["pending_alarms"].is_null() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        restarted.stop().await;
+        let (restarted, _) = Process::start(dir.path(), dir.path(), &manifest, sound, changes)
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(300), audio.recv())
+                .await
+                .is_err()
+        );
         restarted.stop().await;
     }
 

@@ -26,6 +26,7 @@ use super::{
     registry::{Active, Entry, Registry, Status, View},
     settings::{self, Field},
     store::{Store, storage},
+    timer::Signal,
 };
 
 #[derive(Clone)]
@@ -36,7 +37,7 @@ struct Manager {
     registry: Registry,
     lifecycle: Mutex<()>,
     player: Player,
-    sound: Mutex<Option<mpsc::Sender<()>>>,
+    sound: Mutex<Option<mpsc::Sender<Signal>>>,
 }
 
 #[derive(Serialize)]
@@ -662,14 +663,19 @@ impl Manager {
             let mut sound = self.sound.lock().await;
             sound
                 .get_or_insert_with(|| {
-                    let (send, mut receive) = mpsc::channel(64);
+                    let (send, mut receive) = mpsc::channel::<Signal>(64);
                     let player = self.player.clone();
                     tokio::spawn(async move {
                         let signal = timer_signal();
-                        while receive.recv().await.is_some() {
-                            if let Err(error) = player.play(&signal).await {
+                        while let Some(alarm) = receive.recv().await {
+                            if alarm.cancelled() {
+                                continue;
+                            }
+                            let played = player.play(&signal).await;
+                            if let Err(error) = &played {
                                 log::warn!("Could not play timer signal: {error:#}");
                             }
+                            alarm.finish(played.is_ok());
                         }
                     });
                     send

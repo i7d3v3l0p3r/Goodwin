@@ -34,8 +34,21 @@ impl Plugin for Timers {
     }
 
     fn ready(&mut self, host: Host) {
-        let clock = self.clock.clone();
-        thread::spawn(move || clock.schedule(host));
+        if !host.timer_alarms() {
+            let clock = self.clock.clone();
+            thread::spawn(move || clock.schedule(host));
+        }
+    }
+
+    fn supports_timer_alarms(&self) -> bool {
+        true
+    }
+
+    fn poll_timer(
+        &mut self,
+        poll: goodwin_plugin::timer::Poll,
+    ) -> goodwin_error::Result<goodwin_plugin::timer::Status> {
+        Ok(self.clock.poll(poll)?)
     }
 
     fn http(&mut self, request: HttpRequest) -> goodwin_error::Result<HttpResponse> {
@@ -83,7 +96,7 @@ impl Timers {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/timers") => Ok(HttpResponse::json(200, self.clock.list())),
             ("POST", "/timers") => match self.clock.create(&request.body)? {
-                Ok(timer) => Ok(HttpResponse::json(201, json!(timer))),
+                Ok(timer) => Ok(HttpResponse::json(201, timer.view())),
                 Err("timer_limit") => Ok(HttpResponse::json(409, json!({"error": "timer_limit"}))),
                 Err(error) => Ok(HttpResponse::json(400, json!({"error": error}))),
             },

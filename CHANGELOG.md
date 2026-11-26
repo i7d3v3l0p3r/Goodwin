@@ -4,6 +4,7 @@
 
 ### English
 
+- Timers on Mini 3 and ESP32-S3 preserve their countdown through wall-clock corrections and retry an unconfirmed alarm after restart.
 - Provider model catalogs are processed incrementally. Speech playback rejects incompatible PCM metadata before decoding audio.
 - Plugin installs and updates are confirmed after startup. A failed update restores the previous package and data. On ESP32-S3, other plugins can keep running during the update.
 - Fixed memory alignment in the WASM and TensorFlow Lite Micro runtimes on Mini 3 and ESP32-S3.
@@ -20,6 +21,7 @@
 
 ### Русский
 
+- Таймеры на Мини 3 и ESP32-S3 сохраняют ход отсчёта при коррекции системных часов и повторяют неподтверждённый сигнал после перезапуска.
 - Гудвин разбирает каталоги моделей провайдеров по мере загрузки. Озвучивание отклоняет несовместимые параметры PCM до декодирования звука.
 - Установка или обновление плагина подтверждается после запуска. При ошибке обновления Гудвин восстанавливает предыдущий пакет и его данные. На ESP32-S3 остальные плагины могут работать во время обновления.
 - Исправлено выравнивание памяти в WASM и TensorFlow Lite Micro на Мини 3 и ESP32-S3.

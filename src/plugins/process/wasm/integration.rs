@@ -204,6 +204,7 @@ async fn provider_catalog_larger_than_esp_guest_memory_is_processed_incrementall
                     capability: Capability::Chat,
                 },
                 now: None,
+                timer_clock: None,
             },
             Some(ProviderTarget::Connection("fixture".into())),
             CallLimits::STANDARD,
