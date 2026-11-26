@@ -4,6 +4,7 @@
 
 ### English
 
+- ESP32-S3 diagnostics report how much audio reaches the wake detector and the largest delay behind captured audio.
 - ESP32-S3 plays due timer alarms during pauses in streamed speech and then resumes the reply.
 - Mini 3 packages cross-compiled on Windows consistently link the patched WAMR runtime.
 - ESP32-S3 can play timer alarms while Wi-Fi reconnects or applies new settings.
@@ -30,6 +31,7 @@
 
 ### Русский
 
+- Диагностика ESP32-S3 показывает объём захвата для детектора активации и максимальное отставание от принятого звука.
 - ESP32-S3 воспроизводит сигналы таймеров в паузах потоковой озвучки и затем продолжает ответ.
 - При сборке пакетов Мини 3 на Windows в исполняемый файл попадает WAMR с исправлениями.
 - ESP32-S3 воспроизводит сигналы таймеров во время переподключения Wi-Fi и применения новых сетевых настроек.

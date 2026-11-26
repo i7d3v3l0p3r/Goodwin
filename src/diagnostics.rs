@@ -14,6 +14,10 @@ static TIMER_QUEUE_FULL: AtomicU32 = AtomicU32::new(0);
 static WAKE: Latency = Latency::new();
 static WAKE_FAILURES: AtomicU32 = AtomicU32::new(0);
 static CAPTURE_SKIPPED_FRAMES: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "espidf")]
+static WAKE_CAPTURE_SAMPLES: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "espidf")]
+static WAKE_MAX_LAG_SAMPLES: AtomicU32 = AtomicU32::new(0);
 static VOICE_CANCELLATIONS: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "espidf")]
 static FLASH: Latency = Latency::new();
@@ -85,6 +89,16 @@ pub(crate) fn capture_skipped(frames: usize) {
         &CAPTURE_SKIPPED_FRAMES,
         u32::try_from(frames).unwrap_or(u32::MAX),
     );
+}
+
+#[cfg(all(target_os = "espidf", feature = "wake-tflite"))]
+pub(crate) fn wake_capture(samples: usize) {
+    WAKE_CAPTURE_SAMPLES.fetch_add(samples as u32, Relaxed);
+}
+
+#[cfg(all(target_os = "espidf", feature = "wake-tflite"))]
+pub(crate) fn wake_lag(samples: usize) {
+    WAKE_MAX_LAG_SAMPLES.fetch_max(samples as u32, Relaxed);
 }
 
 pub(crate) fn voice_cancelled() {
@@ -170,6 +184,10 @@ pub(crate) struct Metrics {
     wake_inference: Timing,
     wake_inference_failed: u32,
     capture_skipped_frames: u32,
+    #[cfg(target_os = "espidf")]
+    wake_capture_samples: u32,
+    #[cfg(target_os = "espidf")]
+    wake_max_lag_samples: u32,
     voice_cancellations: u32,
     #[cfg(target_os = "espidf")]
     flash_writes: Timing,
@@ -186,6 +204,10 @@ pub(crate) fn snapshot() -> Metrics {
         wake_inference: WAKE.snapshot(),
         wake_inference_failed: WAKE_FAILURES.load(Relaxed),
         capture_skipped_frames: CAPTURE_SKIPPED_FRAMES.load(Relaxed),
+        #[cfg(target_os = "espidf")]
+        wake_capture_samples: WAKE_CAPTURE_SAMPLES.load(Relaxed),
+        #[cfg(target_os = "espidf")]
+        wake_max_lag_samples: WAKE_MAX_LAG_SAMPLES.load(Relaxed),
         voice_cancellations: VOICE_CANCELLATIONS.load(Relaxed),
         #[cfg(target_os = "espidf")]
         flash_writes: FLASH.snapshot(),

@@ -98,6 +98,14 @@ up to 768 KiB each and expanded contents up to 1 MiB. Files and settings
 persist in the plugin flash volume. The **Diagnostics** page shows usage
 of that volume and the two memory regions.
 
+The metrics export counts mono samples delivered to the wake detector in
+`wake_capture_samples`. Compare the count across an interval of continuous
+listening at 16 kHz, accounting for wraparound at 2³² samples.
+`wake_max_lag_samples` gives the largest distance in
+samples between a completed prediction and the latest captured audio since
+boot. Divide it by 16 for milliseconds. `capture_skipped_frames` counts the
+80 ms frames the detector skipped to catch up.
+
 Timers provides its own page, a local alarm and tools for models that support
 tool calling. Wake-word dataset uses frames from the INT8 detector and
 requires a wake-enabled build. For OpenAI-compatible, add a named HTTPS

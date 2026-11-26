@@ -140,6 +140,7 @@ impl Detector {
         audio.set_receiving(true)?;
         let mut mono = [0; FRAME_PAIRS];
         let samples = audio.read_mono(&mut mono)?;
+        crate::diagnostics::wake_capture(samples.len());
         let overflow = (self.history.len() + samples.len()).saturating_sub(HISTORY_LIMIT);
         self.history.drain(..overflow);
         self.first += overflow;
@@ -148,7 +149,12 @@ impl Detector {
         match self.predictions.try_recv() {
             Ok(prediction) => {
                 self.busy = false;
-                if prediction.generation == self.generation && prediction.end > self.first {
+                let lag = (prediction.generation == self.generation)
+                    .then(|| self.first + self.history.len() - prediction.end);
+                if let Some(lag) = lag {
+                    crate::diagnostics::wake_lag(lag);
+                }
+                if let Some(lag) = lag.filter(|_| prediction.end > self.first) {
                     let score = prediction.score?;
                     let baseline = self
                         .selection
@@ -156,7 +162,7 @@ impl Detector {
                         .unwrap_or(crate::model::WAKE_THRESHOLD);
                     let threshold = (baseline + 0.55 * (0.5 - sensitivity)).clamp(0.0, 1.0);
                     #[cfg(feature = "wasm-plugins")]
-                    self.observe_frame(prediction.end, gain, threshold, score);
+                    self.observe_frame(prediction.end, lag, gain, threshold, score);
                     #[cfg(feature = "esp-emulator")]
                     log::debug!(
                         "Wake score={score:.4} inference_us={}",
@@ -174,11 +180,10 @@ impl Detector {
                             .skip(start - self.first)
                             .copied()
                             .collect();
-                        let post_trigger = self.first + self.history.len() - prediction.end;
                         self.reset();
                         return Ok(Some(Recording::Wake {
                             captured,
-                            post_trigger,
+                            post_trigger: lag,
                         }));
                     }
                 }
@@ -230,7 +235,7 @@ impl Detector {
     }
 
     #[cfg(feature = "wasm-plugins")]
-    fn observe_frame(&self, end: usize, gain: f32, threshold: f32, score: f32) {
+    fn observe_frame(&self, end: usize, lag: usize, gain: f32, threshold: f32, score: f32) {
         use base64::{Engine, engine::general_purpose::STANDARD};
         use goodwin_plugin::wake::{Event, Frame, Model};
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -253,8 +258,7 @@ impl Detector {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let lag_ms =
-                (self.first + self.history.len() - end) as u64 * 1_000 / u64::from(CAPTURE_HZ);
+            let lag_ms = lag as u64 * 1_000 / u64::from(CAPTURE_HZ);
             Event::Frame(Frame {
                 stream: self.generation,
                 index: (start / FRAME_SAMPLES) as u64,

@@ -840,9 +840,13 @@ class Panel:
             inference = metrics["wake_inference"]
             assert inference["count"] > 0
             assert 0 < inference["p50_upper_us"] <= inference["p95_upper_us"] <= inference["max_us"]
+            assert metrics["wake_capture_samples"] >= inference["count"] * 1280
+            assert 0 < metrics["wake_max_lag_samples"] <= metrics["wake_capture_samples"]
             print("ESP wake inference", json.dumps({
                 **inference,
                 "capture_skipped_frames": metrics["capture_skipped_frames"],
+                "wake_capture_samples": metrics["wake_capture_samples"],
+                "wake_max_lag_samples": metrics["wake_max_lag_samples"],
                 "wake_inference_failed": metrics["wake_inference_failed"],
             }, sort_keys=True), flush=True)
         self.request("/api/chat/clear", "POST", {}, 204)
