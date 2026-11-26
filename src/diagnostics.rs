@@ -84,7 +84,7 @@ pub(crate) fn wake_frame(elapsed: Duration, failed: bool) {
 }
 
 #[cfg(all(target_os = "espidf", feature = "wake-tflite"))]
-pub(crate) fn capture_skipped(frames: usize) {
+pub(crate) fn capture_skipped(frames: u64) {
     add(
         &CAPTURE_SKIPPED_FRAMES,
         u32::try_from(frames).unwrap_or(u32::MAX),
@@ -97,8 +97,8 @@ pub(crate) fn wake_capture(samples: usize) {
 }
 
 #[cfg(all(target_os = "espidf", feature = "wake-tflite"))]
-pub(crate) fn wake_lag(samples: usize) {
-    WAKE_MAX_LAG_SAMPLES.fetch_max(samples as u32, Relaxed);
+pub(crate) fn wake_lag(samples: u64) {
+    WAKE_MAX_LAG_SAMPLES.fetch_max(u32::try_from(samples).unwrap_or(u32::MAX), Relaxed);
 }
 
 pub(crate) fn voice_cancelled() {

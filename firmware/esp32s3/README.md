@@ -104,7 +104,8 @@ listening at 16 kHz, accounting for wraparound at 2³² samples.
 `wake_max_lag_samples` gives the largest distance in
 samples between a completed prediction and the latest captured audio since
 boot. Divide it by 16 for milliseconds. `capture_skipped_frames` counts the
-80 ms frames the detector skipped to catch up.
+80 ms frames skipped to catch up and results discarded when their pre-roll
+had already fallen out of the capture history.
 
 Timers provides its own page, a local alarm and tools for models that support
 tool calling. Wake-word dataset uses frames from the INT8 detector and

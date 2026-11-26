@@ -4,6 +4,7 @@
 
 ### English
 
+- ESP32-S3 keeps wake capture positions across long listening sessions and resynchronizes before using a prediction whose pre-roll was lost.
 - ESP32-S3 diagnostics report how much audio reaches the wake detector and the largest delay behind captured audio.
 - ESP32-S3 plays due timer alarms during pauses in streamed speech and then resumes the reply.
 - Mini 3 packages cross-compiled on Windows consistently link the patched WAMR runtime.
@@ -31,6 +32,7 @@
 
 ### Русский
 
+- ESP32-S3 продолжает захват при длительном прослушивании и отбрасывает результаты активации, у которых аудио до срабатывания уже вытеснено.
 - Диагностика ESP32-S3 показывает объём захвата для детектора активации и максимальное отставание от принятого звука.
 - ESP32-S3 воспроизводит сигналы таймеров в паузах потоковой озвучки и затем продолжает ответ.
 - При сборке пакетов Мини 3 на Windows в исполняемый файл попадает WAMR с исправлениями.

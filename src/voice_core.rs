@@ -149,6 +149,16 @@ pub(crate) fn timer_signal_pcm(sample_rate: u32) -> Vec<u8> {
 }
 #[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
 pub(crate) const PRE_ROLL: usize = CAPTURE_HZ as usize * 6 / 5;
+
+/// Returns the recording start when its pre-roll is still in the capture history.
+#[cfg(any(
+    all(test, not(target_os = "espidf")),
+    all(target_os = "espidf", feature = "wake-tflite")
+))]
+pub(crate) fn retained_wake_pre_roll(first: u64, end: u64) -> Option<u64> {
+    let start = end.saturating_sub(PRE_ROLL as u64);
+    (end > first && start >= first).then_some(start)
+}
 pub(crate) const FIRST_SPEECH_TIMEOUT: usize = CAPTURE_HZ as usize * 7 / 2;
 pub(crate) const END_SILENCE: usize = CAPTURE_HZ as usize * 7 / 10;
 pub(crate) const VOICE_INSTRUCTIONS: &str = "You are Goodwin, a voice assistant. Reply in Russian in concise plain text suitable for speaking aloud.";
@@ -283,6 +293,16 @@ pub(crate) fn strip_wake_word<'a>(text: &'a str, wake_word: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(not(target_os = "espidf"), feature = "wake-tflite"))]
+    #[test]
+    fn wake_pre_roll_survives_the_32_bit_sample_boundary() {
+        let first = u64::from(u32::MAX) - 200;
+        let end = first + PRE_ROLL as u64;
+        assert_eq!(retained_wake_pre_roll(first, end), Some(first));
+        assert_eq!(retained_wake_pre_roll(first + 1, end), None);
+        assert_eq!(retained_wake_pre_roll(0, 1280), Some(0));
+    }
 
     #[cfg(not(target_os = "espidf"))]
     #[tokio::test]

@@ -8,7 +8,7 @@ use std::{
 use goodwin_error::{Context, Result, bail};
 
 use crate::{
-    voice_core::{CAPTURE_HZ, PRE_ROLL, scale_sample},
+    voice_core::{CAPTURE_HZ, PRE_ROLL, retained_wake_pre_roll, scale_sample},
     wake_catalog::Selection,
     wake_tflite::{FRAME_SAMPLES, TfliteModel},
 };
@@ -29,13 +29,13 @@ static MODEL: AlignedModel =
 
 struct Frame {
     generation: u64,
-    end: usize,
+    end: u64,
     samples: [i16; FRAME_SAMPLES],
 }
 
 struct Prediction {
     generation: u64,
-    end: usize,
+    end: u64,
     score: Result<f32>,
     elapsed_us: u128,
 }
@@ -45,8 +45,8 @@ pub(super) struct Detector {
     frames: SyncSender<Frame>,
     predictions: Receiver<Prediction>,
     history: VecDeque<i16>,
-    first: usize,
-    next: usize,
+    first: u64,
+    next: u64,
     generation: u64,
     busy: bool,
     gain: Option<f32>,
@@ -143,48 +143,50 @@ impl Detector {
         crate::diagnostics::wake_capture(samples.len());
         let overflow = (self.history.len() + samples.len()).saturating_sub(HISTORY_LIMIT);
         self.history.drain(..overflow);
-        self.first += overflow;
+        self.first += overflow as u64;
         self.history.extend(samples);
+        let live = self.first + self.history.len() as u64;
 
+        let mut discarded = false;
         match self.predictions.try_recv() {
             Ok(prediction) => {
                 self.busy = false;
-                let lag = (prediction.generation == self.generation)
-                    .then(|| self.first + self.history.len() - prediction.end);
-                if let Some(lag) = lag {
+                if prediction.generation == self.generation {
+                    let lag = live - prediction.end;
                     crate::diagnostics::wake_lag(lag);
-                }
-                if let Some(lag) = lag.filter(|_| prediction.end > self.first) {
-                    let score = prediction.score?;
-                    let baseline = self
-                        .selection
-                        .score_threshold
-                        .unwrap_or(crate::model::WAKE_THRESHOLD);
-                    let threshold = (baseline + 0.55 * (0.5 - sensitivity)).clamp(0.0, 1.0);
-                    #[cfg(feature = "wasm-plugins")]
-                    self.observe_frame(prediction.end, lag, gain, threshold, score);
-                    #[cfg(feature = "esp-emulator")]
-                    log::debug!(
-                        "Wake score={score:.4} inference_us={}",
-                        prediction.elapsed_us
-                    );
-                    if score >= threshold {
-                        log::info!(
-                            "Wake detected score={score:.4} inference_us={}",
+                    if let Some(start) = retained_wake_pre_roll(self.first, prediction.end) {
+                        let score = prediction.score?;
+                        let baseline = self
+                            .selection
+                            .score_threshold
+                            .unwrap_or(crate::model::WAKE_THRESHOLD);
+                        let threshold = (baseline + 0.55 * (0.5 - sensitivity)).clamp(0.0, 1.0);
+                        #[cfg(feature = "wasm-plugins")]
+                        self.observe_frame(prediction.end, lag, gain, threshold, score);
+                        #[cfg(feature = "esp-emulator")]
+                        log::debug!(
+                            "Wake score={score:.4} inference_us={}",
                             prediction.elapsed_us
                         );
-                        let start = prediction.end.saturating_sub(PRE_ROLL).max(self.first);
-                        let captured = self
-                            .history
-                            .iter()
-                            .skip(start - self.first)
-                            .copied()
-                            .collect();
-                        self.reset();
-                        return Ok(Some(Recording::Wake {
-                            captured,
-                            post_trigger: lag,
-                        }));
+                        if score >= threshold {
+                            log::info!(
+                                "Wake detected score={score:.4} inference_us={}",
+                                prediction.elapsed_us
+                            );
+                            let captured = self
+                                .history
+                                .iter()
+                                .skip((start - self.first) as usize)
+                                .copied()
+                                .collect();
+                            self.reset();
+                            return Ok(Some(Recording::Wake {
+                                captured,
+                                post_trigger: lag as usize,
+                            }));
+                        }
+                    } else {
+                        discarded = true;
                     }
                 }
             }
@@ -193,15 +195,18 @@ impl Detector {
         }
 
         if !self.busy {
-            if self.next < self.first {
+            if discarded
+                || retained_wake_pre_roll(self.first, self.next + FRAME_SAMPLES as u64).is_none()
+            {
                 self.end_observations();
                 self.generation += 1;
-                // The worker missed audio. Resume near the live edge with fresh model state.
-                let resume = self.first + self.history.len() - FRAME_SAMPLES;
-                crate::diagnostics::capture_skipped((resume - self.next).div_ceil(FRAME_SAMPLES));
+                // Resume near the live edge before the detector loses the start of a request.
+                let resume = live - FRAME_SAMPLES as u64;
+                let dropped = (resume - self.next).div_ceil(FRAME_SAMPLES as u64);
+                crate::diagnostics::capture_skipped(dropped + u64::from(discarded));
                 self.next = resume;
             }
-            let offset = self.next - self.first;
+            let offset = (self.next - self.first) as usize;
             if self.history.len() >= offset + FRAME_SAMPLES {
                 let mut samples = [0; FRAME_SAMPLES];
                 for (out, &raw) in samples
@@ -210,7 +215,7 @@ impl Detector {
                 {
                     *out = scale_sample(raw, gain);
                 }
-                let end = self.next + FRAME_SAMPLES;
+                let end = self.next + FRAME_SAMPLES as u64;
                 self.frames
                     .try_send(Frame {
                         generation: self.generation,
@@ -235,7 +240,7 @@ impl Detector {
     }
 
     #[cfg(feature = "wasm-plugins")]
-    fn observe_frame(&self, end: usize, lag: usize, gain: f32, threshold: f32, score: f32) {
+    fn observe_frame(&self, end: u64, lag: u64, gain: f32, threshold: f32, score: f32) {
         use base64::{Engine, engine::general_purpose::STANDARD};
         use goodwin_plugin::wake::{Event, Frame, Model};
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -243,12 +248,12 @@ impl Detector {
         let Some(plugins) = &self.plugins else {
             return;
         };
-        let start = end.saturating_sub(FRAME_SAMPLES);
+        let start = end.saturating_sub(FRAME_SAMPLES as u64);
         if start < self.first {
             return;
         }
         plugins.observe_wake(|| {
-            let start_offset = start - self.first;
+            let start_offset = (start - self.first) as usize;
             let pcm: Vec<u8> = self
                 .history
                 .range(start_offset..start_offset + FRAME_SAMPLES)
@@ -258,10 +263,10 @@ impl Detector {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let lag_ms = lag as u64 * 1_000 / u64::from(CAPTURE_HZ);
+            let lag_ms = lag * 1_000 / u64::from(CAPTURE_HZ);
             Event::Frame(Frame {
                 stream: self.generation,
-                index: (start / FRAME_SAMPLES) as u64,
+                index: start / FRAME_SAMPLES as u64,
                 model: Model {
                     id: self.selection.id.clone(),
                     wake_word: self.selection.wake_word.clone(),
