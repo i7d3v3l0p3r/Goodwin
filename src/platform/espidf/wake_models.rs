@@ -13,15 +13,35 @@ use url::Url;
 
 use crate::{
     model,
-    wake_catalog::{CATALOG_LIMIT, Catalog, RELEASES, Runtime, Selection},
+    wake_catalog::{CATALOG_LIMIT, Catalog, Model, RELEASES, Runtime, Selection},
     wake_tflite::TfliteModel,
 };
 
 use super::{http_client, storage::MOUNT};
 
-pub(super) const RUNTIMES: &[Runtime] = &[Runtime::MicroTflite];
+const RUNTIMES: &[Runtime] = &[Runtime::MicroWakeWord, Runtime::MicroTflite];
 const MODEL_LIMIT: u64 = 512 * 1024;
 const REQUEST_BUFFER: usize = 2048;
+
+#[repr(align(16))]
+struct AlignedModel<const N: usize>([u8; N]);
+
+const MICRO: &[u8; 40448] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/goodwin-microwakeword.tflite"));
+const LIVEKIT: &[u8; 451032] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/goodwin-micro-int8.tflite"));
+static MICRO_MODEL: AlignedModel<{ MICRO.len() }> = AlignedModel(*MICRO);
+static LIVEKIT_MODEL: AlignedModel<{ LIVEKIT.len() }> = AlignedModel(*LIVEKIT);
+
+fn builtin_asset(selection: &Selection) -> Option<&'static [u8]> {
+    match (selection.runtime, selection.sha256.as_str()) {
+        (Runtime::MicroWakeWord, model::WAKE_MODEL_SHA) if selection.id == model::WAKE_MODEL_ID => {
+            Some(&MICRO_MODEL.0)
+        }
+        (Runtime::MicroTflite, model::LEGACY_WAKE_MODEL_SHA) => Some(&LIVEKIT_MODEL.0),
+        _ => None,
+    }
+}
 
 pub(super) struct Candidate {
     pub selection: Selection,
@@ -36,7 +56,7 @@ impl Candidate {
                 wake_word: model::WAKE_WORD.into(),
                 tier: "micro".into(),
                 sha256: model::WAKE_MODEL_SHA.into(),
-                runtime: Runtime::MicroTflite,
+                runtime: Runtime::MicroWakeWord,
                 score_threshold: Some(model::WAKE_THRESHOLD),
             },
             bytes: None,
@@ -46,12 +66,16 @@ impl Candidate {
     pub(super) fn load_saved(selection: Selection) -> Result<Self> {
         selection.validate()?;
         ensure!(
-            selection.runtime == Runtime::MicroTflite,
+            RUNTIMES.contains(&selection.runtime),
             "Unsupported saved wake runtime"
         );
-        let bytes = if selection.sha256 == model::WAKE_MODEL_SHA {
+        let bytes = if builtin_asset(&selection).is_some() {
             None
         } else {
+            ensure!(
+                selection.runtime == Runtime::MicroTflite,
+                "Unsupported saved microWakeWord model"
+            );
             let path = asset_path(&selection);
             let file = File::open(path)?;
             ensure!(
@@ -70,12 +94,25 @@ impl Candidate {
         Ok(Self { selection, bytes })
     }
 
-    pub(super) fn load(self, builtin: &'static [u8]) -> Result<(Selection, TfliteModel)> {
-        let model = match self.bytes {
-            Some(bytes) => TfliteModel::load(bytes)?,
-            None => TfliteModel::load(builtin)?,
+    pub(super) fn load(self) -> Result<(Selection, TfliteModel)> {
+        let (selection, model) = match (self.selection.runtime, self.bytes) {
+            (Runtime::MicroWakeWord, None) => {
+                let bytes =
+                    builtin_asset(&self.selection).context("Unsupported microWakeWord model")?;
+                (
+                    Self::builtin().selection,
+                    TfliteModel::load_micro_wake_word(bytes)?,
+                )
+            }
+            (Runtime::MicroTflite, Some(bytes)) => (self.selection, TfliteModel::load(bytes)?),
+            (Runtime::MicroTflite, None) => {
+                let bytes =
+                    builtin_asset(&self.selection).context("Missing embedded wake model")?;
+                (self.selection, TfliteModel::load(bytes)?)
+            }
+            _ => goodwin_error::bail!("Unsupported wake model"),
         };
-        Ok((self.selection, model))
+        Ok((selection, model))
     }
 }
 
@@ -93,9 +130,26 @@ pub(super) fn catalog() -> Result<Catalog> {
         CATALOG_LIMIT as usize,
     )?;
     let mut releases = Catalog::parse(&body, RUNTIMES)?;
-    releases
+    releases.models.retain(|entry| {
+        let selection = &entry.selection;
+        match selection.runtime {
+            Runtime::MicroWakeWord => {
+                builtin_asset(selection).is_some() && entry.asset_size() == MICRO.len() as u64
+            }
+            _ => selection.id != model::WAKE_MODEL_ID && entry.asset_size() <= MODEL_LIMIT,
+        }
+    });
+    if let Some(entry) = releases
         .models
-        .retain(|model| model.asset_size() <= MODEL_LIMIT);
+        .iter_mut()
+        .find(|entry| entry.selection.runtime == Runtime::MicroWakeWord)
+    {
+        entry.selection = Candidate::builtin().selection;
+    } else {
+        releases
+            .models
+            .push(Model::embedded(Candidate::builtin().selection, MICRO.len()));
+    }
     Ok(releases)
 }
 
@@ -104,7 +158,7 @@ pub(super) fn download(catalog: &Catalog, id: &str) -> Result<Option<Candidate>>
         return Ok(None);
     };
     let selection = model.selection.clone();
-    let bytes = if selection.sha256 == crate::model::WAKE_MODEL_SHA {
+    let bytes = if builtin_asset(&selection).is_some() {
         None
     } else {
         let url = format!(
@@ -121,7 +175,7 @@ pub(super) fn download(catalog: &Catalog, id: &str) -> Result<Option<Candidate>>
 }
 
 pub(super) fn save_asset(selection: &Selection, interpreter: &TfliteModel) -> Result<()> {
-    if selection.sha256 == model::WAKE_MODEL_SHA {
+    if builtin_asset(selection).is_some() {
         return Ok(());
     }
     let path = asset_path(selection);

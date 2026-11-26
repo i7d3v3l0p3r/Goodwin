@@ -70,7 +70,6 @@ pub enum Failure {
     InvalidPackage,
     InvalidSettings,
     NotFound,
-    #[cfg(not(target_os = "espidf"))]
     PasswordRequired,
     StartFailed,
     RolledBack,
@@ -84,7 +83,6 @@ impl Failure {
         match self {
             Self::InvalidPackage | Self::InvalidSettings => 400,
             Self::NotFound => 404,
-            #[cfg(not(target_os = "espidf"))]
             Self::PasswordRequired => 403,
             Self::StartFailed | Self::RolledBack => 409,
             Self::Busy => 409,
@@ -98,7 +96,6 @@ impl Failure {
             Self::InvalidPackage => "invalid_plugin_package",
             Self::InvalidSettings => "invalid_plugin_settings",
             Self::NotFound => "plugin_not_found",
-            #[cfg(not(target_os = "espidf"))]
             Self::PasswordRequired => "plugin_password_required",
             Self::StartFailed => "plugin_start_failed",
             Self::RolledBack => "plugin_update_rolled_back",

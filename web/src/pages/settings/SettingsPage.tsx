@@ -15,6 +15,7 @@ import { DiagnosticLogs } from "./components/DiagnosticLogs";
 import { SystemResources } from "./components/SystemResources";
 import { WakeWordSettings } from "./components/WakeWordSettings";
 import { MicrophoneGainForm } from "./components/MicrophoneGainForm";
+import { PanelAccessControls } from "./components/PanelAccessControls";
 import { SystemPromptForm } from "./components/SystemPromptForm";
 import { EmbeddedVoiceDiagnostics, isVoiceTest, VoiceCheck } from "./components/VoiceCheck";
 import { settingsSectionPath, settingsSections } from "./sections";
@@ -146,21 +147,21 @@ export function SettingsPage() {
             </label>
             <section aria-labelledby="panel-access-title" class={styles.access}>
               <h2 id="panel-access-title">{panel.t().panelAccess}</h2>
-              <p>{panel.access()?.protected ? panel.t().passwordAccess : panel.t().openAccess}</p>
-              <Show when={panel.access()?.protected === false}>
-                <p>{panel.t().passwordInstructions}</p>
-                <code>goodwin set-password &lt;data-dir&gt;</code>
-              </Show>
+              <Show when={active()?.id === "panel"}><PanelAccessControls /></Show>
             </section>
           </div>}
           {section.id === "update" && <Show when={active()?.id === "update"}>
             <Show when={panel.builtinProvider()} fallback={
               <CoreUpdate t={panel.t()} passwordProtected={panel.access()?.protected === true} />
-            }><FirmwareUpdate /></Show>
+            }>
+              <Show when={panel.access()?.protected} fallback={<p>{panel.t().errors.core_update_password_required}</p>}>
+                <FirmwareUpdate />
+              </Show>
+            </Show>
           </Show>}
         </section>
       }</For>
-      <Show when={active() && panel.error()}><p class={styles.error} role="alert">{errorLabel(panel.t(), panel.error())}</p></Show>
+      <Show when={active() && active()?.id !== "panel" && panel.error()}><p class={styles.error} role="alert">{errorLabel(panel.t(), panel.error())}</p></Show>
     </div>
   </>;
 }

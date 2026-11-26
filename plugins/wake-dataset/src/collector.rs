@@ -5,10 +5,7 @@ use goodwin_plugin::{
     wake::{Event, Frame, Model},
 };
 
-use crate::store::{ClipInfo, FRAME_SAMPLES, SAMPLE_RATE, Store, WINDOW_FRAMES};
-
-const FRAME_BYTES: usize = FRAME_SAMPLES * 2;
-const STRIDE: usize = WINDOW_FRAMES / 2;
+use crate::store::{ClipInfo, SAMPLE_RATE, Store, window_frames};
 
 #[derive(Default)]
 pub struct Collector(Option<Window>);
@@ -20,6 +17,7 @@ struct Window {
     gain: f32,
     threshold: f32,
     ended_at_ms: u64,
+    frame_samples: usize,
     pcm: Vec<u8>,
     scores: Vec<f32>,
     new_frames: usize,
@@ -41,14 +39,17 @@ impl Collector {
             }
         };
         let mut pcm = STANDARD.decode(&frame.pcm)?;
+        let frame_samples = pcm.len() / 2;
+        let frames = window_frames(frame_samples);
         ensure!(
-            frame.sample_rate == SAMPLE_RATE && pcm.len() == FRAME_BYTES,
+            frame.sample_rate == SAMPLE_RATE && pcm.len().is_multiple_of(2) && frames.is_some(),
             "Unsupported wake audio format"
         );
+        let frames = frames.expect("validated wake audio");
         if self
             .0
             .as_ref()
-            .is_some_and(|window| !window.continues(&frame))
+            .is_some_and(|window| !window.continues(&frame, frame_samples))
         {
             self.flush(store, minimum_score)?;
         }
@@ -68,8 +69,9 @@ impl Collector {
             gain: frame.gain,
             threshold: frame.threshold,
             ended_at_ms: frame.ended_at_ms,
-            pcm: Vec::with_capacity(WINDOW_FRAMES * FRAME_BYTES),
-            scores: Vec::with_capacity(WINDOW_FRAMES),
+            frame_samples,
+            pcm: Vec::with_capacity(frames * frame_samples * 2),
+            scores: Vec::with_capacity(frames),
             new_frames: 0,
         });
         window.next_index = frame.index + 1;
@@ -77,10 +79,11 @@ impl Collector {
         window.pcm.extend(pcm);
         window.scores.push(frame.score);
         window.new_frames += 1;
-        if window.scores.len() == WINDOW_FRAMES {
+        if window.scores.len() == frames {
             window.save_if_qualified(store, minimum_score)?;
-            window.pcm.drain(..STRIDE * FRAME_BYTES);
-            window.scores.drain(..STRIDE);
+            let stride = frames / 2;
+            window.pcm.drain(..stride * frame_samples * 2);
+            window.scores.drain(..stride);
             window.new_frames = 0;
         }
         Ok(())
@@ -97,10 +100,11 @@ impl Collector {
 }
 
 impl Window {
-    fn continues(&self, frame: &Frame) -> bool {
+    fn continues(&self, frame: &Frame, frame_samples: usize) -> bool {
         self.stream == frame.stream
             && self.next_index == frame.index
             && self.model == frame.model
+            && self.frame_samples == frame_samples
             && self.gain == frame.gain
             && self.threshold == frame.threshold
     }
@@ -113,13 +117,14 @@ impl Window {
         {
             return Ok(());
         }
-        let duration_ms = (self.scores.len() * FRAME_SAMPLES * 1000 / SAMPLE_RATE as usize) as u64;
+        let duration_ms =
+            (self.scores.len() * self.frame_samples * 1000 / SAMPLE_RATE as usize) as u64;
         store.save(
             ClipInfo {
                 model: self.model.clone(),
                 captured_at_ms: self.ended_at_ms.saturating_sub(duration_ms),
                 sample_rate: SAMPLE_RATE,
-                frame_samples: FRAME_SAMPLES,
+                frame_samples: self.frame_samples,
                 gain: self.gain,
                 gain_applied: true,
                 threshold: self.threshold,

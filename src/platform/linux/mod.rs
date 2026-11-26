@@ -132,7 +132,7 @@ fn setup(dir: PathBuf, mode: &str) -> Result<()> {
     }
     .save(&dir, true)?;
     if mode == "password" {
-        println!("Open the web panel after starting Goodwin to create a password.");
+        println!("Open the web panel after starting Goodwin to choose how to sign in.");
     } else {
         println!("Open panel access configured.");
     }

@@ -11,3 +11,4 @@
 .codex
 prototypes
 __pycache__/
+RUST_AUDIT.md

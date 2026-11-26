@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tarfile
 from threading import Event, Thread
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 import wave
@@ -533,7 +533,9 @@ class Panel:
         audio = self.request(f"{route}/clips/{clip['id']}/audio")["wav"]
         with wave.open(io.BytesIO(base64.b64decode(audio))) as wav:
             assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
-            assert wav.getnframes() == 1280 * len(clip["info"]["scores"])
+            frame_samples = clip["info"]["frameSamples"]
+            assert frame_samples == (480 if expected_model == "goodwin-microwakeword" else 1280)
+            assert wav.getnframes() == frame_samples * len(clip["info"]["scores"])
             assert any(wav.readframes(wav.getnframes())), "Captured wake audio was silent"
         print("Verified Wake-word dataset metadata and recorded PCM")
 
@@ -551,9 +553,12 @@ class Panel:
 
         catalog = self.wait_operation(result, ticket, 200, 95, check_panel_while_fetching)
         assert catalog["tag"] == WAKE_TAG
-        assert [model["id"] for model in catalog["models"]] == [WAKE_ID], catalog
+        assert [model["id"] for model in catalog["models"]] == [WAKE_ID, "goodwin-microwakeword"], catalog
         current = self.request("/api/state")["wake_model"]
-        assert current["id"] == "goodwin-micro-int8"
+        builtin = catalog["models"][1]
+        assert all(current[key] == builtin[key] for key in ("id", "runtime", "sha256")), (current, builtin)
+        assert math.isclose(current["score_threshold"], builtin["score_threshold"], abs_tol=1e-7), (current, builtin)
+        assert current["runtime"] == "microwakeword-tflite"
         payload = {"id": WAKE_ID, "tag": WAKE_TAG}
         ticket = self.request(path, "PUT", dict(payload, tag="v0.0.1"), 202, timeout=5)
         assert self.wait_operation(result, ticket, 409, 100) == {"error": "wake_catalog_changed"}
@@ -649,12 +654,22 @@ class Panel:
         setup = {"password": password, "confirmation": password}
         assert self.request("/api/setup", "POST", setup, 403,
                             {"Origin": "https://example.invalid"}) == {"error": "origin"}
-        self.submit_password("/api/setup", setup)
+        assert self.request("/api/access/open", "POST", {}, 403,
+                            {"Origin": "https://example.invalid"}) == {"error": "origin"}
+        self.request("/api/access/open", "POST", {}, 204)
+        assert self.request("/api/access") == {
+            "protected": False, "authorized": True, "setup_required": False,
+        }
+        assert self.request("/api/diagnostics/logs", status=403) == {"error": "diagnostics_password_required"}
+        assert self.request("/api/firmware", status=403) == {"error": "core_update_password_required"}
+        self.submit_password("/api/access/password", setup)
         assert self.request("/api/access")["authorized"]
+        assert Panel(self.port).request("/api/access/open", "POST", {}, 401) == {"error": "login_required"}
 
     def submit_password(self, route, body):
         ticket = self.request(route, "POST", body, 202, timeout=5)
-        assert self.request("/api/access", timeout=5)["authorized"] is False
+        access = self.request("/api/access", timeout=5)
+        assert not access["protected"] or not access["authorized"]
         result = "/api/auth/result"
         assert self.request(result, "POST", ticket, 403, {
             "Origin": "https://example.invalid",
@@ -663,10 +678,13 @@ class Panel:
             "error": "auth_result_expired",
         }
         def check_panel_while_hashing():
-            assert self.request("/api/access", timeout=5)["authorized"] is False
+            access = self.request("/api/access", timeout=5)
+            assert not access["protected"] or not access["authorized"]
             assert self.request(route, "POST", body, 429, timeout=5) == {"error": "login_retry"}
 
         self.wait_operation(result, ticket, 204, PASSWORD_TIMEOUT, check_panel_while_hashing)
+        cookie = next(cookie for cookie in self.cookies if cookie.name == "goodwin_session")
+        assert abs(cookie.expires - time() - 30 * 24 * 60 * 60) < 5
         assert self.request(result, "POST", ticket, 404) == {"error": "auth_result_expired"}
 
     def wait_operation(self, route, ticket, expected, timeout, while_pending=None):
@@ -746,7 +764,7 @@ class Panel:
 
     def start_wake(self):
         state = self.request("/api/state")
-        assert state["model"] and state["wake_model"]["runtime"] == "livekit-v2-micro-tflite"
+        assert state["model"] and state["wake_model"]["runtime"] in ("microwakeword-tflite", "livekit-v2-micro-tflite")
         self.request("/api/settings", "PUT", {"settings": {**state["settings"], "listening": True}}, 204)
 
     def start_wake_test(self):
@@ -862,7 +880,8 @@ class Panel:
             inference = metrics["wake_inference"]
             assert inference["count"] > 0
             assert 0 < inference["p50_upper_us"] <= inference["p95_upper_us"] <= inference["max_us"]
-            assert metrics["wake_capture_samples"] >= inference["count"] * 1280
+            frame_samples = 480 if state["wake_model"]["runtime"] == "microwakeword-tflite" else 1280
+            assert metrics["wake_capture_samples"] >= inference["count"] * frame_samples
             assert 0 < metrics["wake_max_lag_samples"] <= metrics["wake_capture_samples"]
             print("ESP wake inference", json.dumps({
                 **inference,
@@ -1009,7 +1028,7 @@ def run_emulator(args, flash, board, output, server):
         http.bind(("127.0.0.1", 0))
         panel_port = http.getsockname()[1]
     panel = Panel(panel_port)
-    active_model = "goodwin-micro-int8"
+    active_model = "goodwin-microwakeword"
     selection = None
     config = args.work / "esp-emu.json"
     config.write_text('{"autoupdate":false}', encoding="utf-8")
@@ -1216,7 +1235,7 @@ def run_emulator(args, flash, board, output, server):
     }
     if expected["wake_catalog"]:
         expected["activation"].append("wake_word")
-        expected["wake_runtimes"].append("livekit-v2-micro-tflite")
+        expected["wake_runtimes"].extend(["microwakeword-tflite", "livekit-v2-micro-tflite"])
     assert capabilities == expected, capabilities
     assert psram_ready, "The ESP32-S3 did not report 8 MiB of PSRAM"
     assert started and played, "Firmware did not finish a voice turn"

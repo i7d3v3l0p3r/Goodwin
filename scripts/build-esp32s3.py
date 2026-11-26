@@ -78,6 +78,16 @@ def main():
         licenses.mkdir(parents=True, exist_ok=True)
         for name in ("LICENSE", "NOTICE"):
             shutil.copyfile(ROOT / "target/wake-tflite/esp32s3" / name, licenses / name)
+        micro = output / "licenses/goodwin-microwakeword"
+        micro.mkdir(parents=True, exist_ok=True)
+        for name in ("LICENSE", "NOTICE"):
+            shutil.copyfile(ROOT / "target/wake-tflite/esp32s3/microwakeword" / name, micro / name)
+        frontend = output / "licenses/esp-micro-speech-features"
+        frontend.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "target/wake-tflite/esp-micro-speech-features/LICENSE", frontend / "LICENSE")
+        esp_nn = output / "licenses/esp-nn"
+        esp_nn.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "target/wake-tflite/esp-nn/LICENSE", esp_nn / "LICENSE")
     images = (bootloader, table, app, merged)
     (output / "SHA256SUMS").write_text(
         "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in images),

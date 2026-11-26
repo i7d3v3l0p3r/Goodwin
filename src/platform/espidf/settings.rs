@@ -6,7 +6,7 @@ use crate::{
     diagnostics::flash_write,
 };
 
-use super::network::WifiCredentials;
+use super::{auth::OPEN_ACCESS, network::WifiCredentials};
 
 pub(super) struct Store {
     nvs: EspDefaultNvs,
@@ -180,5 +180,10 @@ impl Store {
     pub(super) fn save_password(&mut self, hash: &str) -> Result<()> {
         flash_write(|| self.nvs.set_str("panel_pbkdf2", hash))?;
         Ok(())
+    }
+
+    pub(super) fn save_open_access(&mut self) -> Result<()> {
+        // An explicit mode takes precedence over the legacy password key.
+        self.save_password(OPEN_ACCESS)
     }
 }

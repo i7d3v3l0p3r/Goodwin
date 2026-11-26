@@ -38,6 +38,8 @@ pub(crate) enum Runtime {
     Micro,
     #[serde(rename = "livekit-v2-micro-tflite")]
     MicroTflite,
+    #[serde(rename = "microwakeword-tflite")]
+    MicroWakeWord,
     #[serde(other)]
     Unknown,
 }
@@ -56,7 +58,7 @@ impl Runtime {
     pub(crate) fn format(self) -> &'static str {
         match self {
             Self::Standard | Self::Micro => "onnx",
-            Self::MicroTflite => "tflite",
+            Self::MicroTflite | Self::MicroWakeWord => "tflite",
             Self::Unknown => "",
         }
     }
@@ -64,7 +66,11 @@ impl Runtime {
     fn matches_tier(self, tier: &str) -> bool {
         matches!(
             (self, tier),
-            (Self::Standard, "standard") | (Self::Micro | Self::MicroTflite, "micro")
+            (Self::Standard, "standard")
+                | (
+                    Self::Micro | Self::MicroTflite | Self::MicroWakeWord,
+                    "micro"
+                )
         )
     }
 }
@@ -101,7 +107,7 @@ impl Selection {
                 && self
                     .score_threshold
                     .is_none_or(|value| (0.0..=1.0).contains(&value))
-                && (self.runtime != Runtime::MicroTflite
+                && (!matches!(self.runtime, Runtime::MicroTflite | Runtime::MicroWakeWord)
                     || self
                         .score_threshold
                         .is_some_and(|value| 0.0 < value && value < 1.0))
@@ -170,6 +176,17 @@ impl From<ModelWire> for Model {
 }
 
 impl Model {
+    #[cfg(target_os = "espidf")]
+    pub(crate) fn embedded(selection: Selection, size_bytes: usize) -> Self {
+        Self {
+            filename: format!("{}.tflite", selection.id),
+            format: "tflite".into(),
+            sample_rate_hz: 16_000,
+            size_bytes: size_bytes as u64,
+            selection,
+        }
+    }
+
     fn supported(&self, runtimes: &[Runtime]) -> bool {
         self.sample_rate_hz == 16_000
             && runtimes.contains(&self.selection.runtime)
@@ -373,7 +390,19 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("goodwin_compatible");
-        let models = vec![unspecified, int8.clone(), unknown];
+        let mut microwakeword = int8.clone();
+        microwakeword["id"] = json!("goodwin-microwakeword");
+        microwakeword["filename"] = json!("goodwin-microwakeword.tflite");
+        microwakeword["runtime"] = json!("microwakeword-tflite");
+        let models = vec![unspecified, int8.clone(), unknown, microwakeword];
+        let esp = Catalog::parse(
+            &serde_json::to_vec(&json!({"schema_version":1,"tag":"v0.3.1","models":models}))
+                .unwrap(),
+            &[Runtime::MicroWakeWord, Runtime::MicroTflite],
+        )
+        .unwrap();
+        assert_eq!(esp.models.len(), 2);
+        assert_eq!(esp.models[1].selection.runtime, Runtime::MicroWakeWord);
         assert_eq!(catalog(models.clone(), false).unwrap().models.len(), 1);
         let supported = catalog(models, true).unwrap();
         assert_eq!(supported.models.len(), 2);

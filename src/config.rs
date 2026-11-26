@@ -9,14 +9,14 @@ use goodwin_error::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::{assistant::AssistantSettings, password};
+use crate::assistant::AssistantSettings;
 
 pub(crate) const DEFAULT_MICROPHONE_GAIN: f32 = 4.0;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", try_from = "AccessWire")]
 pub enum Access {
     Open,
@@ -186,18 +186,17 @@ impl ConfigStore {
         self.current().access.clone()
     }
 
-    pub(crate) fn set_initial_password(&self, password: &str) -> Result<Option<String>> {
+    pub(crate) fn replace_access(&self, expected: &Access, access: Access) -> Result<bool> {
         let _writer = self.writer.lock().expect("configuration writer mutex");
         let mut draft = self.current().clone();
-        if !matches!(draft.access, Access::PendingPassword) {
-            return Ok(None);
+        if draft.access != *expected {
+            return Ok(false);
         }
-        let hash = password::hash(password)?;
-        draft.access = Access::Password { hash: hash.clone() };
+        draft.access = access;
         draft.save(&self.dir, false)?;
         *self.current() = draft;
         self.changes.send_replace(());
-        Ok(Some(hash))
+        Ok(true)
     }
 
     pub(crate) fn wake_settings(&self) -> (bool, f32, Option<f32>) {

@@ -70,7 +70,7 @@ export interface WakeModel {
   id: string;
   wake_word: string;
   tier: "standard" | "micro";
-  runtime: "livekit-v2-standard-onnx" | "livekit-v2-micro-onnx" | "livekit-v2-micro-tflite";
+  runtime: "livekit-v2-standard-onnx" | "livekit-v2-micro-onnx" | "livekit-v2-micro-tflite" | "microwakeword-tflite";
   sha256: string;
 }
 

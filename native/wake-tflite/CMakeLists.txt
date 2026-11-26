@@ -15,3 +15,16 @@ target_compile_options(goodwin_wake_tflite PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti;-fno-threadsafe-statics>
     -ffunction-sections -fdata-sections)
 target_compile_features(goodwin_wake_tflite PRIVATE cxx_std_17)
+
+if(ESP_NN_SOURCE)
+    enable_language(ASM)
+    target_sources(goodwin_wake_tflite PRIVATE
+        "${ESP_NN_SOURCE}/src/common/esp_nn_dot_s8_esp32s3.S")
+    target_include_directories(goodwin_wake_tflite PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+if(MICRO_FRONTEND_SOURCE)
+    file(GLOB MICRO_FRONTEND_C CONFIGURE_DEPENDS "${MICRO_FRONTEND_SOURCE}/src/*.c")
+    target_sources(goodwin_wake_tflite PRIVATE microwakeword.cc ${MICRO_FRONTEND_C})
+    target_include_directories(goodwin_wake_tflite PRIVATE "${MICRO_FRONTEND_SOURCE}/include")
+endif()

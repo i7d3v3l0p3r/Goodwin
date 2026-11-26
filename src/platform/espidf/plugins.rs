@@ -527,16 +527,24 @@ impl Plugins {
         Ok(())
     }
 
-    pub(super) fn http(&self, id: &str, request: HttpRequest) -> Result<HttpResponse, Failure> {
+    pub(super) fn http(
+        &self,
+        id: &str,
+        request: HttpRequest,
+        password_session: bool,
+    ) -> Result<HttpResponse, Failure> {
         let mut runtime = self.lock();
         let entry = runtime.entries.get_mut(id).ok_or(Failure::NotFound)?;
         let registration = entry.registration().ok_or(Failure::Unavailable)?;
-        if !registration
+        let mut routes = registration
             .routes
             .iter()
-            .any(|route| route.accepts(&request.method, &request.path))
+            .filter(|route| route.accepts(&request.method, &request.path));
+        let route = routes.next().ok_or(Failure::NotFound)?;
+        if !password_session
+            && (route.password_required || routes.any(|route| route.password_required))
         {
-            return Err(Failure::NotFound);
+            return Err(Failure::PasswordRequired);
         }
         let result = entry.call(
             "http",

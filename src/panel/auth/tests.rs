@@ -52,7 +52,7 @@ async fn login(client: &reqwest::Client, panel: &str) -> String {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
     assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
-    assert!(cookie.contains("Max-Age=43200"));
+    assert!(cookie.contains("Max-Age=2592000"));
     cookie.split(';').next().unwrap().to_owned()
 }
 
@@ -181,13 +181,130 @@ async fn first_visit_sets_one_password_and_signs_in() {
 }
 
 #[tokio::test]
-async fn legacy_password_and_session_require_a_local_password_reset() {
-    for hash in [
-        "$argon2id$v=19$m=19456,t=2,p=1$AAECAwQFBgcICQoLDA0ODw$old",
-        "$pbkdf2-sha512$i=220000$AAECAwQFBgcICQoLDA0ODw$IuRYD2bPNZecS5FyOX+tYXMm56zoVBeMs/h2WUwIk1qXPNZn8EDGKp8XX/sfBTgfckGcEqBPlFuGWKYizXGemA",
-    ] {
-        assert_password_reset_required(hash).await;
+async fn open_access_can_be_selected_at_setup_and_changed_by_a_signed_in_user() {
+    let dir = tempfile::tempdir().unwrap();
+    Config {
+        access: Access::PendingPassword,
+        settings: Settings::default(),
+        system_prompt: String::new(),
     }
+    .save(dir.path(), true)
+    .unwrap();
+    let (panel, task) = start_panel(dir.path()).await;
+    let client = reqwest::Client::new();
+    let open = || {
+        client
+            .post(format!("{panel}/api/access/open"))
+            .json(&json!({}))
+    };
+    let configure = || {
+        client
+            .post(format!("{panel}/api/access/password"))
+            .json(&json!({"password": PASSWORD, "confirmation": PASSWORD}))
+    };
+    assert_eq!(
+        open()
+            .header(header::ORIGIN, "http://other.example")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        open().send().await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(state_status(&client, &panel, "").await, StatusCode::OK);
+    assert_eq!(
+        client
+            .get(format!("{panel}/api/diagnostics/logs"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let enabled = configure().send().await.unwrap();
+    assert_eq!(enabled.status(), StatusCode::NO_CONTENT);
+    let old_cookie = enabled.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        open().send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        open()
+            .header(header::COOKIE, &old_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        client
+            .get(format!("{panel}/api/diagnostics/logs"))
+            .header(header::COOKIE, &old_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        configure().send().await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        state_status(&client, &panel, &old_cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn signing_in_with_an_existing_sha256_password_leaves_its_hash_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut digest = [0; 32];
+    let salt = [7; 16];
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        600_000.try_into().unwrap(),
+        &salt,
+        PASSWORD.as_bytes(),
+        &mut digest,
+    );
+    let salt = phc::Salt::new(&salt).unwrap();
+    let digest = phc::Output::new(&digest).unwrap();
+    let hash = format!("$pbkdf2-sha256$i=600000${salt}${digest}");
+    Config {
+        access: Access::Password { hash: hash.clone() },
+        settings: Settings::default(),
+        system_prompt: String::new(),
+    }
+    .save(dir.path(), true)
+    .unwrap();
+    let (panel, task) = start_panel(dir.path()).await;
+    let client = reqwest::Client::new();
+    let cookie = login(&client, &panel).await;
+    assert_eq!(state_status(&client, &panel, &cookie).await, StatusCode::OK);
+    assert!(
+        matches!(Config::load(dir.path()).unwrap().access, Access::Password { hash: saved } if saved == hash)
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn legacy_password_and_session_require_a_local_password_reset() {
+    assert_password_reset_required("$argon2id$v=19$m=19456,t=2,p=1$AAECAwQFBgcICQoLDA0ODw$old")
+        .await;
 }
 
 async fn assert_password_reset_required(legacy_hash: &str) {

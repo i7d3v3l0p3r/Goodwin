@@ -83,14 +83,20 @@ fn link_tflite(sanitize: bool) {
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
     if variant == "esp32s3" {
-        let model = dir.join("goodwin-micro-int8.tflite");
-        println!("cargo:rerun-if-changed={}", model.display());
         let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets output dir"));
-        std::fs::copy(&model, out.join("wake.tflite")).unwrap_or_else(|error| {
-            panic!(
-                "Read {}: {error}. Run python scripts/build-wake-tflite.py --target esp32s3",
-                model.display()
-            )
-        });
+        for name in [
+            "goodwin-micro-int8.tflite",
+            "microwakeword/goodwin-microwakeword.tflite",
+        ] {
+            let model = dir.join(name);
+            println!("cargo:rerun-if-changed={}", model.display());
+            std::fs::copy(&model, out.join(model.file_name().expect("model filename")))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Read {}: {error}. Run python scripts/build-wake-tflite.py --target esp32s3",
+                        model.display()
+                    )
+                });
+        }
     }
 }

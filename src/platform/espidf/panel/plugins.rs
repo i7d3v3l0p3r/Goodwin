@@ -12,7 +12,11 @@ use crate::platform::espidf::plugins::Plugins;
 
 type PanelRequest<'a, 'b> = Request<&'a mut EspHttpConnection<'b>>;
 
-pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Result<()> {
+pub(super) fn handle(
+    mut request: PanelRequest<'_, '_>,
+    plugins: &Plugins,
+    password_session: bool,
+) -> Result<()> {
     let method = request.method();
     let uri = request.uri().to_owned();
     let (path, query) = uri
@@ -21,6 +25,9 @@ pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Re
     let result: Result<(), Failure> = match (method, path) {
         (Method::Get, "/api/plugins") => return send_json(request, &plugins.catalog()),
         (Method::Delete, path) if path.starts_with("/api/plugin-packages/") => {
+            if !password_session {
+                return failure(request, Failure::PasswordRequired);
+            }
             plugins.remove(&path["/api/plugin-packages/".len()..])
         }
         (Method::Get, path) if path.starts_with("/api/plugin-models/") => {
@@ -146,6 +153,7 @@ pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Re
                     query: query.map(str::to_owned),
                     body,
                 },
+                password_session,
             );
             return match response {
                 Ok(response)

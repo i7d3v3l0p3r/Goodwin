@@ -340,8 +340,37 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             return send_json(request, &capabilities);
         }
         (Method::Get, "/api/access") => return send_json(request, &access),
-        (Method::Post, "/api/setup") => {
-            if !access.setup_required {
+        (Method::Post, "/api/access/open") => {
+            if read_json_body(&mut request)
+                .and_then(|body| Ok(goodwin_json::validate(&body)?))
+                .is_err()
+            {
+                return problem(request, 400, "invalid_request");
+            }
+            let mut credentials = panel.credentials.lock().expect("panel credentials");
+            let access = credentials.0.access(token.as_deref());
+            if !access.setup_required && !access.authorized {
+                drop(credentials);
+                return problem(request, 401, "login_required");
+            }
+            if access.protected {
+                if let Err(error) = credentials.1.save_open_access() {
+                    drop(credentials);
+                    log::error!("Save open panel access: {error:#}");
+                    return problem(request, 500, "access_save_failed");
+                }
+                credentials.0.set_open();
+            }
+            drop(credentials);
+            return send_session(request, Ok(session_cookie("", 0)));
+        }
+        (Method::Post, "/api/setup" | "/api/access/password") => {
+            let allowed = if path == "/api/setup" {
+                access.setup_required
+            } else {
+                !access.protected
+            };
+            if !allowed {
                 return problem(request, 409, "setup_complete");
             }
             let Ok(data) = read_json::<SetupPassword>(&mut request) else {
@@ -355,10 +384,13 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             }
             return send_ticket(
                 request,
-                password_jobs::submit(panel, Operation::Setup(data.password)),
+                password_jobs::submit(panel, Operation::Setup(data.password, access)),
             );
         }
         (Method::Post, "/api/login") => {
+            if !access.protected {
+                return send(request, 204, "text/plain", &[], &[]);
+            }
             let Ok(data) = read_json::<Login>(&mut request) else {
                 return problem(request, 400, "invalid_password");
             };
@@ -415,7 +447,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
         || path.starts_with("/plugin-assets/"))
         && let Some(plugins) = panel.plugins.get()
     {
-        return plugins::handle(request, plugins);
+        return plugins::handle(request, plugins, access.protected);
     }
     match (method, path) {
         #[cfg(feature = "wake-tflite")]
@@ -446,6 +478,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             send(request, 202, "text/plain", &[], &[])
         }
         (Method::Get, "/api/firmware") => {
+            if !access.protected {
+                return problem(request, 403, "core_update_password_required");
+            }
             if panel.firmware_busy() {
                 return problem(request, 409, "busy");
             }
@@ -689,6 +724,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
         }
         (Method::Get, "/api/diagnostics/metrics") => {
             send_json(request, &crate::diagnostics::snapshot())
+        }
+        (Method::Get, "/api/diagnostics/logs") if !access.protected => {
+            problem(request, 403, "diagnostics_password_required")
         }
         (Method::Get, "/api/diagnostics/logs") => send_json(
             request,

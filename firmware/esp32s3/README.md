@@ -5,7 +5,7 @@ provides Wi-Fi, NVS and I²S. The `esp32s3-generic` model supplies the pinout an
 the supported wake-word runtime. Both platforms use the same Rust voice
 pipeline and Solid web panel.
 
-The ESP release includes local activation by «Гудвин» with LiveKit Micro INT8,
+The ESP release includes local activation by «Гудвин» with microWakeWord,
 push-to-talk, an OpenAI-compatible provider, text chat, microphone and wake
 settings, voice diagnostics, WASM add-ons, and firmware updates through the
 panel.
@@ -30,11 +30,11 @@ after a pause. Recordings are limited to 16 seconds and synthesized replies to
 adjust the detector and transcription gains. The panel microphone switch also
 blocks push-to-talk and voice checks.
 
-In **Activation and microphone**, choose a compatible Micro INT8 model from
-Goodwin-wakeword. The panel lists models up to 512 KiB. Goodwin checks the
-downloaded model's size and SHA-256, starts the new detector, and saves the
-selection for future boots. The bundled «Гудвин» model remains available as a
-fallback.
+In **Activation and microphone**, choose the bundled «Гудвин» microWakeWord
+model or a compatible LiveKit Micro INT8 model from Goodwin-wakeword. Goodwin
+checks the size and SHA-256 of downloaded models up to 512 KiB and saves the
+selected model for future boots. microWakeWord uses an integer cutoff of 249
+and averages eight predictions. The sensitivity slider applies to LiveKit models.
 
 ## Build
 
@@ -52,8 +52,9 @@ npm run build --prefix web
 python scripts/build-esp32s3.py
 ```
 
-The script builds the pinned TFLite Micro runtime, verifies the SHA-256 of the
-model from [Goodwin-wakeword v0.1.0](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/tag/v0.1.0),
+The script builds the pinned TFLite Micro runtime and verifies the SHA-256 of
+the [microWakeWord model](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/tag/v0.3.0)
+and the legacy LiveKit model. It includes both models in the firmware
 and writes the flash images and `SHA256SUMS` to `target/esp32s3/production/`.
 Use `--button-only` to compile out the model and wake runtime. Cargo fetches and
 builds WAMR Fast for the plugin host. Use `--no-plugins` to omit both. Use
@@ -74,7 +75,7 @@ python -m esptool --chip esp32s3 --port /dev/ttyACM0 write_flash \
 On Windows, use the board's `COM` port in place of `/dev/ttyACM0`.
 Open the serial console at 115200 baud. On first boot, Goodwin starts a
 password-protected `Goodwin-…` Wi-Fi network and prints its password and setup
-address. Join that network, open the printed address and set a panel password.
+address. Join that network, open the printed address and choose whether to use a panel password.
 Enter your Wi-Fi network name and password in **Wi-Fi**. Goodwin saves the new
 settings after it connects and obtains an address. Switch your browser device
 to the same network and open the new address printed on serial. If the new
@@ -104,12 +105,13 @@ listening at 16 kHz, accounting for wraparound at 2³² samples.
 `wake_max_lag_samples` gives the largest distance in
 samples between a completed prediction and the latest captured audio since
 boot. Divide it by 16 for milliseconds. `capture_skipped_frames` counts the
-80 ms frames skipped to catch up and results discarded when their pre-roll
+detector frames skipped to catch up and results discarded when their pre-roll
 had already fallen out of the capture history.
+Each frame spans 30 ms with microWakeWord or 80 ms with LiveKit Micro INT8.
 
 Timers provides its own page, a local alarm and tools for models that support
-tool calling. Wake-word dataset uses frames from the INT8 detector and
-requires a wake-enabled build. For OpenAI-compatible, add a named HTTPS
+tool calling. Wake-word dataset requires a wake-enabled build. Use package
+version 0.1.2 or later to capture microWakeWord frames. For OpenAI-compatible, add a named HTTPS
 connection in the plugin settings and select it for any of the three stages
 in **Settings → Provider**. The built-in provider remains available for the
 other stages.
@@ -119,8 +121,11 @@ ignored `provisioning.csv` and fill in the credentials. Keep the CSV and
 generated image local. Flashing this NVS image also replaces the saved panel
 password, provider and microphone settings.
 
-After upgrading a board with an Argon2 or PBKDF2-SHA512 panel password, use
-this USB provisioning procedure and then set a new panel password.
+After upgrading a board with an Argon2 panel password, use this USB
+provisioning procedure and then set a new panel password. Saved PBKDF2
+passwords continue to work. You can enable or disable the password in
+**Settings → Panel**. Updates, add-on management and logs require a password.
+Sign-in sessions last up to 30 days while the board remains running.
 
 ```sh
 python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py" generate \

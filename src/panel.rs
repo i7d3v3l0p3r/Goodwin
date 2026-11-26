@@ -33,8 +33,8 @@ use crate::{
 };
 
 use auth::{
-    Auth, access, login, logout, require_owner, require_password_owner, require_same_origin,
-    response_headers, setup_password,
+    Auth, access, enable_password, login, logout, open_access, require_owner,
+    require_password_owner, require_same_origin, response_headers, setup_password,
 };
 use json_body::{Json, JsonDocument};
 use plugin_routes::{
@@ -115,6 +115,8 @@ pub fn router(app: Arc<App>) -> Router {
             get(|| async { Json(crate::model::capabilities()) }),
         )
         .route("/api/access", get(access))
+        .route("/api/access/open", post(open_access))
+        .route("/api/access/password", post(enable_password))
         .route("/api/events", get(events::subscribe))
         .route("/api/setup", post(setup_password))
         .route("/api/login", post(login))

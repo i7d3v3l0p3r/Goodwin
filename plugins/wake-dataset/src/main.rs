@@ -372,6 +372,30 @@ mod tests {
     }
 
     #[test]
+    fn captures_and_reopens_thirty_millisecond_wake_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut collector = dataset(dir.path());
+        collector.collect(&json!({"enabled": true})).unwrap();
+        let subscription = collector.wake_subscription();
+        for i in 0..85 {
+            let mut event = frame(subscription, i, 100, 0.875);
+            if let Event::Frame(frame) = &mut event.event {
+                frame.pcm = STANDARD.encode(100_i16.to_le_bytes().repeat(480));
+                frame.ended_at_ms = 1000 + i * 30;
+            }
+            collector.wake_event(event).unwrap();
+        }
+        let stored_bytes = collector.store.used_bytes;
+        drop(collector);
+        let collector = dataset(dir.path());
+        let clip = collector.store.clips.values().next().unwrap();
+        assert_eq!(clip.info.frame_samples, 480);
+        assert_eq!(clip.info.scores.len(), 85);
+        assert_eq!(collector.store.wav(clip).unwrap().len(), 44 + 85 * 480 * 2);
+        assert_eq!(collector.store.used_bytes, stored_bytes);
+    }
+
+    #[test]
     fn captures_both_sides_of_the_threshold_and_reopens_manually_labelled_audio() {
         let dir = tempfile::tempdir().unwrap();
         let mut collector = dataset(dir.path());

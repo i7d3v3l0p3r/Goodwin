@@ -211,7 +211,7 @@ impl Chat {
 }
 
 pub(crate) const SESSION_DURATION: std::time::Duration =
-    std::time::Duration::from_secs(12 * 60 * 60);
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 pub(crate) fn session_token(header: &str) -> Option<&str> {
     header
@@ -303,7 +303,7 @@ pub(crate) const ASSETS: &[Asset] = &[
 ];
 
 pub(crate) fn valid_password_length(password: &str) -> bool {
-    (8..=256).contains(&password.len())
+    (8..=256).contains(&password.chars().take(257).count())
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> goodwin_error::Result<[u8; N]> {

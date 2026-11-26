@@ -60,7 +60,6 @@
 .access { display: grid; gap: 8px; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--edge); }
 .access h2 { font-size: 1rem; }
 .access p { color: var(--muted); }
-.access code { overflow-wrap: anywhere; }
 .error { margin-top: 12px; color: var(--danger); font-size: .88rem; }
 
 @media (pointer: coarse) {

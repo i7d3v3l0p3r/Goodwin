@@ -149,7 +149,7 @@ async fn session_expiry(
     headers: &HeaderMap,
     password_hash: &str,
 ) -> Option<SystemTime> {
-    if !password::uses_current_algorithm(password_hash) {
+    if !password::supports_hash(password_hash) {
         return None;
     }
     let token = token(headers)?;
@@ -226,7 +226,18 @@ pub(super) async fn setup_password(
     State(panel): State<Panel>,
     Json(setup): Json<SetupPassword>,
 ) -> Response {
-    if !matches!(panel.app.configuration().access(), Access::PendingPassword) {
+    set_password(panel, setup, Access::PendingPassword).await
+}
+
+pub(super) async fn enable_password(
+    State(panel): State<Panel>,
+    Json(setup): Json<SetupPassword>,
+) -> Response {
+    set_password(panel, setup, Access::Open).await
+}
+
+async fn set_password(panel: Panel, setup: SetupPassword, previous: Access) -> Response {
+    if panel.app.configuration().access() != previous {
         return problem(StatusCode::CONFLICT, "setup_complete");
     }
     if !valid_password_length(&setup.password) {
@@ -236,11 +247,12 @@ pub(super) async fn setup_password(
         return problem(StatusCode::BAD_REQUEST, "password_mismatch");
     }
     let result = tokio::task::spawn_blocking(move || {
-        let Some(hash) = panel
+        let hash = password::hash(&setup.password)?;
+        if !panel
             .app
             .configuration()
-            .set_initial_password(&setup.password)?
-        else {
+            .replace_access(&previous, Access::Password { hash: hash.clone() })?
+        {
             return Ok::<_, goodwin_error::Error>(problem(StatusCode::CONFLICT, "setup_complete"));
         };
         // The password is already durable, so a session failure leaves the normal sign-in flow.
@@ -259,13 +271,41 @@ pub(super) async fn setup_password(
     }
 }
 
+pub(super) async fn open_access(
+    State(panel): State<Panel>,
+    headers: HeaderMap,
+    _: JsonDocument,
+) -> Response {
+    let previous = panel.app.configuration().access();
+    if let Access::Password { hash } = &previous
+        && !has_session(&panel, &headers, hash).await
+    {
+        return problem(StatusCode::UNAUTHORIZED, "login_required");
+    }
+    if matches!(previous, Access::Open) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        panel
+            .app
+            .configuration()
+            .replace_access(&previous, Access::Open)
+    })
+    .await;
+    match result {
+        Ok(Ok(true)) => session_response(cookie("", 0)),
+        Ok(Ok(false)) => problem(StatusCode::CONFLICT, "setup_complete"),
+        _ => problem(StatusCode::INTERNAL_SERVER_ERROR, "access_save_failed"),
+    }
+}
+
 pub(super) async fn login(State(panel): State<Panel>, Json(login): Json<Login>) -> Response {
     let hash = match panel.app.configuration().access() {
         Access::Open => return StatusCode::NO_CONTENT.into_response(),
         Access::PendingPassword => return problem(StatusCode::CONFLICT, "setup_required"),
         Access::Password { hash } => hash,
     };
-    if !password::uses_current_algorithm(&hash) {
+    if !password::supports_hash(&hash) {
         return problem(StatusCode::CONFLICT, "password_reset_required");
     }
     {

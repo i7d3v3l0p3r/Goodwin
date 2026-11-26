@@ -12,39 +12,64 @@ use crate::{
 };
 
 pub(super) struct Auth {
-    password: Option<String>,
+    mode: Mode,
     sessions: VecDeque<(String, Instant)>,
     next_login: Option<Instant>,
 }
 
+enum Mode {
+    Pending,
+    Open,
+    Password(String),
+}
+
+pub(super) const OPEN_ACCESS: &str = "open";
+
 impl Auth {
     pub fn new(password: Option<String>) -> Self {
+        let mode = match password {
+            None => Mode::Pending,
+            Some(hash) if hash == OPEN_ACCESS => Mode::Open,
+            Some(hash) => Mode::Password(hash),
+        };
         Self {
-            password,
+            mode,
             sessions: VecDeque::new(),
             next_login: None,
         }
     }
 
     pub fn access(&self, token: Option<&str>) -> AccessState {
+        let protected = !matches!(self.mode, Mode::Open);
         AccessState {
-            protected: true,
-            authorized: token.is_some_and(|token| {
-                self.sessions
-                    .iter()
-                    .any(|(id, expiry)| id == token && Instant::now() < *expiry)
-            }),
-            setup_required: self.password.is_none(),
+            protected,
+            authorized: !protected
+                || token.is_some_and(|token| {
+                    self.sessions
+                        .iter()
+                        .any(|(id, expiry)| id == token && Instant::now() < *expiry)
+                }),
+            setup_required: matches!(self.mode, Mode::Pending),
         }
     }
 
     pub fn set_password(&mut self, hash: String) {
-        self.password = Some(hash);
+        self.mode = Mode::Password(hash);
+        self.sessions.clear();
+        self.next_login = None;
+    }
+
+    pub fn set_open(&mut self) {
+        self.mode = Mode::Open;
+        self.sessions.clear();
+        self.next_login = None;
     }
 
     pub fn reserve_login(&mut self) -> Result<String, &'static str> {
-        let hash = self.password.as_ref().ok_or("setup_required")?;
-        if !password::uses_current_algorithm(hash) {
+        let Mode::Password(hash) = &self.mode else {
+            return Err("setup_required");
+        };
+        if !password::supports_hash(hash) {
             return Err("password_reprovision_required");
         }
         let now = Instant::now();
@@ -68,7 +93,7 @@ impl Auth {
     }
 
     pub fn uses_hash(&self, hash: &str) -> bool {
-        self.password.as_deref() == Some(hash)
+        matches!(&self.mode, Mode::Password(current) if current == hash)
     }
 
     pub fn create_session(&mut self) -> Result<String> {

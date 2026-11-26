@@ -13,7 +13,7 @@ The Rust installer runs on Windows, Linux and macOS. It installs Goodwin on a pr
 1. Select a Station from the list. The installer starts an mDNS search for Mini 3 on launch. Click **Обновить** to search again or **Указать адрес вручную** to enter an IP address or hostname. Add an ADB port if it differs from 5555.
 2. Click **Проверить подключение** to check ADB access and Station compatibility. Confirm the target and package source, then choose a wake word and model tier. The default keeps the current model on updates and downloads «Гудвин» Standard on a fresh installation.
 3. Click **Установить Goodwin** or **Обновить Goodwin**. The installer verifies the Station package and any model download with SHA-256, starts the service and enables it at boot.
-4. After a fresh installation, click **Настроить Goodwin** and create a password. The panel guides you through the provider setup and checks for text and voice replies.
+4. After a fresh installation, click **Настроить Goodwin** and choose how to access the panel. Use a password to install the provider add-on and check text and voice replies.
 
 For local testing, open **Дополнительные настройки → Локальная сборка** and select an archive or a directory containing `goodwin-mini3-aarch64.tar.gz` or an extracted package. An unpackaged test build needs the AArch64 `goodwin` binary. If the directory contains `SHA256SUMS`, make sure it matches the local build. Click **Сбросить** in **Локальная сборка** to resume installing from GitHub.
 
@@ -38,7 +38,7 @@ goodwin-installer install 192.168.1.42:5555 --package ./goodwin-mini3-aarch64.ta
 
 The default ADB port is 5555 and the default package is the latest stable release. Use `--package <path>` to select a local archive or build directory, `--adb <path>` to select an ADB executable, and `--model <id>` to select a model ID from the latest release's [metadata.json](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases/latest/download/metadata.json). The default `keep` retains the model on updates and downloads `goodwin-standard` for a fresh installation. Put IPv6 addresses in brackets, as in `[fd00::42]:5555`.
 
-The command writes progress and errors to stderr. On success it exits with status 0 and prints the panel URL to stdout. An installation failure returns status 1 and invalid arguments return status 2. Fresh installations still ask for a password on the first panel visit.
+The command writes progress and errors to stderr. On success it exits with status 0 and prints the panel URL to stdout. An installation failure returns status 1 and invalid arguments return status 2. On a fresh installation, the panel asks how you want to sign in.
 
 The regular installer supports both modes. To build it without desktop dependencies, run `cargo build --locked --release --no-default-features --manifest-path installer/Cargo.toml`.
 
@@ -64,9 +64,9 @@ and Solid panel assets. `/api/capabilities` describes the selected model to the 
 | Mini 3 without TFLite | Same target, omit `wake-tflite` | Standard and Micro ONNX | Native ARM64, WASM with `wasm-plugins` | Same Station hardware and panel |
 | Mini 3 INT8-only | Same target, `--no-default-features --features wake-tflite,wasm-plugins` | Micro INT8 TFLite | Native ARM64 and WASM | Same Station hardware and panel |
 | Native development | Linux x86-64 and Windows builds | Standard and Micro ONNX by default, optional Micro INT8 on Linux x86-64 | WASM is supported on Linux with `wasm-plugins` | Panel and test fixtures for Station audio |
-| ESP32-S3 N16R8 | `xtensa-esp32s3-espidf`, default firmware script | Micro INT8 TFLite with a bundled model and catalog | WASM or built-in providers | I²S, push-to-talk, Wi-Fi setup, panel polling, OTA |
+| ESP32-S3 N16R8 | `xtensa-esp32s3-espidf`, default firmware script | Bundled microWakeWord and LiveKit Micro INT8 catalog | WASM or built-in providers | I²S, push-to-talk, Wi-Fi setup, panel polling, OTA |
 | ESP32-S3 button-only | Same target with `--button-only` | None | WASM or built-in providers | Same ESP hardware and panel, activation by button |
-| ESP32-S3 without plug-ins | Same target with `--no-plugins`, optionally with `--button-only` | Micro INT8 TFLite with the default firmware, none with `--button-only` | Built-in provider | Same ESP hardware and panel |
+| ESP32-S3 without plug-ins | Same target with `--no-plugins`, optionally with `--button-only` | microWakeWord and LiveKit Micro INT8 with the default firmware, none with `--button-only` | Built-in provider | Same ESP hardware and panel |
 
 Use `--emulator` with the ESP32-S3 build script for ESP-EMU. Its local
 provider fixture and OTA image tag are specific to the emulator.
@@ -167,7 +167,7 @@ chmod +x ./goodwin
 ./goodwin serve ./goodwin-data 0.0.0.0:8787
 ```
 
-Open the Station's address on port 8787 and create a panel password. In **Set up Goodwin**, upload `openai-compatible-wasm32.tar.gz`, configure OpenRouter or another compatible API, and check text and voice replies. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup sets the password. For explicit password-free access, run `goodwin setup ./goodwin-data open` when initializing a new data directory.
+Open the Station's address on port 8787 and choose whether to use a password. To install `openai-compatible-wasm32.tar.gz` from **Set up Goodwin**, sign in with a password. Configure OpenRouter or another compatible API and check text and voice replies. Keep the panel on a trusted network. It uses plain HTTP, and the first visitor who completes setup chooses the access mode. To initialize a data directory with open access, run `goodwin setup ./goodwin-data open`.
 
 To enable or change voice activation, open **Station → Activation and microphone**. Choose a model and click **Download and switch**. The Station needs access to GitHub for the download. The new model takes effect without restarting the service and is saved for subsequent starts.
 
@@ -204,9 +204,9 @@ The panel opens at `http://127.0.0.1:8787`. When running Vite in development mod
 
 Sign in to the panel and use **Plugins → Upload package** to install a trusted `.tar.gz` archive or update an existing plugin. When the process reports readiness, its page, navigation and API become available. A failed update restores the previous version and its data. Removing a plugin also removes its saved data.
 
-If you previously set up open access, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Your saved settings and API key are retained.
+Enable or disable the password in **Settings → Panel**. Sessions issued after sign-in last 30 days. Updates, add-on management and logs require a password.
 
-After upgrading a Mini 3 with an Argon2 or PBKDF2-SHA512 panel password, use the same command to set a password before signing in. Managed installations use `/data/opt/etc/goodwin` as the data directory.
+Saved PBKDF2 passwords continue to work. After upgrading a Mini 3 with an Argon2 panel password, stop Goodwin, run `goodwin set-password <data-dir>`, then start it again. Managed installations use `/data/opt/etc/goodwin` as the data directory.
 
 The Windows Station build produces `target/plugins/timers-wasm32.tar.gz` and `target/plugins/timers-linux-aarch64.tar.gz`. Upload Timers to create, list and cancel timers in the panel. Updating an existing Timers installation with the WASM package retains its saved timers. For voice commands, select an answer model that supports tool calling. Panel timers and their sounds run locally.
 

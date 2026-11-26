@@ -18,6 +18,13 @@ pub const FRAME_SAMPLES: usize = 1280;
 pub const SAMPLE_RATE: u32 = 16_000;
 const WAV_LIMIT: usize = 44 + WINDOW_FRAMES * FRAME_SAMPLES * 2;
 
+pub fn window_frames(frame_samples: usize) -> Option<usize> {
+    match frame_samples {
+        FRAME_SAMPLES | 480 => Some(WINDOW_FRAMES * FRAME_SAMPLES / frame_samples),
+        _ => None,
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipInfo {
@@ -144,10 +151,7 @@ impl Store {
     pub fn save(&mut self, info: ClipInfo, pcm: &[u8]) -> Result<()> {
         let frames = info.scores.len();
         ensure!(
-            (1..=WINDOW_FRAMES).contains(&frames)
-                && info.sample_rate == SAMPLE_RATE
-                && info.frame_samples == FRAME_SAMPLES
-                && pcm.len() == frames * FRAME_SAMPLES * 2,
+            valid_audio(&info) && pcm.len() == frames * info.frame_samples * 2,
             "Invalid wake sample",
         );
         let id = self.last_id.saturating_add(1).max(info.captured_at_ms);
@@ -212,11 +216,8 @@ impl Store {
 }
 
 fn make_clip(id: u64, label: Label, info: ClipInfo, wav_offset: usize) -> Result<Clip> {
-    ensure!(
-        (1..=WINDOW_FRAMES).contains(&info.scores.len()),
-        "Invalid wake sample frame count"
-    );
-    let stored_bytes = wav_offset + 44 + info.scores.len() * FRAME_SAMPLES * 2;
+    ensure!(valid_audio(&info), "Invalid wake sample format");
+    let stored_bytes = wav_offset + 44 + info.scores.len() * info.frame_samples * 2;
     let peak = info.scores.iter().copied().reduce(f32::max).unwrap_or(0.0);
     Ok(Clip {
         id,
@@ -226,6 +227,12 @@ fn make_clip(id: u64, label: Label, info: ClipInfo, wav_offset: usize) -> Result
         wav_offset: wav_offset as u64,
         stored_bytes,
     })
+}
+
+fn valid_audio(info: &ClipInfo) -> bool {
+    info.sample_rate == SAMPLE_RATE
+        && window_frames(info.frame_samples)
+            .is_some_and(|frames| (1..=frames).contains(&info.scores.len()))
 }
 
 #[cfg(test)]

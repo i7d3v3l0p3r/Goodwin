@@ -5,10 +5,20 @@
 ### English
 
 - GitHub releases now distribute Timers, OpenAI-compatible and Wake-word dataset only as WASM packages.
+- New panel passwords use PBKDF2-HMAC-SHA512 with 220,000 iterations. Existing PBKDF2 passwords continue to work, and ESP32-S3 verifies saved SHA256 hashes faster.
+- ESP32-S3 creates and verifies SHA512 panel password hashes faster and gives the watchdog time between batches of iterations.
+- Panel sessions last 30 days. You can continue without a password during setup or change access in panel settings. Password length is shown in characters.
+- ESP32-S3 speeds up dense and depthwise INT8 convolutions in the wake detector.
+- ESP32-S3 uses microWakeWord by default for «Гудвин». Existing catalog selections remain available. Wake-word dataset 0.1.2 records the new 30 ms frames.
 
 ### Русский
 
 - В релизах GitHub плагины таймеров, OpenAI-совместимого провайдера и датасета слова активации теперь доступны только в формате WASM.
+- Новые пароли панели используют PBKDF2-HMAC-SHA512 с 220 000 итераций. Сохранённые пароли PBKDF2 подходят, а ESP32-S3 быстрее проверяет хеши SHA256.
+- ESP32-S3 быстрее создаёт и проверяет хеши паролей SHA512 и даёт сторожевому таймеру время между пакетами итераций.
+- Сессия панели действует 30 дней. Можно продолжить без пароля при первом запуске или изменить доступ в настройках панели. Длина пароля указана в символах.
+- ESP32-S3 ускоряет обычные и поканальные свёртки INT8 в детекторе активации.
+- ESP32-S3 по умолчанию распознаёт «Гудвин» через microWakeWord. Сохранённые модели из каталога остаются доступны. Датасет слова активации версии 0.1.2 записывает новые кадры по 30 мс.
 
 ## [0.5.0] - 2026-11-26
 

@@ -9,7 +9,7 @@ use goodwin_error::{Context, Result, bail};
 
 use crate::{
     voice_core::{CAPTURE_HZ, PRE_ROLL, retained_wake_pre_roll, scale_sample},
-    wake_catalog::Selection,
+    wake_catalog::{Runtime, Selection},
     wake_tflite::{FRAME_SAMPLES, TfliteModel},
 };
 
@@ -18,14 +18,7 @@ use super::{
     wake_models::Candidate,
 };
 
-const MODEL_SIZE: usize = include_bytes!(concat!(env!("OUT_DIR"), "/wake.tflite")).len();
 const HISTORY_LIMIT: usize = PRE_ROLL + CAPTURE_HZ as usize * 3;
-
-#[repr(align(16))]
-struct AlignedModel([u8; MODEL_SIZE]);
-
-static MODEL: AlignedModel =
-    AlignedModel(*include_bytes!(concat!(env!("OUT_DIR"), "/wake.tflite")));
 
 struct Frame {
     generation: u64,
@@ -44,6 +37,7 @@ pub(super) struct Detector {
     pub(super) selection: Selection,
     frames: SyncSender<Frame>,
     predictions: Receiver<Prediction>,
+    frame_samples: usize,
     history: VecDeque<i16>,
     first: u64,
     next: u64,
@@ -56,10 +50,11 @@ pub(super) struct Detector {
 
 impl Detector {
     pub(super) fn prepare(candidate: Candidate) -> Result<(Selection, TfliteModel)> {
-        candidate.load(MODEL.0.as_slice())
+        candidate.load()
     }
 
     pub(super) fn new((selection, mut model): (Selection, TfliteModel)) -> Result<Self> {
+        let frame_samples = model.frame_samples();
         let (frames, input) = mpsc::sync_channel::<Frame>(1);
         let (output, predictions) = mpsc::sync_channel(1);
         thread::Builder::new()
@@ -73,7 +68,7 @@ impl Detector {
                         generation = frame.generation;
                     }
                     let start = Instant::now();
-                    let score = model.predict(&frame.samples);
+                    let score = model.predict(&frame.samples[..frame_samples]);
                     let elapsed = start.elapsed();
                     crate::diagnostics::wake_frame(elapsed, score.is_err());
                     let elapsed_us = elapsed.as_micros();
@@ -98,6 +93,7 @@ impl Detector {
             selection,
             frames,
             predictions,
+            frame_samples,
             history: VecDeque::with_capacity(HISTORY_LIMIT),
             first: 0,
             next: 0,
@@ -160,7 +156,11 @@ impl Detector {
                             .selection
                             .score_threshold
                             .unwrap_or(crate::model::WAKE_THRESHOLD);
-                        let threshold = (baseline + 0.55 * (0.5 - sensitivity)).clamp(0.0, 1.0);
+                        let threshold = if self.selection.runtime == Runtime::MicroWakeWord {
+                            baseline
+                        } else {
+                            (baseline + 0.55 * (0.5 - sensitivity)).clamp(0.0, 1.0)
+                        };
                         #[cfg(feature = "wasm-plugins")]
                         self.observe_frame(prediction.end, lag, gain, threshold, score);
                         #[cfg(feature = "esp-emulator")]
@@ -195,27 +195,28 @@ impl Detector {
         }
 
         if !self.busy {
+            let frame_samples = self.frame_samples;
             if discarded
-                || retained_wake_pre_roll(self.first, self.next + FRAME_SAMPLES as u64).is_none()
+                || retained_wake_pre_roll(self.first, self.next + frame_samples as u64).is_none()
             {
                 self.end_observations();
                 self.generation += 1;
                 // Resume near the live edge before the detector loses the start of a request.
-                let resume = live - FRAME_SAMPLES as u64;
-                let dropped = (resume - self.next).div_ceil(FRAME_SAMPLES as u64);
+                let resume = live - frame_samples as u64;
+                let dropped = (resume - self.next).div_ceil(frame_samples as u64);
                 crate::diagnostics::capture_skipped(dropped + u64::from(discarded));
                 self.next = resume;
             }
             let offset = (self.next - self.first) as usize;
-            if self.history.len() >= offset + FRAME_SAMPLES {
+            if self.history.len() >= offset + frame_samples {
                 let mut samples = [0; FRAME_SAMPLES];
                 for (out, &raw) in samples
                     .iter_mut()
-                    .zip(self.history.range(offset..offset + FRAME_SAMPLES))
+                    .zip(self.history.range(offset..offset + frame_samples))
                 {
                     *out = scale_sample(raw, gain);
                 }
-                let end = self.next + FRAME_SAMPLES as u64;
+                let end = self.next + frame_samples as u64;
                 self.frames
                     .try_send(Frame {
                         generation: self.generation,
@@ -248,7 +249,7 @@ impl Detector {
         let Some(plugins) = &self.plugins else {
             return;
         };
-        let start = end.saturating_sub(FRAME_SAMPLES as u64);
+        let start = end.saturating_sub(self.frame_samples as u64);
         if start < self.first {
             return;
         }
@@ -256,7 +257,7 @@ impl Detector {
             let start_offset = (start - self.first) as usize;
             let pcm: Vec<u8> = self
                 .history
-                .range(start_offset..start_offset + FRAME_SAMPLES)
+                .range(start_offset..start_offset + self.frame_samples)
                 .flat_map(|sample| sample.to_le_bytes())
                 .collect();
             let captured_ms = SystemTime::now()
@@ -266,7 +267,7 @@ impl Detector {
             let lag_ms = lag * 1_000 / u64::from(CAPTURE_HZ);
             Event::Frame(Frame {
                 stream: self.generation,
-                index: start / FRAME_SAMPLES as u64,
+                index: start / self.frame_samples as u64,
                 model: Model {
                     id: self.selection.id.clone(),
                     wake_word: self.selection.wake_word.clone(),

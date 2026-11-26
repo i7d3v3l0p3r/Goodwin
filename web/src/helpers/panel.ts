@@ -261,9 +261,11 @@ export function createPanel() {
       }
     }, { voiceCancel: true }),
     setMicrophoneMuted: (muted: boolean) => action(() => api("settings/microphone", "PUT", { muted }), { microphone: true }),
-    setupPassword: (password: string, confirmation: string) =>
-      action(() => apiOperation<void>("setup", "POST", { password, confirmation }, passwordTimeout(), "auth/result"),
+    setupPassword: (password: string, confirmation: string, mode: "setup" | "enable") =>
+      action(() => apiOperation<void>(mode === "setup" ? "setup" : "access/password", "POST", { password, confirmation }, passwordTimeout(), "auth/result"),
         { recheckAccess: true }),
+    openAccess: (onError?: (code: string) => void) =>
+      action(() => api("access/open", "POST", {}), { recheckAccess: true, onError }),
     login: (password: string) => action(() => apiOperation<void>("login", "POST", { password }, passwordTimeout(), "auth/result"),
       { recheckAccess: true }),
     logout: () => action(async () => {

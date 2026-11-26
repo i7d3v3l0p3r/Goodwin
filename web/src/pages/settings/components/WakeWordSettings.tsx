@@ -34,7 +34,8 @@ export function WakeWordSettings(props: {
   const [error, setError] = createSignal<string>();
   const selected = () => catalog()?.models.find(model => model.id === id());
   const modelLabel = (model: WakeModel) => {
-    const tier = model.runtime === "livekit-v2-micro-tflite" ? "Micro INT8" : model.tier === "micro" ? "Micro" : "Standard";
+    const tier = model.runtime === "microwakeword-tflite" ? "microWakeWord"
+      : model.runtime === "livekit-v2-micro-tflite" ? "Micro INT8" : model.tier === "micro" ? "Micro" : "Standard";
     return `${model.wake_word} · ${tier}`;
   };
   const sensitivity = () => preview() ?? props.sensitivity;
@@ -117,22 +118,24 @@ export function WakeWordSettings(props: {
     <Switch label={props.t.listening(props.currentModel?.wake_word ?? props.t.defaultWakeWord)}
       hint={props.t.voiceRecovery.listeningHint}
       checked={props.listening} disabled={props.pending} onChange={props.toggleListening} />
-    <label class={styles.sensitivity} for="sensitivity">
-      <span>{props.t.sensitivity} <output aria-hidden="true">{Math.round(sensitivity() * 100)}%</output></span>
-      <input id="sensitivity" type="range" min={0} max={1} step={0.01} value={sensitivity()} disabled={props.pending}
-        aria-describedby={failedSensitivity() !== undefined ? "sensitivity-error" : undefined}
-        aria-valuetext={`${Math.round(sensitivity() * 100)}%`}
-        onInput={event => { setPreview(event.currentTarget.valueAsNumber); setFailedSensitivity(undefined); }}
-        onChange={event => void saveSensitivity(event.currentTarget.valueAsNumber)} />
-    </label>
-    <Show when={failedSensitivity() !== undefined}>
-      <div class={styles.modelActions}>
-        <p id="sensitivity-error" class={styles.modelError} role="alert">{props.t.sensitivitySaveFailed}</p>
-        <Button type="button" disabled={props.pending} onClick={() => {
-          const value = failedSensitivity();
-          if (value !== undefined) void saveSensitivity(value);
-        }}>{props.t.retryWakeCatalog}</Button>
-      </div>
+    <Show when={props.currentModel?.runtime !== "microwakeword-tflite"}>
+      <label class={styles.sensitivity} for="sensitivity">
+        <span>{props.t.sensitivity} <output aria-hidden="true">{Math.round(sensitivity() * 100)}%</output></span>
+        <input id="sensitivity" type="range" min={0} max={1} step={0.01} value={sensitivity()} disabled={props.pending}
+          aria-describedby={failedSensitivity() !== undefined ? "sensitivity-error" : undefined}
+          aria-valuetext={`${Math.round(sensitivity() * 100)}%`}
+          onInput={event => { setPreview(event.currentTarget.valueAsNumber); setFailedSensitivity(undefined); }}
+          onChange={event => void saveSensitivity(event.currentTarget.valueAsNumber)} />
+      </label>
+      <Show when={failedSensitivity() !== undefined}>
+        <div class={styles.modelActions}>
+          <p id="sensitivity-error" class={styles.modelError} role="alert">{props.t.sensitivitySaveFailed}</p>
+          <Button type="button" disabled={props.pending} onClick={() => {
+            const value = failedSensitivity();
+            if (value !== undefined) void saveSensitivity(value);
+          }}>{props.t.retryWakeCatalog}</Button>
+        </div>
+      </Show>
     </Show>
     <Show when={props.hasCatalog} fallback={<p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
       ? modelLabel(props.currentModel) : props.t.noWakeModel}</p>}>
