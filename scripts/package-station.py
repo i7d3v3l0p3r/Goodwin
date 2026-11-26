@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import io
+import shlex
 import tarfile
 from pathlib import Path
 
@@ -14,7 +15,7 @@ Extract the archive into a writable executable directory on a prepared Station.
 Mini 3 firmware with BusyBox tar uses a separate gzip command.
 
 ```sh
-gzip -dc goodwin-mini3-aarch64.tar.gz | tar -xf -
+gzip -dc ./{archive_name} | tar -xf -
 cd goodwin-mini3
 sha256sum -c SHA256SUMS
 ./goodwin setup ./goodwin-data
@@ -75,7 +76,7 @@ def main() -> None:
         "goodwin": (binary, 0o755),
         "start.sh": ((ROOT / "scripts/start-station.sh").read_text().encode(), 0o755),
         "LICENSE": (licenses(binary), 0o644),
-        "README.md": (GUIDE.encode(), 0o644),
+        "README.md": (GUIDE.format(archive_name=shlex.quote(args.output.name)).encode(), 0o644),
     }
     checksums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
                         for name, (data, _) in files.items())

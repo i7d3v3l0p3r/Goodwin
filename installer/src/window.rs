@@ -549,7 +549,7 @@ impl InstallerWindow {
         self.catalog_error = None;
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let catalog = Catalog::latest(Runtime::available(true))
+            let catalog = Catalog::latest(Runtime::available(true, true))
                 .map_err(|error| format!("{error:#}"))
                 .and_then(|catalog| {
                     if catalog.models.is_empty() {

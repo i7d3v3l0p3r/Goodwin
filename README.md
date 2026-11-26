@@ -62,6 +62,7 @@ and Solid panel assets. `/api/capabilities` describes the selected model to the 
 | --- | --- | --- | --- | --- |
 | Mini 3 release | `aarch64-unknown-linux-musl` with `wake-tflite,wasm-plugins` | Standard and Micro ONNX, Micro INT8 TFLite | Native ARM64 and WASM | YIO microphone, ALSA playback, logo and clock indicators, panel events |
 | Mini 3 without TFLite | Same target, omit `wake-tflite` | Standard and Micro ONNX | Native ARM64, WASM with `wasm-plugins` | Same Station hardware and panel |
+| Mini 3 INT8-only | Same target, `--no-default-features --features wake-tflite,wasm-plugins` | Micro INT8 TFLite | Native ARM64 and WASM | Same Station hardware and panel |
 | Native development | Linux x86-64 and Windows builds | Standard and Micro ONNX by default, optional Micro INT8 on Linux x86-64 | WASM is supported on Linux with `wasm-plugins` | Panel and test fixtures for Station audio |
 | ESP32-S3 N16R8 | `xtensa-esp32s3-espidf`, default firmware script | Micro INT8 TFLite with a bundled model and catalog | WASM or built-in providers | I²S, push-to-talk, Wi-Fi setup, panel polling, OTA |
 | ESP32-S3 button-only | Same target with `--button-only` | None | WASM or built-in providers | Same ESP hardware and panel, activation by button |
@@ -103,6 +104,21 @@ The Station binary is `target/aarch64-unknown-linux-musl/release/goodwin`. The n
 Run `python scripts/package-station.py` to package the ARM64 binary and launcher in `target/goodwin-mini3-aarch64.tar.gz`. Model assets and their license and notice are distributed in the [Goodwin-wakeword releases](https://github.com/i7d3v3l0p3r/Goodwin-wakeword/releases).
 
 See the [native runtime notes](native/README.md) for dependency pins, FFI ownership, and checks with AddressSanitizer and UndefinedBehaviorSanitizer.
+
+### Build the Mini 3 INT8-only package
+
+After building the panel and native runtime prerequisites above, build and package the INT8-only binary with cargo-zigbuild.
+
+```sh
+cargo zigbuild --locked --release --no-default-features --features wake-tflite,wasm-plugins \
+  --target aarch64-unknown-linux-musl --target-dir target/mini3-int8 \
+  --config 'profile.release.package.goodwin.strip="symbols"'
+python3 scripts/package-station.py \
+  --binary target/mini3-int8/aarch64-unknown-linux-musl/release/goodwin \
+  --output target/goodwin-mini3-int8-aarch64.tar.gz
+```
+
+The installer defaults to `goodwin-micro-int8` for a fresh installation from this local package. For an existing installation, switch to a Micro INT8 model in the panel before upgrading, or pass `--model goodwin-micro-int8` to the installer with the INT8-only package. A Station with an ONNX model still selected will reject the upgrade during its preflight check.
 
 ### Benchmark wake runtimes
 

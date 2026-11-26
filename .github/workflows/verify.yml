@@ -77,6 +77,15 @@ jobs:
       - name: Lint with Station runtimes
         if: matrix.station_runtimes
         run: cargo clippy --locked --workspace --all-targets --features goodwin/wake-tflite,goodwin/wasm-plugins -- -D warnings
+      - name: Check the INT8-only Station profile
+        if: matrix.station_runtimes
+        shell: bash
+        run: |
+          cargo test --locked -p goodwin --no-default-features --features wake-tflite,wasm-plugins
+          GOODWIN_WAKE_REFERENCE_DIR="$PWD/target/wake-reference" \
+            cargo test --locked -p goodwin --no-default-features --features wake-tflite,wasm-plugins \
+            -- --ignored --exact wake::tests::published_models_match_the_synthetic_reference
+          cargo clippy --locked -p goodwin --all-targets --no-default-features --features wake-tflite,wasm-plugins -- -D warnings
       - name: Check the native runtime boundaries with ASan and UBSan
         if: matrix.station_runtimes
         shell: bash

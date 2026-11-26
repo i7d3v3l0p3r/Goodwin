@@ -1,27 +1,39 @@
 use std::{fs, path::Path};
 
 use goodwin_error::{Context, Result, bail, ensure};
+#[cfg(feature = "wake-onnx")]
 use livekit_wakeword::WakeWordModel;
+#[cfg(feature = "wake-onnx")]
 use prost::Message;
 use sha2::{Digest, Sha256};
 
-use crate::wake_catalog::{Runtime, Selection, tflite_marker};
+use crate::wake_catalog::{INT8_ONLY_MARKER, Runtime, Selection, tflite_marker};
 
 mod catalog;
+#[cfg(feature = "wake-onnx")]
 mod micro;
 #[cfg(feature = "wake-tflite")]
 use crate::wake_tflite::TfliteModel;
 
+#[cfg(not(feature = "wake-onnx"))]
+pub(crate) use crate::wake_tflite::FRAME_SAMPLES;
 pub(crate) use catalog::{InstallError, PendingModel, WakeModels};
+#[cfg(feature = "wake-onnx")]
 pub use livekit_wakeword::{FRAME_SAMPLES, SAMPLE_RATE};
+#[cfg(not(feature = "wake-onnx"))]
+pub(crate) const SAMPLE_RATE: usize = crate::voice_core::CAPTURE_HZ as usize;
 
 pub(crate) fn runtimes() -> &'static [Runtime] {
     let with_tflite = cfg!(feature = "wake-tflite");
+    let with_onnx = cfg!(feature = "wake-onnx");
     if with_tflite {
         // The desktop installer and package builder read the compiled capability.
         std::hint::black_box(tflite_marker());
     }
-    Runtime::available(with_tflite)
+    if !with_onnx {
+        std::hint::black_box(INT8_ONLY_MARKER);
+    }
+    Runtime::available(with_onnx, with_tflite)
 }
 
 pub struct WakeModel {
@@ -31,7 +43,9 @@ pub struct WakeModel {
 }
 
 enum Backend {
+    #[cfg(feature = "wake-onnx")]
     Standard(Box<WakeWordModel>),
+    #[cfg(feature = "wake-onnx")]
     Micro(Box<micro::MicroModel>),
     #[cfg(feature = "wake-tflite")]
     Tflite(TfliteModel),
@@ -76,6 +90,23 @@ impl WakeModel {
             #[cfg(not(feature = "wake-tflite"))]
             bail!("This Goodwin build does not support LiveKit Micro TFLite");
         }
+        #[cfg(feature = "wake-onnx")]
+        {
+            Self::load_onnx(path, selection, bytes, sha256)
+        }
+        #[cfg(not(feature = "wake-onnx"))]
+        {
+            bail!("This Goodwin build supports only Micro INT8 TFLite wake models")
+        }
+    }
+
+    #[cfg(feature = "wake-onnx")]
+    fn load_onnx(
+        path: &Path,
+        selection: Option<&Selection>,
+        bytes: Vec<u8>,
+        sha256: String,
+    ) -> Result<Self> {
         let summary = OnnxSummary::decode(bytes.as_slice()).context("Decode ONNX model")?;
         let graph = summary.graph.as_ref().context("ONNX model has no graph")?;
         let has_input = |name| graph.inputs.iter().any(|input| input.name == name);
@@ -102,6 +133,7 @@ impl WakeModel {
         Ok(model)
     }
 
+    #[cfg(feature = "wake-onnx")]
     fn runtime(&self) -> Runtime {
         match self.backend {
             Backend::Standard(_) => Runtime::Standard,
@@ -124,7 +156,9 @@ impl WakeModel {
 
     pub fn kind(&self) -> &'static str {
         match self.backend {
+            #[cfg(feature = "wake-onnx")]
             Backend::Standard(_) => "LiveKit Standard",
+            #[cfg(feature = "wake-onnx")]
             Backend::Micro(_) => "LiveKit Micro",
             #[cfg(feature = "wake-tflite")]
             Backend::Tflite(_) => "LiveKit Micro INT8",
@@ -138,21 +172,23 @@ impl WakeModel {
         feature = "hotpath-alloc"
     ))]
     pub(crate) fn tflite_buffers(&mut self) -> Option<[usize; 3]> {
-        if let Backend::Tflite(model) = &mut self.backend {
-            Some(model.buffers())
-        } else {
-            None
+        match &mut self.backend {
+            Backend::Tflite(model) => Some(model.buffers()),
+            #[cfg(feature = "wake-onnx")]
+            _ => None,
         }
     }
 
     #[cfg_attr(feature = "hotpath-alloc", hotpath::measure)]
     pub fn predict(&mut self, frame: &[i16; FRAME_SAMPLES]) -> Result<f32> {
         let score = match &mut self.backend {
+            #[cfg(feature = "wake-onnx")]
             Backend::Standard(model) => model
                 .predict(frame)?
                 .into_values()
                 .next()
                 .context("Standard wake model returned no score"),
+            #[cfg(feature = "wake-onnx")]
             Backend::Micro(model) => model.step(frame),
             #[cfg(feature = "wake-tflite")]
             Backend::Tflite(model) => model.predict(frame),
@@ -163,7 +199,9 @@ impl WakeModel {
 
     pub fn reset(&mut self) -> Result<()> {
         match &mut self.backend {
+            #[cfg(feature = "wake-onnx")]
             Backend::Standard(model) => Ok(model.reset()?),
+            #[cfg(feature = "wake-onnx")]
             Backend::Micro(model) => {
                 model.reset();
                 Ok(())
@@ -179,6 +217,7 @@ impl WakeModel {
 
 // Only the graph input names and custom properties from the ONNX protobuf.
 // Prost skips nodes and initializer weights until the runtime loads the full graph.
+#[cfg(feature = "wake-onnx")]
 #[derive(Message)]
 struct OnnxSummary {
     #[prost(message, optional, tag = "7")]
@@ -187,6 +226,7 @@ struct OnnxSummary {
     properties: Vec<ModelProperty>,
 }
 
+#[cfg(feature = "wake-onnx")]
 impl OnnxSummary {
     fn micro_params(&self) -> Result<[f32; 3]> {
         let Some(property) = self
@@ -206,18 +246,21 @@ impl OnnxSummary {
     }
 }
 
+#[cfg(feature = "wake-onnx")]
 #[derive(Message)]
 struct GraphInputs {
     #[prost(message, repeated, tag = "11")]
     inputs: Vec<GraphInput>,
 }
 
+#[cfg(feature = "wake-onnx")]
 #[derive(Message)]
 struct GraphInput {
     #[prost(string, tag = "1")]
     name: String,
 }
 
+#[cfg(feature = "wake-onnx")]
 #[derive(Message)]
 struct ModelProperty {
     #[prost(string, tag = "1")]
@@ -231,6 +274,7 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    #[cfg(feature = "wake-onnx")]
     #[derive(Deserialize)]
     struct ReferenceClip {
         model: String,
@@ -245,6 +289,17 @@ mod tests {
         fs::write(&path, b"\x08\x00\x00\x00TFL3").unwrap();
         let error = WakeModel::load(&path).err().unwrap().to_string();
         assert!(error.contains("TFLite"));
+    }
+
+    #[cfg(not(feature = "wake-onnx"))]
+    #[test]
+    fn int8_build_rejects_a_legacy_onnx_selection() {
+        assert_eq!(runtimes(), &[Runtime::MicroTflite]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wake-model.onnx");
+        fs::write(&path, b"onnx").unwrap();
+        let error = WakeModel::load(&path).err().unwrap().to_string();
+        assert!(error.contains("only Micro INT8 TFLite"));
     }
 
     #[cfg(feature = "wake-tflite")]
@@ -295,9 +350,14 @@ mod tests {
             }
         }
         assert_eq!(crate::checksum::hex(&digest.finalize()), fixture.pcm_sha256);
+        let mut checked = Vec::new();
         for reference in fixture.models {
+            if !runtimes().contains(&reference.selection.runtime) {
+                continue;
+            }
             let path = directory.join(reference.filename);
             let selection = &reference.selection;
+            checked.push(selection.runtime);
             let mut model = WakeModel::load_selected(&path, selection).unwrap();
             let catalog_threshold = selection.score_threshold.unwrap();
             let assistant_threshold = model.threshold(0.5);
@@ -318,6 +378,12 @@ mod tests {
                 }
                 model.reset().unwrap();
             }
+        }
+        for runtime in runtimes() {
+            assert!(
+                checked.contains(runtime),
+                "Missing reference for {runtime:?}"
+            );
         }
     }
 
@@ -349,6 +415,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "wake-onnx")]
     #[test]
     #[ignore = "uses the locally trained ONNX files and reference inference traces"]
     fn trained_models_match_livekit_reference_and_reset() {

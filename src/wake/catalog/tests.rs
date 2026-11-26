@@ -1,7 +1,9 @@
+#[cfg(feature = "wake-onnx")]
 use base64::engine::general_purpose::STANDARD;
 
 use super::*;
 
+#[cfg(feature = "wake-onnx")]
 impl WakeModels {
     pub(crate) fn stage_fixture(&self, id: &str) -> (String, Selection) {
         // A Standard ONNX graph with one Identity node from chunk to score.
@@ -33,12 +35,14 @@ impl WakeModels {
     }
 }
 
+#[cfg(feature = "wake-onnx")]
 fn commit(models: &WakeModels) {
     let candidate = models.take_pending().unwrap();
     models.commit_selection(candidate.manifest).unwrap();
     models.finish_install(candidate.selection);
 }
 
+#[cfg(feature = "wake-onnx")]
 #[test]
 fn a_staged_model_resumes_after_restart_and_preserves_the_old_model_until_commit() {
     let dir = tempfile::tempdir().unwrap();
@@ -69,6 +73,7 @@ fn a_staged_model_resumes_after_restart_and_preserves_the_old_model_until_commit
     );
 }
 
+#[cfg(feature = "wake-onnx")]
 #[test]
 fn a_restart_after_the_manifest_rename_still_completes_the_original_ticket() {
     let dir = tempfile::tempdir().unwrap();
@@ -104,6 +109,7 @@ fn preparing_is_interrupted_after_restart_and_can_be_retried() {
     assert!(models.install_result(&ticket).is_none());
 }
 
+#[cfg(feature = "wake-onnx")]
 #[test]
 fn a_missing_staged_asset_keeps_the_active_model_and_reports_failure() {
     let dir = tempfile::tempdir().unwrap();

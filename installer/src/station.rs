@@ -13,7 +13,7 @@ use goodwin_error::{Context, Error, Result, bail, ensure, report};
 
 use crate::{
     package::{self, Source},
-    wake_catalog::{Catalog, Runtime, tflite_marker},
+    wake_catalog::{Catalog, INT8_ONLY_MARKER, Runtime, tflite_marker},
 };
 
 const INSTALL: &str = include_str!("../install-station.sh");
@@ -23,6 +23,18 @@ const INSTALL_EXIT: &str = "GOODWIN_INSTALL_EXIT ";
 const INSTALL_VERSION: &str = "GOODWIN_INSTALL_VERSION ";
 const INSTALL_ERROR: &str = "GOODWIN_INSTALL_ERROR ";
 const DEFAULT_ADB_PORT: u16 = 5555;
+
+fn packaged_wake_runtime(binary: &[u8]) -> (&'static [Runtime], &'static str) {
+    let has_marker = |marker: &[u8]| binary.windows(marker.len()).any(|bytes| bytes == marker);
+    let int8_only = has_marker(INT8_ONLY_MARKER);
+    let runtimes = Runtime::available(!int8_only, int8_only || has_marker(tflite_marker()));
+    let default = if int8_only {
+        "goodwin-micro-int8"
+    } else {
+        "goodwin-standard"
+    };
+    (runtimes, default)
+}
 const PREFLIGHT: &str = r#"
 if [ "$(id -u)" != 0 ]; then
     echo ROOT_REQUIRED
@@ -296,17 +308,15 @@ pub(crate) fn install_with_progress(
     };
     let source = package::prepare(source, work.path(), &log)
         .map_err(|error| InstallError::new(issue, error))?;
-    let id = match &model {
-        Model::Id(id) => Some(id.as_str()),
-        Model::Keep => (!already_installed(&adb)?).then_some("goodwin-standard"),
-    };
-    let (choice, model_file) = if let Some(id) = id {
+    let (choice, model_file) = if matches!(model, Model::Id(_)) || !already_installed(&adb)? {
         let payload = work.path().join("payload");
         let binary = fs::read(payload.join("goodwin"))?;
-        let marker = tflite_marker();
-        let with_tflite = binary.windows(marker.len()).any(|bytes| bytes == marker);
-        let runtimes = Runtime::available(with_tflite);
+        let (runtimes, default) = packaged_wake_runtime(&binary);
         drop(binary);
+        let id = match &model {
+            Model::Id(id) => id.as_str(),
+            Model::Keep => default,
+        };
         log(format!("Скачиваем модель активации {id}…"));
         let latest;
         let catalog = match catalog {
@@ -595,6 +605,23 @@ pub(crate) fn default_adb() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_capabilities_select_a_supported_default_model() {
+        let (runtimes, default) = packaged_wake_runtime(b"legacy");
+        assert_eq!(runtimes, &[Runtime::Standard, Runtime::Micro]);
+        assert_eq!(default, "goodwin-standard");
+        let (runtimes, default) = packaged_wake_runtime(tflite_marker());
+        assert_eq!(
+            runtimes,
+            &[Runtime::Standard, Runtime::Micro, Runtime::MicroTflite]
+        );
+        assert_eq!(default, "goodwin-standard");
+        let compact = [INT8_ONLY_MARKER, tflite_marker()].concat();
+        let (runtimes, default) = packaged_wake_runtime(&compact);
+        assert_eq!(runtimes, &[Runtime::MicroTflite]);
+        assert_eq!(default, "goodwin-micro-int8");
+    }
 
     #[test]
     fn station_address_uses_separate_adb_and_panel_ports() {

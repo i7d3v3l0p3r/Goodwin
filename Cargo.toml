@@ -20,11 +20,13 @@ codegen-units = 1
 opt-level = 3
 
 [features]
+default = ["wake-onnx"]
 esp-emulator = []
 model-mini3 = []
 model-esp32s3-generic = []
 hotpath-alloc = ["dep:hotpath", "hotpath/hotpath-alloc"]
 wake-bench = []
+wake-onnx = ["dep:livekit-wakeword", "dep:rustfft", "dep:tract-onnx"]
 wake-tflite = ["dep:sha2", "dep:url"]
 wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart", "reqwest/query"]
 
@@ -48,20 +50,20 @@ blake2 = "0.11"
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false }
 hotpath = { version = "0.33", optional = true }
-livekit-wakeword = "0.2"
+livekit-wakeword = { version = "0.2", optional = true }
 mime = "0.3"
 prost = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
 ring = { version = "0.17", default-features = false }
 rpassword = "7"
-rustfft = "6.4"
+rustfft = { version = "6.4", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "signal", "sync", "time"] }
-tract-onnx = "0.22"
+tract-onnx = { version = "0.22", optional = true }
 url = "2"
 webpki-roots = "1"
 

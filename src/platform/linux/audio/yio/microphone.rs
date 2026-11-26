@@ -18,7 +18,7 @@ use crate::{app::App, station::capture::Detector};
 
 use super::protocol::{FRAME_TIMEOUT, Framing, capture_channel, receive};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "wake-onnx"))]
 mod tests;
 
 pub async fn run_microphone(app: Arc<App>, address: SocketAddr) {

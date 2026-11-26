@@ -25,6 +25,11 @@ fn main() {
         embuild::espidf::sysenv::output();
     }
     let linux = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+    let wake_tflite = env::var_os("CARGO_FEATURE_WAKE_TFLITE").is_some();
+    assert!(
+        esp || wake_tflite || env::var_os("CARGO_FEATURE_WAKE_ONNX").is_some(),
+        "Select wake-onnx or wake-tflite for the Station build"
+    );
     println!("cargo:rerun-if-env-changed=GOODWIN_NATIVE_SANITIZERS");
     let sanitize = env::var_os("GOODWIN_NATIVE_SANITIZERS").is_some();
     if sanitize {
@@ -39,7 +44,7 @@ fn main() {
     if (esp || linux) && env::var_os("CARGO_FEATURE_WASM_PLUGINS").is_some() {
         wamr::link(esp, sanitize);
     }
-    if env::var_os("CARGO_FEATURE_WAKE_TFLITE").is_some() {
+    if wake_tflite {
         link_tflite(sanitize);
     }
 }

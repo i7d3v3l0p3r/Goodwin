@@ -74,6 +74,7 @@ async fn panel_matches_the_shared_http_contract() {
     task.abort();
 }
 
+#[cfg(feature = "wake-onnx")]
 #[tokio::test]
 async fn wake_model_ticket_reports_pending_and_then_the_active_selection() {
     let dir = tempfile::tempdir().unwrap();

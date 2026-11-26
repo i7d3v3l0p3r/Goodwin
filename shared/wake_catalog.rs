@@ -27,6 +27,9 @@ pub(crate) fn tflite_marker() -> &'static [u8] {
         .as_bytes()
 }
 
+#[cfg(not(target_os = "espidf"))]
+pub(crate) const INT8_ONLY_MARKER: &[u8] = b"goodwin.wake.int8-only.v1";
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum Runtime {
     #[serde(rename = "livekit-v2-standard-onnx")]
@@ -41,11 +44,12 @@ pub(crate) enum Runtime {
 
 impl Runtime {
     #[cfg(not(target_os = "espidf"))]
-    pub(crate) fn available(with_tflite: bool) -> &'static [Self] {
-        if with_tflite {
-            &[Self::Standard, Self::Micro, Self::MicroTflite]
-        } else {
-            &[Self::Standard, Self::Micro]
+    pub(crate) fn available(with_onnx: bool, with_tflite: bool) -> &'static [Self] {
+        match (with_onnx, with_tflite) {
+            (true, true) => &[Self::Standard, Self::Micro, Self::MicroTflite],
+            (true, false) => &[Self::Standard, Self::Micro],
+            (false, true) => &[Self::MicroTflite],
+            (false, false) => &[],
         }
     }
 
@@ -340,7 +344,7 @@ mod tests {
                     "schema_version": 1, "tag": "v0.1.0", "models": models
                 }))
                 .unwrap(),
-                Runtime::available(with_tflite),
+                Runtime::available(true, with_tflite),
             )
         };
         let result = catalog(vec![model.clone(), unsupported], false).unwrap();
