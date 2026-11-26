@@ -28,14 +28,33 @@ case "$3" in
     push) [ -f "$4" ] ;;
     shell)
         case "$4" in
-            *GOODWIN_STATION_READY*) echo GOODWIN_STATION_READY ;;
-            *config.json*) echo update ;;
+            *GOODWIN_STATION_READY*)
+                if [ "$MOCK_RECOVERY_STATUS" = skip ]; then
+                    echo GOODWIN_STATION_READY
+                else
+                    echo GOODWIN_STATION_RECOVERY
+                fi
+                ;;
+            *config.json*)
+                [ "$MOCK_RECOVERY_STATUS" = skip ] || [ -f "$MOCK_RECOVERED" ]
+                echo update
+                ;;
             'df -Pk /tmp')
                 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\ntmpfs 65536 0 %s 0%% /tmp\n' "$MOCK_TMP_KIB"
                 ;;
+            *'mktemp -d /tmp/.goodwin-recovery.XXXXXX') echo /tmp/.goodwin-recovery.test02 ;;
             *mktemp*)
                 case "$4" in *" $MOCK_UPLOAD_PARENT/.goodwin-upload.XXXXXX") ;; *) exit 95 ;; esac
                 echo "$MOCK_UPLOAD_PARENT/.goodwin-upload.test01"
+                ;;
+            'sh /tmp/.goodwin-recovery.test02/install-station.sh --recover;'*)
+                if [ "$MOCK_RECOVERY_STATUS" = 0 ]; then
+                    touch "$MOCK_RECOVERED"
+                    echo GOODWIN_INSTALL_RECOVERY_OK
+                else
+                    echo 'GOODWIN_INSTALL_ERROR locked'
+                fi
+                echo "GOODWIN_INSTALL_EXIT $MOCK_RECOVERY_STATUS"
                 ;;
             'sh '*)
                 case "$4" in *' keep; status='*) ;; *) exit 92 ;; esac
@@ -43,6 +62,7 @@ case "$3" in
                 echo "GOODWIN_INSTALL_EXIT $MOCK_INSTALL_STATUS"
                 ;;
             'rm -rf '*) ;;
+            'rm -f /tmp/.goodwin-recovery.test02/install-station.sh; rmdir /tmp/.goodwin-recovery.test02') ;;
             *) exit 93 ;;
         esac
         ;;
@@ -53,7 +73,7 @@ esac
     .unwrap();
     fs::set_permissions(&adb, fs::Permissions::from_mode(0o700)).unwrap();
 
-    let run = |status: &str, tmp_kib: &str, upload_parent: &str| {
+    let run = |status: &str, tmp_kib: &str, upload_parent: &str, recovery: &str| {
         Command::new(env!("CARGO_BIN_EXE_goodwin-installer"))
             .args(["install", "station.local:5556", "--model", "keep", "--adb"])
             .arg(&adb)
@@ -62,12 +82,14 @@ esac
             .env("MOCK_INSTALL_STATUS", status)
             .env("MOCK_TMP_KIB", tmp_kib)
             .env("MOCK_UPLOAD_PARENT", upload_parent)
+            .env("MOCK_RECOVERY_STATUS", recovery)
+            .env("MOCK_RECOVERED", scratch.path().join("recovered"))
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .output()
             .unwrap()
     };
-    let success = run("0", "65536", "/tmp");
+    let success = run("0", "65536", "/tmp", "skip");
     assert!(
         success.status.success(),
         "{}",
@@ -76,8 +98,21 @@ esac
     assert_eq!(success.stdout, b"http://station.local:8787/\n");
     assert!(String::from_utf8_lossy(&success.stderr).contains("mock ADB connected"));
 
-    let failure = run("2", "0", "/data/opt");
+    let failure = run("2", "0", "/data/opt", "skip");
     assert_eq!(failure.status.code(), Some(1));
     assert!(failure.stdout.is_empty());
     assert!(String::from_utf8_lossy(&failure.stderr).contains("завершился с кодом 2"));
+
+    let locked = run("0", "65536", "/tmp", "1");
+    assert_eq!(locked.status.code(), Some(1));
+    assert!(locked.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("Другая установка ещё идёт"));
+
+    let recovered = run("0", "65536", "/tmp", "0");
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert_eq!(recovered.stdout, b"http://station.local:8787/\n");
 }

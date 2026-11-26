@@ -14,17 +14,19 @@ fail_model() {
 
 upload=${1:-}
 choice=${2:-}
-case "${upload%/*}" in /data/opt|/tmp) ;; *) fail 'Invalid upload directory.' ;; esac
-case "${upload##*/}" in
-    .goodwin-upload.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) ;;
-    *) fail 'Invalid upload directory.' ;;
-esac
-[ ! -L "$upload" ] || fail 'The upload directory cannot be a symbolic link.'
-upload_parent=$(cd "${upload%/*}" && pwd -P) || fail 'Could not resolve the upload parent directory.'
-upload_root=$(cd "$upload" && pwd -P) || fail 'Could not open the upload directory.'
-# Some firmware mounts the persistent data partition at /bkupgrade/data.
-[ "$upload_root" = "$upload_parent/${upload##*/}" ] || fail 'The upload directory is outside its expected parent.'
-case "$choice" in keep|catalog|core) ;; *) fail 'Invalid installation option.' ;; esac
+if [ "$upload" != --recover ]; then
+    case "${upload%/*}" in /data/opt|/tmp) ;; *) fail 'Invalid upload directory.' ;; esac
+    case "${upload##*/}" in
+        .goodwin-upload.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) ;;
+        *) fail 'Invalid upload directory.' ;;
+    esac
+    [ ! -L "$upload" ] || fail 'The upload directory cannot be a symbolic link.'
+    upload_parent=$(cd "${upload%/*}" && pwd -P) || fail 'Could not resolve the upload parent directory.'
+    upload_root=$(cd "$upload" && pwd -P) || fail 'Could not open the upload directory.'
+    # Some firmware mounts the persistent data partition at /bkupgrade/data.
+    [ "$upload_root" = "$upload_parent/${upload##*/}" ] || fail 'The upload directory is outside its expected parent.'
+    case "$choice" in keep|catalog|core) ;; *) fail 'Invalid installation option.' ;; esac
+fi
 [ "$(id -u)" = 0 ] || fail 'Goodwin installation requires root.'
 
 bin=/data/opt/bin/goodwin
@@ -151,6 +153,12 @@ elif command -v busybox >/dev/null 2>&1 && busybox --list | grep -qx flock; then
     exec 9>>/data/opt/.goodwin-install-guard
     busybox flock -n 9 || locked
     kernel_lock=1
+fi
+
+if [ "$upload" = --recover ]; then
+    if exists "$lock"; then recover_transaction || locked; fi
+    echo 'GOODWIN_INSTALL_RECOVERY_OK'
+    exit 0
 fi
 
 if ! mkdir "$lock"; then

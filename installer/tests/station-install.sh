@@ -37,6 +37,10 @@ if [ -f "$TEST_ROOT/interrupt-model" ] && [ "$1" = "$TEST_ROOT/data/opt/.goodwin
     rm "$TEST_ROOT/interrupt-model"
     kill -KILL "$PPID"
 fi
+if [ -f "$TEST_ROOT/interrupt-fresh" ] && [ "$1" = "$TEST_ROOT/data/opt/.goodwin-install-lock/stage/new-data" ]; then
+    rm "$TEST_ROOT/interrupt-fresh"
+    kill -KILL "$PPID"
+fi
 EOF
 chmod 755 "$TEST_ROOT/tools/"*
 upload="$TEST_ROOT/data/opt/.goodwin-upload.test01"
@@ -124,6 +128,26 @@ EOF
     cd "$TEST_ROOT"
 }
 
+package interrupted-fresh egor-micro catalog
+touch "$TEST_ROOT/interrupt-fresh"
+if sh "$TEST_ROOT/install-test.sh" "$upload" catalog > "$TEST_ROOT/interrupted-fresh.out" 2>&1; then
+    echo 'The first installation was not interrupted' >&2
+    exit 1
+fi
+grep 'mutating fresh catalog 0 1' "$TEST_ROOT/data/opt/.goodwin-install-lock/journal"
+test -f "$TEST_ROOT/data/opt/etc/goodwin/config.json"
+test ! -e "$TEST_ROOT/data/init.d/S96goodwin"
+sh -s -- --recover < "$TEST_ROOT/install-test.sh" > "$TEST_ROOT/recovered-fresh.out" 2>&1
+grep 'GOODWIN_INSTALL_RECOVERY_OK' "$TEST_ROOT/recovered-fresh.out"
+test ! -e "$TEST_ROOT/data/opt/etc/goodwin"
+test ! -e "$TEST_ROOT/data/opt/bin/goodwin"
+test ! -e "$TEST_ROOT/data/opt/.goodwin-install-lock"
+test ! -e "$TEST_ROOT/running"
+
+initial_init=$upload/init.sh
+upload="$TEST_ROOT/tmp/.goodwin-upload.test00"
+mkdir "$upload"
+cp "$initial_init" "$upload/init.sh"
 package initial egor-micro catalog
 sh "$TEST_ROOT/install-test.sh" "$upload" catalog | tee "$TEST_ROOT/fresh.out"
 grep 'GOODWIN_INSTALL_OK fresh' "$TEST_ROOT/fresh.out"

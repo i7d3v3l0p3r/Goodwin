@@ -22,6 +22,7 @@ const SUCCESS: &str = "GOODWIN_INSTALL_OK";
 const INSTALL_EXIT: &str = "GOODWIN_INSTALL_EXIT ";
 const INSTALL_VERSION: &str = "GOODWIN_INSTALL_VERSION ";
 const INSTALL_ERROR: &str = "GOODWIN_INSTALL_ERROR ";
+const RECOVERY_OK: &str = "GOODWIN_INSTALL_RECOVERY_OK";
 const DEFAULT_ADB_PORT: u16 = 5555;
 
 fn packaged_wake_runtime(binary: &[u8]) -> (&'static [Runtime], &'static str) {
@@ -41,7 +42,7 @@ if [ "$(id -u)" != 0 ]; then
 elif [ "$(uname -m)" != aarch64 ] || [ ! -x /etc/init.d/S95data-services ]; then
     echo UNSUPPORTED_STATION
 elif [ -e /data/opt/.goodwin-install-lock ]; then
-    echo INSTALL_LOCKED
+    echo GOODWIN_STATION_RECOVERY
 else
     echo GOODWIN_STATION_READY
 fi
@@ -222,7 +223,7 @@ pub(crate) enum InstallStage {
     Install,
 }
 
-fn connect(adb: &Adb<'_>, log: &impl Fn(String)) -> Result<()> {
+fn connect(adb: &Adb<'_>, log: &impl Fn(String)) -> Result<bool> {
     log(format!("Подключаемся к {}…", adb.serial));
     let output = adb.run(None, 25, ["connect", adb.serial])?;
     if !output.is_empty() {
@@ -239,8 +240,8 @@ fn connect(adb: &Adb<'_>, log: &impl Fn(String)) -> Result<()> {
         "UNSUPPORTED_STATION" => {
             bail!(InstallIssue::Unsupported)
         }
-        "INSTALL_LOCKED" => bail!(InstallIssue::Locked),
-        "GOODWIN_STATION_READY" => Ok(()),
+        "GOODWIN_STATION_RECOVERY" => Ok(true),
+        "GOODWIN_STATION_READY" => Ok(false),
         output => bail!("Не удалось проверить Станцию: {output}"),
     }
 }
@@ -297,10 +298,16 @@ pub(crate) fn install_with_progress(
         serial: &serial,
     };
     phase(InstallStage::Connect);
-    connect(&adb, &log)?;
+    let recovery_needed = connect(&adb, &log)?;
+
+    let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
+    let install_script = work.path().join("install-station.sh");
+    fs::write(&install_script, INSTALL.replace("\r\n", "\n"))?;
+    if recovery_needed {
+        recover(&adb, &install_script, &log)?;
+    }
 
     phase(InstallStage::Package);
-    let work = tempfile::Builder::new().prefix("goodwin-").tempdir()?;
     let issue = if matches!(&source, Source::Local(_)) {
         InstallIssue::LocalPackage
     } else {
@@ -353,9 +360,7 @@ pub(crate) fn install_with_progress(
         ("keep", None)
     };
     let scratch_kib = package::build_payload(work.path(), model_file)?;
-    for (name, script) in [("install-station.sh", INSTALL), ("init.sh", INIT)] {
-        fs::write(work.path().join(name), script.replace("\r\n", "\n"))?;
-    }
+    fs::write(work.path().join("init.sh"), INIT.replace("\r\n", "\n"))?;
 
     phase(InstallStage::Transfer);
     // Keep the upload and extraction off the persistent volume when tmpfs has room.
@@ -405,6 +410,48 @@ pub(crate) fn install_with_progress(
     })
 }
 
+fn recover(adb: &Adb<'_>, script: &Path, log: &(impl Fn(String) + Sync)) -> Result<()> {
+    log("Проверяем прерванную установку на Станции…".into());
+    let prefix = "/tmp/.goodwin-recovery.";
+    let remote = adb.on_station(
+        15,
+        [
+            "shell",
+            "umask 077; mktemp -d /tmp/.goodwin-recovery.XXXXXX",
+        ],
+    )?;
+    let suffix = remote.strip_prefix(prefix).unwrap_or_default();
+    ensure!(
+        suffix.len() == 6 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()),
+        "Не удалось создать временную папку для восстановления на Станции"
+    );
+    let destination = format!("{remote}/install-station.sh");
+    let result = adb
+        .on_station(
+            30,
+            [
+                OsStr::new("push"),
+                script.as_os_str(),
+                OsStr::new(&destination),
+            ],
+        )
+        .and_then(|_| run_install_script(adb, &format!("sh {destination} --recover"), log));
+    if adb
+        .on_station(
+            10,
+            ["shell", &format!("rm -f {destination}; rmdir {remote}")],
+        )
+        .is_err()
+    {
+        log(format!("На Станции осталась временная папка {remote}"));
+    }
+    ensure!(
+        successful_install_output(&result?)?.any(|line| line == RECOVERY_OK),
+        InstallIssue::Unconfirmed
+    );
+    Ok(())
+}
+
 fn transfer_and_install(
     adb: &Adb<'_>,
     work: &Path,
@@ -427,22 +474,33 @@ fn transfer_and_install(
     }
     phase(InstallStage::Install);
     log("Устанавливаем Goodwin и проверяем запуск…".into());
+    let command = format!("sh {remote}/install-station.sh {remote} {choice}");
+    install_result(&run_install_script(adb, &command, log)?)
+}
+
+fn run_install_script(
+    adb: &Adb<'_>,
+    command: &str,
+    log: &(impl Fn(String) + Sync),
+) -> Result<String> {
     // Legacy ADB shells can exit successfully without returning the remote status.
-    let script = format!(
-        "sh {remote}/install-station.sh {remote} {choice}; status=$?; printf '\\n{INSTALL_EXIT}%s\\n' \"$status\"",
-    );
+    let script = format!("{command}; status=$?; printf '\\n{INSTALL_EXIT}%s\\n' \"$status\"");
     let report = |line: String| {
-        if ![SUCCESS, INSTALL_EXIT, INSTALL_VERSION, INSTALL_ERROR]
-            .iter()
-            .any(|prefix| line.starts_with(prefix))
+        if ![
+            SUCCESS,
+            RECOVERY_OK,
+            INSTALL_EXIT,
+            INSTALL_VERSION,
+            INSTALL_ERROR,
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
         {
             log(line);
         }
     };
-    let result = adb
-        .run(Some(&report), 360, ["-s", adb.serial, "shell", &script])
-        .map_err(|error| InstallError::new(InstallIssue::Unconfirmed, error))?;
-    install_result(&result)
+    adb.run(Some(&report), 360, ["-s", adb.serial, "shell", &script])
+        .map_err(|error| InstallError::new(InstallIssue::Unconfirmed, error).into())
 }
 
 #[derive(Debug)]
@@ -453,6 +511,34 @@ struct RemoteInstallation {
 }
 
 fn install_result(output: &str) -> Result<RemoteInstallation> {
+    let mut lines = successful_install_output(output)?;
+    #[cfg(feature = "gui")]
+    let version = lines
+        .clone()
+        .find_map(|line| line.strip_prefix(INSTALL_VERSION))
+        .filter(|version| {
+            !version.is_empty()
+                && version.len() <= 128
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
+        })
+        .map(str::to_owned);
+    let updated = match lines.rfind(|line| line.starts_with(SUCCESS)) {
+        Some("GOODWIN_INSTALL_OK fresh") => false,
+        Some("GOODWIN_INSTALL_OK update") => true,
+        _ => bail!(InstallIssue::Unconfirmed),
+    };
+    Ok(RemoteInstallation {
+        updated,
+        #[cfg(feature = "gui")]
+        version,
+    })
+}
+
+fn successful_install_output(
+    output: &str,
+) -> Result<impl DoubleEndedIterator<Item = &str> + Clone> {
     let mut lines = output.lines().map(str::trim);
     let status = lines
         .next_back()
@@ -477,28 +563,7 @@ fn install_result(output: &str) -> Result<RemoteInstallation> {
             None => error,
         });
     }
-    #[cfg(feature = "gui")]
-    let version = lines
-        .clone()
-        .find_map(|line| line.strip_prefix(INSTALL_VERSION))
-        .filter(|version| {
-            !version.is_empty()
-                && version.len() <= 128
-                && version
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
-        })
-        .map(str::to_owned);
-    let updated = match lines.rfind(|line| line.starts_with(SUCCESS)) {
-        Some("GOODWIN_INSTALL_OK fresh") => false,
-        Some("GOODWIN_INSTALL_OK update") => true,
-        _ => bail!(InstallIssue::Unconfirmed),
-    };
-    Ok(RemoteInstallation {
-        updated,
-        #[cfg(feature = "gui")]
-        version,
-    })
+    Ok(lines)
 }
 
 struct Adb<'a> {
