@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-28
+
 ### English
 
 - Open **…** beside a plugin to enable, disable, configure, pin or remove it. VPN routing has its own switch. Plugin settings, data and enabled state survive restarts and package updates.
