@@ -53,6 +53,7 @@
 .spotify-caption h2::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 7px; }
 .spotify-device, .spotify-album { color: var(--player-soft); }
 .spotify-player h3 { margin-top: 12px; color: var(--player-ink); font-size: clamp(1.65rem, 4vw, 2.65rem); line-height: 1.09; letter-spacing: -.035em; }
+.spotify-track-title { display: block; }
 .spotify-title, .spotify-title-text { display: block; white-space: nowrap; overflow: hidden; }
 .spotify-title-text { text-overflow: ellipsis; }
 @media (prefers-reduced-motion: no-preference) {
@@ -133,14 +134,17 @@
   .spotify-setup .spotify-pairing { padding: 16px 18px 20px; }
 }
 
-.spotify-now { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; gap: 11px; align-items: center; }
+.spotify-now { container-type: inline-size; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 11px; align-items: center; }
 .spotify-now-cover { display: block; width: 42px; height: 42px; border-radius: 8px; overflow: hidden; background: radial-gradient(circle,#dbbe75 0 13%,transparent 14%),repeating-radial-gradient(circle,#284b3d 0 2px,#3a5d4d 3px,#284b3d 4px); }
 .spotify-now-cover img { width: 100%; height: 100%; object-fit: cover; }
-.spotify-now-track { min-width: 0; display: grid; gap: 2px; }
-.spotify-now-track strong, .spotify-now-track small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.spotify-now-track { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.spotify-now-status, .spotify-now-track small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .spotify-now-track small { color: var(--muted); }
-.spotify-now-control { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: #215940; color: white; cursor: pointer; }
-.spotify-now-control:disabled { opacity: .55; }
-.spotify-now-control i[data-action=pause] { width: 12px; height: 14px; border-inline: 4px solid currentColor; }
-.spotify-now-control i[data-action=play] { width: 0; height: 0; margin-left: 3px; border-block: 7px solid transparent; border-left: 11px solid currentColor; }
+.spotify-now .spotify-controls { grid-column: 3; gap: 4px; justify-self: end; }
+.spotify-now .spotify-control { border: 0; color: var(--gw-color-accent); }
+.spotify-now .spotify-control:is([data-command=play], [data-command=pause]) { width: 44px; height: 44px; background: #215940; color: white; }
+.spotify-now .spotify-control:focus-visible { outline: 2px solid var(--gw-color-accent); outline-offset: 1px; }
+@container (width < 320px) {
+  .spotify-now .spotify-controls { grid-column: 1 / -1; }
+}
 .spotify-now-error { grid-column: 1/-1; color: var(--danger); }

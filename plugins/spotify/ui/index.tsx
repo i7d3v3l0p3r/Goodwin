@@ -1,6 +1,8 @@
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
+import { PlaybackControls, type Command } from "./PlaybackControls";
+import { TrackTitle } from "./TrackTitle";
 export { NowCard } from "./NowCard";
 
 const copy = {
@@ -16,7 +18,6 @@ const copy = {
     progress: "Позиция в треке", queue: "Очередь", history: "История",
     emptyQueue: "В очереди пока нет треков.", emptyHistory: "В этой очереди ещё нет предыдущих треков.",
     historyHint: "Предыдущие треки из очереди Soloist, начиная с последнего.",
-    play: "Продолжить", pause: "Пауза", skip_next: "Дальше", skip_prev: "Назад",
     actionError: "Плеер не подтвердил команду.", help: "Как подключить колонку",
   },
   en: {
@@ -31,12 +32,10 @@ const copy = {
     progress: "Track position", queue: "Queue", history: "History",
     emptyQueue: "There are no upcoming tracks.", emptyHistory: "No previous tracks in this queue yet.",
     historyHint: "Previous tracks in the Soloist queue, most recent first.",
-    play: "Resume", pause: "Pause", skip_next: "Next", skip_prev: "Previous",
     actionError: "The player did not confirm the command.", help: "How to connect the speaker",
   },
 };
 
-type Command = "play" | "pause" | "skip_next" | "skip_prev";
 type Status = "playing" | "paused" | "idle" | "buffering";
 interface Track { title: string | null; artists: string[]; album: string | null; duration: number | null; uri: string | null }
 interface Player {
@@ -57,31 +56,6 @@ function Sleeve(props: { image?: string }) {
     <span class="spotify-vinyl" />
     <Show when={props.image}>{src => <img src={src()} alt="" />}</Show>
   </div>;
-}
-
-function TrackTitle(props: { title: string }) {
-  let heading!: HTMLHeadingElement;
-  let text!: HTMLSpanElement;
-
-  createEffect(() => null, () => {
-    const observer = new ResizeObserver(() => {
-      const overflow = text.getBoundingClientRect().width - heading.getBoundingClientRect().width;
-      heading.toggleAttribute("data-title-overflow", overflow > 0);
-      if (overflow > 0) {
-        heading.style.setProperty("--title-overflow", `${overflow}px`);
-        heading.style.setProperty("--title-duration", `${Math.max(2, overflow / 30)}s`);
-      }
-    });
-    observer.observe(heading);
-    observer.observe(text);
-    return () => observer.disconnect();
-  });
-
-  return <h3 ref={heading} title={props.title}>
-    <span class="spotify-title">
-      <span class="spotify-title-text" ref={text}>{props.title}</span>
-    </span>
-  </h3>;
 }
 
 export default function SpotifyPage({ language, request }: PluginContext) {
@@ -198,7 +172,7 @@ export default function SpotifyPage({ language, request }: PluginContext) {
               <header class="spotify-caption"><h2>{statusText()}</h2><span class="spotify-device">{device()}</span></header>
               <Show when={track()}>{item => <>
                 <Show when={item().title || item().uri || t.unknown} keyed>
-                  {title => <TrackTitle title={title} />}
+                  {title => <h3><TrackTitle title={title} /></h3>}
                 </Show>
                 <Show when={item().artists.length}><p class="spotify-artist">{item().artists.join(", ")}</p></Show>
                 <Show when={item().album}><p class="spotify-album">{item().album}</p></Show>
@@ -211,14 +185,9 @@ export default function SpotifyPage({ language, request }: PluginContext) {
                   <progress aria-label={t.progress} value={position()} max={track()!.duration!} />
                   <span>{time(track()!.duration!)}</span></div>
               </Show>
-              <div class="spotify-controls">
-              <For each={["skip_prev", player()?.status === "playing" || player()?.status === "buffering" ? "pause" : "play", "skip_next"] as Command[]} keyed={cmd => cmd}>
-                {cmd => <Show when={player()?.controls.includes(cmd())}>
-                  <button class="spotify-control" data-command={cmd()} aria-label={t[cmd()]} title={t[cmd()]}
-                    type="button" disabled={busy()} onClick={() => void control(cmd())}><span aria-hidden="true" /></button>
-                </Show>}
-              </For>
-              </div>
+              <PlaybackControls language={language} controls={player()?.controls}
+                action={player()?.status === "playing" || player()?.status === "buffering" ? "pause" : "play"}
+                disabled={busy()} onCommand={command => void control(command)} />
               <Show when={commandError()}><p class="spotify-control-error" role="alert">{t.actionError}</p></Show>
             </div>
           </section>
