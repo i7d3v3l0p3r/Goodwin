@@ -4,6 +4,7 @@
 
 ### English
 
+- The mini chat on Now keeps a fixed height on desktop and mobile. Conversation history scrolls between the header and the message field.
 - Search model catalogs by name or ID and long language and provider lists by typing. Page changes, menus and settings sections now have short transitions that respect reduced-motion preferences.
 - Now includes a mini chat for recent spoken and written exchanges. Expand system messages for timings, actions and failures of the last eight requests, or edit and repeat the latest voice command. The chat header can hide all system messages. The compact send control leaves the placeholder centered. Old chat links open Now. Active plugin cards appear first, and plugins can be pinned to the menu in each browser.
 - Plugins can contribute standard or wide cards to the responsive Now grid. The compact Spotify player puts cover art, track details and playback control in a single row.
@@ -15,6 +16,7 @@
 
 ### Русский
 
+- У мини-чата на странице «Сейчас» фиксированная высота на компьютере и телефоне. История прокручивается между шапкой и полем ввода.
 - В каталогах моделей появился поиск по названию и ID, в длинных списках языков и провайдеров тоже можно искать. Страницы, меню и разделы настроек открываются плавнее и учитывают системную настройку уменьшения движения.
 - На странице «Сейчас» появился мини-чат с голосовыми и текстовыми репликами. Системные сообщения раскрывают длительность этапов, действия плагинов и ошибки последних восьми запросов. Последнюю голосовую команду можно исправить и повторить. Системные сообщения можно скрыть переключателем в шапке. Кнопка отправки стала компактнее, а текст поля ввода выровнен по центру строки. Старые ссылки на чат открывают «Сейчас». Активные карточки плагинов показываются первыми, а нужные плагины можно закрепить в меню своего браузера.
 - Плагины могут добавлять обычные и широкие карточки в адаптивную сетку «Сейчас». В компактном плеере Spotify обложка, название трека и кнопка воспроизведения занимают одну строку.

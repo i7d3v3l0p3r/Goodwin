@@ -1,7 +1,7 @@
 .chat {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   background: linear-gradient(160deg, #faf9fc, var(--paper) 60%);
 }
 
@@ -13,7 +13,6 @@
 }
 
 .threadScroll {
-  max-height: clamp(13rem, 36dvh, 23rem);
   overflow: auto;
   scrollbar-color: #bdd4c5 transparent;
 }
@@ -94,6 +93,11 @@
   justify-content: center;
   gap: 12px;
   text-align: center;
+}
+
+.thread:has(> .emptyChat) {
+  display: grid;
+  align-content: center;
 }
 
 .emptyChat p { color: var(--muted); }

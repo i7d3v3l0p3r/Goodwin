@@ -12,7 +12,21 @@
 @container (max-width: 610px) { .plugin { grid-column: 1 / -1; } }
 .workspace { display: grid; gap: 14px; align-items: start; }
 .rack { min-width: 0; container-type: inline-size; }
-.conversation { min-width: 0; container: conversation / inline-size; overflow: clip; border: 1px solid var(--edge); border-radius: 15px; background: var(--paper); }
+.conversation {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  block-size: 28rem;
+  max-block-size: 80svh;
+  container: conversation / inline-size;
+  overflow: clip;
+  border: 1px solid var(--edge);
+  border-radius: 15px;
+  background: var(--paper);
+}
+@media (max-width: 760px) {
+  .conversation { block-size: 22rem; }
+}
 .chatHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; padding: 4px 12px; min-height: 50px; border-bottom: 1px solid var(--edge); }
 .chatTools { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; }
 .chatTools :global(.gw-field-label) { font-size: .8rem; font-weight: 520; color: var(--muted); cursor: pointer; }
