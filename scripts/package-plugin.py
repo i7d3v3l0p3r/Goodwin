@@ -22,12 +22,16 @@ def main():
     parser.add_argument("target", help="Runtime platform such as linux-aarch64, windows-x86_64 or wasm32")
     parser.add_argument("output", type=Path)
     parser.add_argument("--version", help="Override the package version for this build")
+    parser.add_argument("--companion", type=Path, action="append", default=[],
+                        help="Additional native package file to place under bin/")
     parser.add_argument("--wasm-state-file", help="JSON state filename in the WASM plugin data directory")
     args = parser.parse_args()
     if args.wasm_state_file and args.target != "wasm32":
         parser.error("--wasm-state-file requires the wasm32 target")
 
     manifest = json.loads((args.plugin / "manifest.json").read_text(encoding="utf-8"))
+    if args.target == "wasm32":
+        manifest.pop("nativeProxy", None)
     if args.target != "wasm32":
         manifest.pop("providerConnections", None)
         manifest.pop("wasmHttp", None)
@@ -56,6 +60,8 @@ def main():
         with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
             add_bytes(archive, "manifest.json", json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
             add_bytes(archive, manifest["executable"], args.executable.read_bytes())
+            for companion in args.companion:
+                add_bytes(archive, f"bin/{companion.name}", companion.read_bytes())
             if compiled_entry is not None:
                 add_bytes(archive, web["entry"], compiled_entry)
             for file in sorted((args.plugin / "ui").rglob("*")):

@@ -40,6 +40,13 @@ pub(crate) use super::registration::{Page, Registration, Tool};
 mod wasm;
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+pub(super) struct Network<'a> {
+    pub(super) proxy: Option<&'a str>,
+    #[cfg(target_os = "linux")]
+    pub(super) gateway: Option<&'a super::vpn::Gateway>,
+}
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const FRAME_LIMIT: usize = 128 * 1024;
 const SPEECH_DEADLINE: Duration = Duration::from_secs(180);
@@ -224,16 +231,17 @@ impl Process {
         }
     }
 
-    pub async fn start(
+    pub(super) async fn start(
         root: &Path,
         data: &Path,
         manifest: &Manifest,
         sound: mpsc::Sender<Signal>,
         catalog_changes: watch::Sender<()>,
+        network: Network<'_>,
     ) -> Result<(Self, Registration)> {
         if manifest.is_wasm() {
             #[cfg(all(feature = "wasm-plugins", target_os = "linux"))]
-            return wasm::start(root, data, manifest, sound, catalog_changes).await;
+            return wasm::start(root, data, manifest, sound, catalog_changes, network.proxy).await;
             #[cfg(not(all(feature = "wasm-plugins", target_os = "linux")))]
             bail!("This Goodwin build does not support WASM plugins");
         }
@@ -244,6 +252,14 @@ impl Process {
             .current_dir(&data)
             .env_clear()
             .env("GOODWIN_PLUGIN_DATA", &data);
+        if let Some(proxy) = network.proxy {
+            command.env("GOODWIN_PLUGIN_PROXY", proxy);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(gateway) = network.gateway {
+            command.env("GOODWIN_VPN_SOCKET", gateway.socket());
+            command.env("GOODWIN_VPN_PASSWORD", &gateway.password);
+        }
         #[cfg(windows)]
         if let Some(value) = std::env::var_os("SystemRoot") {
             command.env("SystemRoot", value);
@@ -905,9 +921,16 @@ IFS= read -r request
         .unwrap();
         let (sound, _signals) = mpsc::channel(1);
         let (changes, _catalog) = watch::channel(());
-        let (plugin, _) = Process::start(root.path(), root.path(), &manifest, sound, changes)
-            .await
-            .unwrap();
+        let (plugin, _) = Process::start(
+            root.path(),
+            root.path(),
+            &manifest,
+            sound,
+            changes,
+            Default::default(),
+        )
+        .await
+        .unwrap();
         let speech = plugin
             .stream_speech(SpeechRequest {
                 text: "Hello".into(),

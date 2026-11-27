@@ -166,6 +166,7 @@ export interface PluginPage {
 }
 
 export interface Plugin {
+  vpn?: boolean;
   id: string;
   title: Label;
   version: string;

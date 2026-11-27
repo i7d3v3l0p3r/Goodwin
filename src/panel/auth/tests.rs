@@ -476,6 +476,49 @@ async fn diagnostic_logs_require_a_signed_in_session_and_disable_caching() {
     task.abort();
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn vpn_routing_uses_the_panels_access_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = reqwest::Client::new();
+    for (access, expected) in [
+        (Access::Open, StatusCode::NOT_FOUND),
+        (Access::PendingPassword, StatusCode::UNAUTHORIZED),
+        (
+            Access::Password {
+                hash: password::hash(PASSWORD).unwrap(),
+            },
+            StatusCode::UNAUTHORIZED,
+        ),
+    ] {
+        let app = App::new(
+            dir.path().into(),
+            Config {
+                access,
+                settings: Settings::default(),
+                system_prompt: String::new(),
+            },
+            Player::new(),
+            DEFAULT_MICROPHONE_GAIN,
+        );
+        let (panel, task) = serve(router(app)).await;
+        let response = client
+            .put(format!("{panel}/api/plugin-vpn/missing"))
+            .json(&true)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::NOT_FOUND {
+            assert_eq!(
+                response.json::<serde_json::Value>().await.unwrap()["error"],
+                "plugin_not_found"
+            );
+        }
+        task.abort();
+    }
+}
+
 #[tokio::test]
 async fn private_plugin_routes_require_a_signed_in_session() {
     let dir = tempfile::tempdir().unwrap();

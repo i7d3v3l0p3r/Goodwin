@@ -2,16 +2,15 @@ import { useSearchParams } from "@solidjs/router";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Icon, PluginNavigationIcon } from "../../components/icons";
 import { PageHeader } from "../../components/PageHeader";
-import { Button, ButtonLink } from "../../components/ui-kit/Button";
+import { Button } from "../../components/ui-kit/Button";
 import { ConfirmDialog } from "../../components/ui-kit/ConfirmDialog";
 import { EmptyState, InlineError, StatusIndicator } from "../../components/ui-kit/Feedback";
-import type { Plugin } from "../../helpers/api";
+import { api, ApiError, type Plugin } from "../../helpers/api";
 import { usePanel } from "../../helpers/panel";
-import { pluginLandingPage, pluginPagePath } from "../../helpers/plugins";
+import { pluginLandingPage, pluginPagePath, pluginSettingsPath } from "../../helpers/plugins";
 import { setupPath } from "../../helpers/readiness";
 import { settingsSectionPath } from "../settings/sections";
 import { errorLabel } from "../../helpers/words";
-import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./PluginsPage.module.css";
 
 function landingPage(plugin: Plugin) {
@@ -27,6 +26,8 @@ export function PluginsPage() {
   const panel = usePanel();
   const [removing, setRemoving] = createSignal<{ id: string; title: string }>();
   const [deleting, setDeleting] = createSignal(false);
+  const [routing, setRouting] = createSignal("");
+  const [routeError, setRouteError] = createSignal<{ id: string; code: string }>();
   const words = () => panel.t().plugins;
   const installed = () => panel.snapshot()?.plugins;
   const [search, setSearch] = useSearchParams();
@@ -44,6 +45,19 @@ export function PluginsPage() {
   let archive!: HTMLInputElement;
   let uploadButton: HTMLButtonElement | undefined;
   let removeTrigger: HTMLElement | undefined;
+
+  async function route(plugin: Plugin, selected: boolean) {
+    if (routing() || pending() || plugin.vpn === selected) return;
+    setRouting(plugin.id);
+    setRouteError(undefined);
+    try {
+      await api(`plugin-vpn/${encodeURIComponent(plugin.id)}`, "PUT", selected);
+    } catch (error) {
+      setRouteError({ id: plugin.id, code: error instanceof ApiError ? error.code : "internal" });
+    } finally {
+      setRouting("");
+    }
+  }
 
   async function remove() {
     const target = removing();
@@ -92,76 +106,76 @@ export function PluginsPage() {
       <Show when={matches().length}>
         <ul class={styles.list}>
           <For each={matches()} keyed={plugin => plugin.id}>
-            {plugin => <li class={styles.item} data-status={plugin().status}>
-              <span class={styles.tile} data-icon={catalogIcon(plugin())} aria-hidden="true">
-                <PluginNavigationIcon name={catalogIcon(plugin())} />
-              </span>
-              <div class={styles.details}>
-                <h2>{plugin().title[panel.language()]}</h2>
-                <div class={styles.metadata}>
-                  <span class={styles.note}>{plugin().version}</span>
-                  <StatusIndicator tone={plugin().status === "ready" ? "success" : plugin().status === "error" ? "error" : "pending"}>
-                    {words().status[plugin().status]}
-                  </StatusIndicator>
+            {plugin => {
+              const title = () => plugin().title[panel.language()];
+              const landing = () => landingPage(plugin());
+              const settings = () => plugin().has_settings || (plugin().web && plugin().pages.some(page => page.path === "settings"))
+                ? pluginSettingsPath(plugin().id) : undefined;
+              const pinned = () => panel.pinnedPlugins().includes(plugin().id);
+              const extraPages = () => plugin().web && plugin().revision
+                ? plugin().pages.filter(page => page.navigation && ![landing(), settings()].includes(pluginPagePath(plugin().id, page.path))) : [];
+              return <li class={styles.item} data-status={plugin().status}>
+                <div class={styles.identity}>
+                  <span class={styles.tile} data-icon={catalogIcon(plugin())} aria-hidden="true">
+                    <PluginNavigationIcon name={catalogIcon(plugin())} />
+                  </span>
+                  <div class={styles.details}>
+                    <h2><Show when={landing() || settings()} fallback={title()}>
+                      {href => <a href={href()} aria-label={`${landing() ? words().open : words().configure} · ${title()}`}>
+                        {title()}
+                      </a>}
+                    </Show></h2>
+                    <div class={styles.metadata}>
+                      <span>{plugin().version}</span>
+                      <StatusIndicator tone={plugin().status === "ready" ? "success" : plugin().status === "error" ? "error" : "pending"}>
+                        {words().status[plugin().status]}
+                      </StatusIndicator>
+                    </div>
+                  </div>
                 </div>
+                <div class={styles.actions}>
+                  <Show when={plugin().vpn !== undefined && (plugin().vpn || installed()?.some(entry => entry.id === "vpn"))}>
+                    <button type="button" class={styles.vpn} role="switch" aria-checked={plugin().vpn ? "true" : "false"}
+                      aria-label={`${words().vpnRouting} · ${title()}`} title={plugin().vpn ? words().vpnOff : words().vpnOn}
+                      aria-busy={routing() === plugin().id ? "true" : "false"} disabled={Boolean(routing()) || pending()}
+                      onClick={() => void route(plugin(), !plugin().vpn)}>
+                      VPN<span aria-hidden="true" class={styles.track} />
+                    </button>
+                  </Show>
+                  <Show when={landing() && settings()}>{href =>
+                    <a href={href()} title={words().configure} aria-label={`${words().configure} · ${title()}`}>
+                      <Icon name="settings" size={16} />
+                    </a>
+                  }</Show>
+                  <Show when={landing()}>
+                    <button type="button" class={styles.bookmark} aria-pressed={pinned() ? "true" : "false"}
+                      aria-label={`${words().inMenu} · ${title()}`} title={pinned() ? panel.t().now.unpin : panel.t().now.pin}
+                      onClick={() => panel.togglePluginPin(plugin().id)}>
+                      <Icon name="bookmark" size={16} />
+                    </button>
+                  </Show>
+                  <Show when={allowed()}>
+                    <button type="button" class={styles.remove} disabled={pending()}
+                      title={words().remove} aria-label={`${words().remove} · ${title()}`} onClick={event => {
+                        removeTrigger = event.currentTarget;
+                        panel.clearError();
+                        setRemoving({ id: plugin().id, title: title() });
+                      }}><Icon name="trash" size={16} /></button>
+                  </Show>
+                </div>
+                <Show when={extraPages().length}>
+                  <div class={styles.pages}><For each={extraPages()}>{page =>
+                    <a href={pluginPagePath(plugin().id, page.path)}>{page.title[panel.language()]}</a>
+                  }</For></div>
+                </Show>
                 <Show when={plugin().error}>
                   {code => <InlineError announce={false}>{errorLabel(panel.t(), code())}</InlineError>}
                 </Show>
-                <Show when={plugin().web && plugin().revision}>
-                  <div class="gw-row">
-                    <For each={plugin().pages.filter(page => page.navigation && pluginPagePath(plugin().id, page.path) !== landingPage(plugin()))}>{page =>
-                      <a href={pluginPagePath(plugin().id, page.path)}>
-                        <PluginNavigationIcon name={page.icon} /> {page.title[panel.language()]}
-                      </a>
-                    }</For>
-                  </div>
+                <Show when={routeError()?.id === plugin().id && routeError()?.code}>
+                  {code => <InlineError>{errorLabel(panel.t(), code())}</InlineError>}
                 </Show>
-              </div>
-              <div class={["gw-row", styles.actions]}>
-                <Show when={landingPage(plugin())}>{href =>
-                  <ButtonLink href={href()} aria-label={`${words().open} · ${plugin().title[panel.language()]}`}>
-                    {words().open}
-                  </ButtonLink>
-                }</Show>
-                <Show when={plugin().has_settings || (plugin().web && plugin().pages.some(page => page.path === "settings"))}>
-                  <PluginSettingsLink plugin={plugin()} quiet={Boolean(landingPage(plugin()))} />
-                </Show>
-                <Show when={allowed() || landingPage(plugin())}>
-                  <details class={styles.rowMenu} name="plugin-actions" onFocusOut={event => {
-                    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
-                      event.currentTarget.open = false;
-                    }
-                  }} onKeyDown={event => {
-                    if (event.key !== "Escape" || !event.currentTarget.open) return;
-                    event.preventDefault();
-                    event.currentTarget.open = false;
-                    event.currentTarget.querySelector("summary")?.focus();
-                  }}>
-                    <summary class={["gw-button", styles.more]} data-variant="quiet"
-                      aria-label={words().actionsFor(plugin().title[panel.language()])}><Icon name="more" /></summary>
-                    <div class={styles.menuItems}>
-                      <Show when={landingPage(plugin())}>
-                        <Button type="button" variant="quiet" onClick={event => {
-                          panel.togglePluginPin(plugin().id);
-                          const menu = event.currentTarget.closest("details");
-                          if (menu) { menu.open = false; menu.querySelector("summary")?.focus(); }
-                        }}>{panel.pinnedPlugins().includes(plugin().id) ? panel.t().now.unpin : panel.t().now.pin}</Button>
-                      </Show>
-                      <Show when={allowed()}>
-                      <Button type="button" variant="quiet" class={styles.remove} disabled={pending()} onClick={event => {
-                        const target = plugin();
-                        const menu = event.currentTarget.closest("details");
-                        removeTrigger = menu?.querySelector("summary") ?? undefined;
-                        if (menu) menu.open = false;
-                        panel.clearError();
-                        setRemoving({ id: target.id, title: target.title[panel.language()] });
-                      }}>{words().remove}</Button>
-                      </Show>
-                    </div>
-                  </details>
-                </Show>
-              </div>
-            </li>}
+              </li>;
+            }}
           </For>
         </ul>
       </Show>

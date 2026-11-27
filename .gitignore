@@ -1,5 +1,6 @@
 /docs/
 /target/
+/plugins/vpn/engines/target/
 /web/dist/
 /web/node_modules/
 /goodwin-data/

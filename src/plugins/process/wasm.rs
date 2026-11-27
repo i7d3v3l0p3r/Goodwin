@@ -31,6 +31,7 @@ pub(super) async fn start(
     manifest: &Manifest,
     sound: mpsc::Sender<Signal>,
     catalog_changes: watch::Sender<()>,
+    proxy: Option<&str>,
 ) -> Result<(Process, Registration)> {
     let state_path = manifest
         .wasm_state_file
@@ -43,7 +44,7 @@ pub(super) async fn start(
     };
     let ready = async {
         let host = (manifest.wasm_http.is_some() || manifest.wasm_storage)
-            .then(|| services::Host::new(data.to_owned(), manifest))
+            .then(|| services::Host::new(data.to_owned(), manifest, proxy))
             .transpose()?;
         let memory_limit = if manifest.wasm_http.is_some() {
             64 * 1024 * 1024
@@ -471,6 +472,7 @@ mod tests {
             &manifest,
             sound.clone(),
             changes.clone(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -505,6 +507,7 @@ mod tests {
             &manifest,
             sound.clone(),
             changes.clone(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -531,9 +534,16 @@ mod tests {
         .await
         .unwrap();
         restarted.stop().await;
-        let (restarted, _) = Process::start(dir.path(), dir.path(), &manifest, sound, changes)
-            .await
-            .unwrap();
+        let (restarted, _) = Process::start(
+            dir.path(),
+            dir.path(),
+            &manifest,
+            sound,
+            changes,
+            Default::default(),
+        )
+        .await
+        .unwrap();
         assert!(
             timeout(Duration::from_millis(300), audio.recv())
                 .await

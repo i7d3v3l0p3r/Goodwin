@@ -19,6 +19,47 @@ mod test_support;
 const TRACK: &str = "spotify:track:1234567890123456789012";
 
 #[tokio::test]
+async fn cover_art_requests_send_the_cdn_hostname_through_the_selected_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = web_client(Some(&format!(
+        "socks5h://{}",
+        listener.local_addr().unwrap()
+    )))
+    .unwrap();
+    let proxy = async {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        let mut greeting = [0; 2];
+        connection.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting[0], 5);
+        let mut methods = vec![0; usize::from(greeting[1])];
+        connection.read_exact(&mut methods).await.unwrap();
+        assert!(methods.contains(&0));
+        connection.write_all(&[5, 0]).await.unwrap();
+        let mut request = [0; 5];
+        connection.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request[..4], &[5, 1, 0, 3]);
+        let mut domain = vec![0; usize::from(request[4])];
+        connection.read_exact(&mut domain).await.unwrap();
+        assert_eq!(domain, b"i.scdn.co");
+        assert_eq!(connection.read_u16().await.unwrap(), 443);
+        connection
+            .write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+    };
+    let (image, _) = tokio::time::timeout(Duration::from_secs(8), async {
+        tokio::join!(
+            artwork::fetch(&client, "1234567890abcdef1234567890abcdef"),
+            proxy
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(image.unwrap_err(), "artwork_unavailable");
+}
+
+#[tokio::test]
 async fn player_shows_the_receiver_name_before_pairing_without_sending_a_command() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = soloist::address(&format!("ws://{}", listener.local_addr().unwrap())).unwrap();

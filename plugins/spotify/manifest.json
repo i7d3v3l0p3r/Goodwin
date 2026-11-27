@@ -1,8 +1,9 @@
 {
   "id": "spotify",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "title": { "en": "Spotify", "ru": "Spotify" },
   "apiVersion": 1,
+  "nativeProxy": true,
   "web": {
     "uiKitVersion": 1,
     "solidRuntimeVersion": 1,

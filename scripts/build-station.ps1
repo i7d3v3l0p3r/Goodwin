@@ -1,7 +1,8 @@
 param(
     [ValidateRange(1, 64)][int]$Jobs = 4,
     [switch]$ProfileAllocations,
-    [switch]$CleanWebDependencies
+    [switch]$CleanWebDependencies,
+    [string]$VpnEngineBaseUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,12 +113,24 @@ python "%~dp0zig-tool.py" ar %*
     if ($ProfileAllocations) {
         $features += ',goodwin/hotpath-alloc'
     }
-    Invoke-Checked cargo @('build', '--locked', '--workspace', '--bins', '--release', '--target', $target,
+    Invoke-Checked cargo @('build', '--locked', '--workspace', '--exclude', 'goodwin-vpn', '--bins', '--release', '--target', $target,
         '--jobs', "$Jobs", '--features', $features)
     foreach ($plugin in @('timers', 'openai-compatible', 'spotify', 'wake-dataset')) {
         Invoke-Checked python @('scripts/package-plugin.py', "plugins/$plugin", "target/$target/release/goodwin-$plugin",
             'linux-aarch64', "target/plugins/$plugin-linux-aarch64.tar.gz")
     }
+    $previous['CFLAGS_aarch64_unknown_linux_musl'] = $env:CFLAGS_aarch64_unknown_linux_musl
+    $previous['CMAKE_GENERATOR'] = $env:CMAKE_GENERATOR
+    $env:CFLAGS_aarch64_unknown_linux_musl = "$env:CFLAGS_aarch64_unknown_linux_musl -fno-sanitize=undefined".Trim()
+    $env:CMAKE_GENERATOR = 'Ninja'
+    Invoke-Checked cargo @('build', '--locked', '--manifest-path', 'plugins/vpn/engines/Cargo.toml',
+        '--release', '--bins', '--target', $target, '--target-dir', 'target', '--jobs', "$Jobs")
+    Invoke-Checked cargo @('build', '--locked', '-p', 'goodwin-vpn', '--bins', '--profile', 'vpn-release',
+        '--target', $target, '--jobs', "$Jobs")
+    $vpnPackage = @('scripts/package-vpn.py', "target/$target/vpn-release/goodwin-vpn",
+        'aarch64', 'target/plugins/vpn-linux-aarch64.tar.gz', '--engines-dir', "target/$target/release")
+    if ($VpnEngineBaseUrl) { $vpnPackage += @('--base-url', $VpnEngineBaseUrl) }
+    Invoke-Checked python $vpnPackage
     Invoke-Checked python @('scripts/package-plugin.py', 'plugins/timers',
         'target/wasm32-unknown-unknown/release/goodwin-timers.wasm', 'wasm32',
         'target/plugins/timers-wasm32.tar.gz', '--wasm-state-file', 'timers.json')

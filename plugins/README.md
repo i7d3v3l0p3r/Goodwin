@@ -4,6 +4,8 @@ Goodwin starts trusted native plugins as independent processes and runs WASM plu
 
 The native [Spotify plugin](spotify/) searches the catalogue through the Web API and controls a Spotify Soloist receiver.
 
+On Linux, install [VLESS VPN](vpn/) to route selected plugins through a shared profile. WASM packages using the host HTTP service support routing automatically. A native package can declare `"nativeProxy": true` when its external HTTP clients honor the authenticated `socks5h://` URL in `GOODWIN_PLUGIN_PROXY`. Resolve destination names through that proxy, keep its credentials private, and propagate errors when it is unreachable. Goodwin restarts the selected plugin when its routing changes. Native packages control their own sockets.
+
 ## Build a package
 
 For a Windows development instance, run these commands from the repository root.

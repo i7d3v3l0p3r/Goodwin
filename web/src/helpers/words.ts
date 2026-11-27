@@ -179,7 +179,8 @@ export const words = {
     plugins: {
       title: "Plugins", listLoading: "Loading plugins…", empty: "No plugins installed.", upload: "Upload package",
       search: "Search plugins", noMatches: "No matching plugins.",
-      open: "Open", configure: "Configure", actionsFor: (name: string) => `Actions for ${name}`,
+      vpnRouting: "VPN for external requests", vpnOn: "Route external requests through VPN", vpnOff: "Use a direct connection",
+      open: "Open", configure: "Configure", inMenu: "In menu",
       archive: "Choose a .tar.gz package to install or update.", remove: "Remove", cancel: "Cancel",
       removeTitle: "Remove plugin?", removing: "Removing…",
       confirm: (name: string) => `“${name}” and all its saved data will be removed.`,
@@ -425,7 +426,8 @@ export const words = {
     plugins: {
       title: "Плагины", listLoading: "Загружаем список плагинов…", empty: "Установленных плагинов пока нет.", upload: "Загрузить пакет",
       search: "Поиск плагинов", noMatches: "По этому запросу плагины не найдены.",
-      open: "Открыть", configure: "Настроить", actionsFor: (name: string) => `Действия для «${name}»`,
+      vpnRouting: "VPN для внешних запросов", vpnOn: "Отправлять внешние запросы через VPN", vpnOff: "Подключаться напрямую",
+      open: "Открыть", configure: "Настроить", inMenu: "В меню",
       archive: "Выберите архив .tar.gz для установки или обновления.", remove: "Удалить", cancel: "Отмена",
       removeTitle: "Удалить плагин?", removing: "Удаляем…",
       confirm: (name: string) => `Плагин «${name}» и все его сохранённые данные будут удалены.`,

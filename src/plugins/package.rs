@@ -48,6 +48,9 @@ pub struct Manifest {
     #[serde(default)]
     pub(crate) provider_connections: bool,
     #[serde(default)]
+    #[cfg_attr(target_os = "espidf", allow(dead_code))]
+    pub(crate) native_proxy: bool,
+    #[serde(default)]
     #[cfg_attr(
         not(all(feature = "wasm-plugins", target_os = "linux")),
         allow(dead_code)
@@ -140,6 +143,17 @@ pub fn path(value: &str) -> bool {
 }
 
 impl Manifest {
+    #[cfg(not(target_os = "espidf"))]
+    pub(crate) fn vpn_capable(&self) -> bool {
+        cfg!(target_os = "linux")
+            && self.id != "vpn"
+            && if self.is_wasm() {
+                self.wasm_http.is_some()
+            } else {
+                self.native_proxy
+            }
+    }
+
     pub(crate) fn is_wasm(&self) -> bool {
         self.target == "wasm32"
     }

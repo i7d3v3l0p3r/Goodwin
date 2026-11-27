@@ -4,6 +4,10 @@
 
 ### English
 
+- The plugin catalog has a VPN switch for Spotify 0.2.2 and the OpenAI-compatible provider. Spotify can route its Web API and cover-art requests through the VPN while controlling Soloist locally.
+- Plugins appear in a compact list. Select a name to open its page or settings. The bookmark adds or removes a menu shortcut in one click.
+- VLESS VPN accepts provider subscription URLs, checks the tunnel at a configurable interval and switches to a verified replacement when the current profile stops working. Open panels can manage VPN profiles and choose which plugins use them.
+- The VLESS VPN plugin for Linux downloads the Rust engine selected by the share link on first use and caches it for offline reuse. Choose which plugins use it in the catalog. Their selection survives restarts and their requests stop when the VPN is unavailable.
 - The mini chat on Now keeps a fixed height on desktop and mobile. Conversation history scrolls between the header and the message field.
 - Search model catalogs by name or ID and long language and provider lists by typing. Page changes, menus and settings sections now have short transitions that respect reduced-motion preferences.
 - Now includes a mini chat for recent spoken and written exchanges. Expand system messages for timings, actions and failures of the last eight requests, or edit and repeat the latest voice command. The chat header can hide all system messages. The compact send control leaves the placeholder centered. Old chat links open Now. Active plugin cards appear first, and plugins can be pinned to the menu in each browser.
@@ -16,6 +20,10 @@
 
 ### Русский
 
+- В каталоге плагинов появился переключатель VPN для Spotify 0.2.2 и OpenAI-совместимого провайдера. Spotify может загружать обложки и обращаться к Web API через VPN, сохраняя локальное управление плеером Soloist.
+- Плагины собраны в компактный список. Нажатие на название открывает страницу или настройки плагина. Значок закладки добавляет страницу в меню или убирает её одним нажатием.
+- VLESS VPN принимает ссылки на подписки провайдеров, проверяет туннель с заданным интервалом и переключается на проверенный профиль, если прежний перестал работать. В открытой панели можно управлять профилями VPN и выбирать плагины, которые их используют.
+- На Linux плагин VLESS VPN по ссылке профиля скачивает только нужный движок Goodwin на Rust и сохраняет его для повторного запуска без скачивания. В каталоге можно указать плагины, которым нужен VPN. Выбор сохраняется после перезапуска. Если VPN недоступен, запросы выбранных плагинов останавливаются.
 - У мини-чата на странице «Сейчас» фиксированная высота на компьютере и телефоне. История прокручивается между шапкой и полем ввода.
 - В каталогах моделей появился поиск по названию и ID, в длинных списках языков и провайдеров тоже можно искать. Страницы, меню и разделы настроек открываются плавнее и учитывают системную настройку уменьшения движения.
 - На странице «Сейчас» появился мини-чат с голосовыми и текстовыми репликами. Системные сообщения раскрывают длительность этапов, действия плагинов и ошибки последних восьми запросов. Последнюю голосовую команду можно исправить и повторить. Системные сообщения можно скрыть переключателем в шапке. Кнопка отправки стала компактнее, а текст поля ввода выровнен по центру строки. Старые ссылки на чат открывают «Сейчас». Активные карточки плагинов показываются первыми, а нужные плагины можно закрепить в меню своего браузера.

@@ -204,13 +204,21 @@ impl Plugin for Spotify {
     }
 }
 
-fn main() -> goodwin_error::Result<()> {
-    let client = reqwest::Client::builder()
+fn web_client(proxy: Option<&str>) -> goodwin_error::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+    }
+    Ok(builder
         .tls_backend_preconfigured(http_tls::client_config())
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(4))
         .timeout(Duration::from_secs(6))
-        .build()?;
+        .build()?)
+}
+
+fn main() -> goodwin_error::Result<()> {
+    let client = web_client(std::env::var("GOODWIN_PLUGIN_PROXY").ok().as_deref())?;
     let catalog = Catalog::new(
         client.clone(),
         "https://accounts.spotify.com/api/token",

@@ -32,6 +32,23 @@ use crate::{
 };
 
 const STORAGE_LIMIT: usize = 128 * 1024;
+fn http_client(proxy: Option<&str>) -> Result<Client> {
+    fn builder() -> reqwest::ClientBuilder {
+        Client::builder()
+            .tls_backend_preconfigured(crate::http_tls::client_config())
+            .connect_timeout(Duration::from_secs(8))
+            .redirect(Policy::none())
+    }
+    static DIRECT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| builder().build());
+    match proxy {
+        Some(proxy) => Ok(builder().proxy(reqwest::Proxy::all(proxy)?).build()?),
+        None => DIRECT
+            .as_ref()
+            .cloned()
+            .map_err(|_| report!("Initialize Goodwin HTTP client")),
+    }
+}
+
 const SPEECH_ERROR_LIMIT: usize = 8 * 1024;
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
@@ -39,6 +56,7 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC);
 
 pub(super) struct Host {
+    client: Client,
     data: PathBuf,
     http: Option<WasmHttp>,
     has_connections: bool,
@@ -53,12 +71,14 @@ pub(super) struct Host {
 }
 
 impl Host {
-    pub(super) fn new(data: PathBuf, manifest: &Manifest) -> Result<Self> {
+    pub(super) fn new(data: PathBuf, manifest: &Manifest, proxy: Option<&str>) -> Result<Self> {
+        let client = http_client(proxy)?;
         let storage = manifest
             .wasm_storage
             .then(|| fs::open(&data, DIRECTORY_FLAGS, Mode::empty()))
             .transpose()?;
         Ok(Self {
+            client,
             data,
             http: manifest.wasm_http.clone(),
             has_connections: manifest.provider_connections,
@@ -236,13 +256,6 @@ impl From<rustix::io::Errno> for StorageError {
 
 impl Host {
     fn http_start(&mut self, request: HttpRequest, input: &[u8]) -> Result<Vec<u8>> {
-        static CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
-            Client::builder()
-                .tls_backend_preconfigured(crate::http_tls::client_config())
-                .connect_timeout(Duration::from_secs(8))
-                .redirect(Policy::none())
-                .build()
-        });
         self.response = None;
         let speech = request.path == ["audio", "speech"] && matches!(request.body, HttpBody::Json);
         let (base, key, require_key) = self.http_destination()?;
@@ -266,11 +279,9 @@ impl Host {
             .map_err(|_| report!("Invalid provider API base URL"))?
             .pop_if_empty()
             .extend(&request.path);
-        let client = CLIENT
-            .as_ref()
-            .map_err(|_| report!("Initialize Goodwin HTTP client"))?;
         let remaining = self.deadline.saturating_duration_since(Instant::now());
-        let mut outbound = client
+        let mut outbound = self
+            .client
             .request(
                 if request.get {
                     Method::GET

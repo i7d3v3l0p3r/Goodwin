@@ -70,7 +70,9 @@ jobs:
           python scripts/build-wasm-plugins.py
 
       - name: Test with Station runtimes
-        run: cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins
+        run: |
+          cargo test --locked --workspace --features goodwin/wake-tflite,goodwin/wasm-plugins
+          cargo test --locked --manifest-path plugins/vpn/engines/Cargo.toml
 
       - name: Build and package the Station release
         run: |
@@ -83,6 +85,11 @@ jobs:
               --config 'profile.release.package.goodwin.strip="symbols"' --release --target "$target"
 
           python scripts/package-station.py --output target/release-assets/goodwin-mini3-aarch64.tar.gz
+          cargo zigbuild --locked -p goodwin-vpn --bins --profile vpn-release --target "$target"
+          cargo zigbuild --locked --manifest-path plugins/vpn/engines/Cargo.toml --bins --release --target "$target" --target-dir target
+          python scripts/package-vpn.py "target/$target/vpn-release/goodwin-vpn" aarch64 target/release-assets/vpn-linux-aarch64.tar.gz \
+            --engines-dir "target/$target/release" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
           python scripts/package-plugin.py plugins/timers target/wasm32-unknown-unknown/release/goodwin-timers.wasm \
             wasm32 target/release-assets/timers-wasm32.tar.gz --wasm-state-file timers.json
           for plugin in openai-compatible wake-dataset; do
@@ -90,7 +97,7 @@ jobs:
               wasm32 "target/release-assets/$plugin-wasm32.tar.gz"
           done
 
-          (cd target/release-assets && sha256sum -- *.tar.gz > SHA256SUMS)
+          (cd target/release-assets && sha256sum -- *.gz > SHA256SUMS)
 
       - uses: actions/upload-artifact@v6
         with:
@@ -183,7 +190,7 @@ jobs:
           installers=(goodwin-installer-windows-x64.exe goodwin-installer-linux-x64.tar.gz
             goodwin-installer-macos-arm64.tar.gz goodwin-installer-macos-x64.tar.gz)
           assets=(goodwin-mini3-aarch64.tar.gz timers-wasm32.tar.gz openai-compatible-wasm32.tar.gz wake-dataset-wasm32.tar.gz
-            "${installers[@]}" SHA256SUMS)
+            vpn-linux-aarch64.tar.gz vless-{stream,http2,xtls}-linux-aarch64.gz "${installers[@]}" SHA256SUMS)
           sha256sum -- "${installers[@]}" >> SHA256SUMS
           sha256sum -c SHA256SUMS
 

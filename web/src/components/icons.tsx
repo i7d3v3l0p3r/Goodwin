@@ -3,13 +3,13 @@ import ArrowLeft from "@lucide/solid/icons/arrow-left";
 import ArrowRight from "@lucide/solid/icons/arrow-right";
 import ArrowUp from "@lucide/solid/icons/arrow-up";
 import AudioLines from "@lucide/solid/icons/audio-lines";
+import Bookmark from "@lucide/solid/icons/bookmark";
 import CalendarDays from "@lucide/solid/icons/calendar-days";
 import Check from "@lucide/solid/icons/check";
 import ChevronDown from "@lucide/solid/icons/chevron-down";
 import ChevronRight from "@lucide/solid/icons/chevron-right";
 import Database from "@lucide/solid/icons/database";
 import Download from "@lucide/solid/icons/download";
-import Ellipsis from "@lucide/solid/icons/ellipsis";
 import Headphones from "@lucide/solid/icons/headphones";
 import House from "@lucide/solid/icons/house";
 import ListChecks from "@lucide/solid/icons/list-checks";
@@ -24,6 +24,7 @@ import Search from "@lucide/solid/icons/search";
 import Settings from "@lucide/solid/icons/settings";
 import Sparkles from "@lucide/solid/icons/sparkles";
 import Timer from "@lucide/solid/icons/timer";
+import Trash from "@lucide/solid/icons/trash";
 import Wifi from "@lucide/solid/icons/wifi";
 import X from "@lucide/solid/icons/x";
 import { Dynamic } from "@solidjs/web";
@@ -55,7 +56,8 @@ const icons = {
   chevronRight: ChevronRight,
   chevronDown: ChevronDown,
   menu: Menu,
-  more: Ellipsis,
+  bookmark: Bookmark,
+  trash: Trash,
   close: X,
 };
 

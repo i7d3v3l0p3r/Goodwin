@@ -12,6 +12,8 @@ pub(crate) mod store;
 pub(crate) mod timer;
 #[cfg(not(target_os = "espidf"))]
 mod tools;
+#[cfg(target_os = "linux")]
+mod vpn;
 
 #[cfg(all(
     feature = "wasm-plugins",

@@ -46,7 +46,11 @@ mod platform {
     pub use reqwest::blocking::{Client, RequestBuilder, Response};
 
     pub fn client() -> Result<Client> {
-        Ok(Client::builder()
+        let mut builder = Client::builder();
+        if let Ok(proxy) = std::env::var("GOODWIN_PLUGIN_PROXY") {
+            builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+        }
+        Ok(builder
             .tls_backend_preconfigured(crate::http_tls::client_config())
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(50))

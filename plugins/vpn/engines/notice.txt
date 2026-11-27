@@ -1,0 +1,7 @@
+The Goodwin VLESS workers are licensed under the MIT License.
+
+The XTLS worker uses the unmodified TLS, REALITY, Vision and VLESS encryption
+libraries from xray-rust under the Mozilla Public License, version 2.0.
+Their source is available at
+https://github.com/aimalygin/xray-rust/tree/d481fdfa61afad8663d67e0abdcf80b3e060bfe3
+The accompanying mpl-2.0.txt contains the license.

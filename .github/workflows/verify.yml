@@ -46,12 +46,18 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo fmt --manifest-path installer/Cargo.toml --all --check
+          cargo fmt --manifest-path plugins/vpn/engines/Cargo.toml --all --check
       - name: Check wake corpus isolation
         run: python -m unittest discover -s scripts -p test_wakeword_manifest.py
       - name: Test the default workspace
         run: cargo test --locked --workspace
       - name: Lint the default workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Check the Linux VLESS workers
+        if: matrix.station_runtimes
+        run: |
+          cargo test --locked --manifest-path plugins/vpn/engines/Cargo.toml --target-dir target
+          cargo clippy --locked --manifest-path plugins/vpn/engines/Cargo.toml --target-dir target --all-targets -- -D warnings
       - name: Test the Windows installer
         if: runner.os == 'Windows'
         run: cargo test --locked --release --manifest-path installer/Cargo.toml

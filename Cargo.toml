@@ -6,9 +6,17 @@ description = "An alternative voice assistant for Yandex Station"
 license = "MIT"
 
 [workspace]
-members = ["plugins/openai-compatible", "plugins/sdk", "plugins/spotify", "plugins/timers", "plugins/wake-dataset", "shared/error", "shared/json"]
+members = ["plugins/openai-compatible", "plugins/sdk", "plugins/spotify", "plugins/timers", "plugins/vpn", "plugins/wake-dataset", "shared/error", "shared/json"]
 default-members = ["."]
 resolver = "3"
+
+[profile.vpn-release]
+inherits = "release"
+opt-level = "s"
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [profile.esp-release]
 inherits = "release"
@@ -28,7 +36,7 @@ hotpath-alloc = ["dep:hotpath", "hotpath/hotpath-alloc"]
 wake-bench = []
 wake-onnx = ["dep:livekit-wakeword", "dep:rustfft", "dep:tract-onnx"]
 wake-tflite = ["dep:sha2", "dep:url"]
-wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart", "reqwest/query"]
+wasm-plugins = ["dep:wasmparser", "dep:flate2", "dep:url", "reqwest/multipart", "reqwest/query", "reqwest/socks"]
 
 [dependencies]
 goodwin-error = { path = "shared/error" }

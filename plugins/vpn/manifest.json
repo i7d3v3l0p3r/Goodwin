@@ -1,0 +1,14 @@
+{
+  "id": "vpn",
+  "title": { "en": "VLESS VPN", "ru": "VLESS VPN" },
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "web": { "uiKitVersion": 1, "solidRuntimeVersion": 1, "entry": "ui/index.mjs" },
+  "settings": [
+    {
+      "id": "probe_url", "type": "url",
+      "label": { "en": "Tunnel check URL", "ru": "Адрес проверки туннеля" },
+      "description": { "en": "Expected response: HTTP 2xx. Default: https://www.gstatic.com/generate_204", "ru": "Ожидается HTTP 2xx. По умолчанию https://www.gstatic.com/generate_204" }
+    }
+  ]
+}

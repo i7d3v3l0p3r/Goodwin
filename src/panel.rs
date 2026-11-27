@@ -99,16 +99,19 @@ pub fn router(app: Arc<App>) -> Router {
                 .layer(DefaultBodyLimit::max(SETTINGS_BODY_LIMIT)),
         )
         .route("/api/plugins/{id}/{*path}", any(plugin_http))
-        .route("/plugin-assets/{id}/{revision}/{*path}", get(plugin_asset))
-        .route_layer(middleware::from_fn_with_state(panel.clone(), require_owner));
+        .route("/plugin-assets/{id}/{revision}/{*path}", get(plugin_asset));
+    #[cfg(target_os = "linux")]
+    let protected = protected.route("/api/plugin-vpn/{id}", put(plugin_routes::route_via_vpn));
+    let protected =
+        protected.route_layer(middleware::from_fn_with_state(panel.clone(), require_owner));
 
     let packages = Router::new()
         .route("/api/plugin-packages", post(upload_plugin))
-        .route("/api/plugin-packages/{id}", delete(remove_plugin))
-        .route_layer(middleware::from_fn_with_state(
-            panel.clone(),
-            require_password_owner,
-        ));
+        .route("/api/plugin-packages/{id}", delete(remove_plugin));
+    let packages = packages.route_layer(middleware::from_fn_with_state(
+        panel.clone(),
+        require_password_owner,
+    ));
 
     assets::routes()
         .route(

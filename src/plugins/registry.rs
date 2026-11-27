@@ -46,6 +46,7 @@ impl Registry {
         active: Option<Active>,
         status: Status,
         error: Option<&'static str>,
+        vpn: Option<bool>,
     ) {
         self.entries.write().expect("plugin registry").insert(
             manifest.id.clone(),
@@ -54,6 +55,7 @@ impl Registry {
                 active,
                 status,
                 error,
+                vpn,
                 settings_revision: 0,
             },
         );
@@ -111,6 +113,7 @@ impl Registry {
 }
 
 pub(super) struct Entry {
+    pub(super) vpn: Option<bool>,
     pub(super) manifest: Manifest,
     pub(super) active: Option<Active>,
     pub(super) settings_revision: u64,
@@ -145,6 +148,8 @@ pub(super) enum Status {
 
 #[derive(Serialize)]
 pub struct View {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vpn: Option<bool>,
     id: String,
     title: Label,
     version: String,
@@ -173,6 +178,7 @@ impl Entry {
         let active = self.live();
         let stopped = self.active.is_some() && active.is_none();
         View {
+            vpn: self.vpn,
             id: self.manifest.id.clone(),
             title: self.manifest.title.clone(),
             version: self.manifest.version.clone(),

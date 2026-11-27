@@ -31,6 +31,8 @@ Slow searches can continue after the voice reply. Ask whether the last Spotify r
 
 ## Player in the Goodwin panel
 
+With the VLESS VPN plugin installed, turn on **VPN** next to Spotify in **Plugins**. This routes Spotify account, search and cover-art requests. The plugin communicates with the Soloist receiver over its configured local connection. Soloist handles audio playback and its own network traffic.
+
 Open **Spotify** in the sidebar or mobile menu. On an older panel, open **Plugins → Spotify**. The player page at `/plugins/spotify` shows the receiver's actual Spotify Connect name. For the first connection, play a track in the Spotify app on the same Wi-Fi and select that receiver in the device picker. Soloist saves the session in its data directory. The Web API credentials in plugin settings are for catalogue searches. [Soloist authentication](https://developer.spotify.com/documentation/soloist/concepts/authentication)
 
 The page shows the current track, cover art when available, artists and playback position, with the transport controls offered by the receiver. **Queue** shows up to 20 upcoming items. **History** shows up to 20 previous items in the current Soloist queue, newest first. Playback on other devices and older account listening history are outside that queue. The page refreshes while visible and does not require catalogue credentials. [Soloist WebSocket API](https://developer.spotify.com/documentation/soloist/reference/websocket-api)

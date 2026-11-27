@@ -129,7 +129,7 @@ async fn upload_commits_a_started_package_and_restores_data_after_a_failed_updat
 async fn plugin(root: &Path, data: &Path, manifest: &Manifest) -> (Process, Registration) {
     let (sound, _) = mpsc::channel(1);
     let (changes, _) = watch::channel(());
-    Process::start(root, data, manifest, sound, changes)
+    Process::start(root, data, manifest, sound, changes, Default::default())
         .await
         .unwrap()
 }
@@ -147,6 +147,57 @@ fn save_connection_fixture(data: &Path, endpoint: &str, key: &str) {
         .ok()
         .unwrap();
     store.save(data).unwrap();
+}
+
+#[tokio::test]
+async fn assigned_provider_stays_offline_after_restart_until_vpn_is_deselected() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = requests.clone();
+    let router = Router::new().route(
+        "/v1/models",
+        get(move || async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            axum::Json(json!({"data":[{"id":"direct-model"}]}))
+        }),
+    );
+    let (server, task) = crate::test_support::serve(router).await;
+    let root = tempfile::tempdir().unwrap();
+    let id = "openai-compatible";
+    let slot = root.path().join("plugins/installed").join(id);
+    let data = slot.join("data");
+    fs::create_dir_all(&data).unwrap();
+    install(
+        &slot.join("package"),
+        serde_json::from_str(include_str!(
+            "../../../../plugins/openai-compatible/manifest.json"
+        ))
+        .unwrap(),
+        wasm!("openai-compatible"),
+    );
+    save_connection_fixture(&data, &format!("{server}/v1"), "test-key");
+    goodwin_plugin::save_json(&data.join(".goodwin-vpn.json"), &true).unwrap();
+    let plugins = crate::plugins::Plugins::new(root.path(), crate::station::Player::new());
+    plugins.restore().await;
+    let provider = "openai-compatible:fixture";
+    let _ = plugins.models(provider, Capability::Chat).await;
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        serde_json::to_value(plugins.catalog()).unwrap()[0]["vpn"],
+        true
+    );
+    assert!(plugins.route_via_vpn(id, false).await.is_ok());
+    let catalog = plugins
+        .models(provider, Capability::Chat)
+        .await
+        .ok()
+        .unwrap();
+    assert_eq!(catalog.models[0].id, "direct-model");
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(plugins.route_via_vpn(id, true).await.is_err());
+    plugins.shutdown().await;
+    task.abort();
 }
 
 #[tokio::test]
@@ -182,7 +233,7 @@ async fn provider_catalog_larger_than_esp_guest_memory_is_processed_incrementall
         wasm!("openai-compatible"),
     );
     save_connection_fixture(&data, &format!("{server}/v1"), "");
-    let host = services::Host::new(data, &manifest).unwrap();
+    let host = services::Host::new(data, &manifest, None).unwrap();
     let instance = Instance::open_with_host(
         root.path().join(&manifest.executable),
         Some(host),

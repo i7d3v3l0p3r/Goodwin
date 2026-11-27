@@ -1,0 +1,53 @@
+[package]
+name = "goodwin-vless"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[features]
+default = ["xtls"]
+stream = ["dep:tokio-tungstenite"]
+http2 = ["dep:h2", "dep:http", "dep:prost"]
+xtls = ["stream", "http2", "dep:xray-transport", "dep:xray-routing", "dep:xray-proxy", "dep:xray-vless-encryption"]
+
+[[bin]]
+name = "vless-stream"
+path = "src/bin/vless-stream.rs"
+required-features = ["stream"]
+
+[[bin]]
+name = "vless-http2"
+path = "src/bin/vless-http2.rs"
+required-features = ["http2"]
+
+[[bin]]
+name = "vless-xtls"
+path = "src/bin/vless-xtls.rs"
+required-features = ["xtls"]
+
+[dependencies]
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+h2 = { version = "0.4", optional = true }
+http = { version = "1", optional = true }
+prost = { version = "0.14", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-tungstenite = { optional = true, version = "0.28", default-features = false, features = ["handshake"] }
+uuid = { version = "1", features = ["v4"] }
+webpki-roots = "1"
+xray-transport = { optional = true, git = "https://github.com/aimalygin/xray-rust", rev = "d481fdfa61afad8663d67e0abdcf80b3e060bfe3" }
+xray-proxy = { optional = true, git = "https://github.com/aimalygin/xray-rust", rev = "d481fdfa61afad8663d67e0abdcf80b3e060bfe3" }
+xray-routing = { optional = true, git = "https://github.com/aimalygin/xray-rust", rev = "d481fdfa61afad8663d67e0abdcf80b3e060bfe3" }
+xray-vless-encryption = { optional = true, git = "https://github.com/aimalygin/xray-rust", rev = "d481fdfa61afad8663d67e0abdcf80b3e060bfe3" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

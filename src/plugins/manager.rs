@@ -33,6 +33,8 @@ use super::{
 pub struct Plugins(Arc<Manager>);
 
 struct Manager {
+    #[cfg(target_os = "linux")]
+    vpn: tokio::sync::OnceCell<super::vpn::Gateway>,
     store: Store,
     registry: Registry,
     lifecycle: Mutex<()>,
@@ -95,6 +97,8 @@ fn registered_provider<'a>(
 impl Plugins {
     pub fn new(dir: &Path, player: Player) -> Self {
         Self(Arc::new(Manager {
+            #[cfg(target_os = "linux")]
+            vpn: Default::default(),
             store: Store::new(dir),
             registry: Registry::default(),
             lifecycle: Mutex::default(),
@@ -132,6 +136,7 @@ impl Plugins {
                 continue;
             };
             if !ids.is_empty()
+                && id != "vpn"
                 && !ids.iter().any(|provider| {
                     provider
                         .split_once(':')
@@ -187,6 +192,31 @@ impl Plugins {
 
     pub(crate) fn catalog_changes(&self) -> watch::Receiver<()> {
         self.0.registry.changes.subscribe()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn route_via_vpn(&self, id: &str, selected: bool) -> Result<(), Failure> {
+        let _operation = self.0.lifecycle.lock().await;
+        let manifest = {
+            let entries = self.0.registry.read();
+            let entry = entries.get(id).ok_or(Failure::NotFound)?;
+            if selected && (!entry.manifest.vpn_capable() || !entries.contains_key("vpn")) {
+                return Err(Failure::InvalidSettings);
+            }
+            if !entry.manifest.vpn_capable() && entry.vpn != Some(true) {
+                return Err(Failure::InvalidSettings);
+            }
+            if entry.vpn == Some(selected) && entry.live().is_some() {
+                return Ok(());
+            }
+            entry.manifest.clone()
+        };
+        self.0.withdraw(id, Status::Updating).await?;
+        let path = self.0.vpn_selection(id);
+        let saved = goodwin_plugin::save_json(&path, &selected).map_err(storage);
+        let started = self.0.activate(manifest, None).await;
+        saved?;
+        started.then_some(()).ok_or(Failure::StartFailed)
     }
 
     fn settings_fields(&self, id: &str) -> Result<Vec<Field>, Failure> {
@@ -441,7 +471,7 @@ impl Plugins {
         }))
         .unwrap();
         let registration = serde_json::from_value(registration).unwrap();
-        self.0.registry.insert(
+        self.0.publish(
             manifest,
             Some(Active {
                 voice: Arc::default(),
@@ -579,9 +609,7 @@ impl Plugins {
                         active.process.stop().await;
                         error
                     } else {
-                        self.0
-                            .registry
-                            .insert(manifest, Some(active), Status::Ready, None);
+                        self.0.publish(manifest, Some(active), Status::Ready, None);
                         return Ok(());
                     }
                 }
@@ -603,9 +631,7 @@ impl Plugins {
             .and_then(|result| result.map_err(storage));
         if let Some(old) = old {
             if let Err(error) = restored {
-                self.0
-                    .registry
-                    .insert(old, None, Status::Error, Some(error.code()));
+                self.0.publish(old, None, Status::Error, Some(error.code()));
                 return Err(error);
             }
             if !self.0.activate(old, Some(failure.code())).await {
@@ -648,6 +674,22 @@ impl Plugins {
 }
 
 impl Manager {
+    fn vpn_selection(&self, id: &str) -> std::path::PathBuf {
+        self.store.slot(id).join("data/.goodwin-vpn.json")
+    }
+
+    fn publish(
+        &self,
+        manifest: Manifest,
+        active: Option<Active>,
+        status: Status,
+        error: Option<&'static str>,
+    ) {
+        let selected = goodwin_plugin::read_json(&self.vpn_selection(&manifest.id)).unwrap_or(true);
+        let vpn = (manifest.vpn_capable() || selected).then_some(selected);
+        self.registry.insert(manifest, active, status, error, vpn);
+    }
+
     async fn withdraw(&self, id: &str, status: Status) -> Result<(), Failure> {
         if let Some(active) = self.registry.take_active(id, status)? {
             active.process.stop().await;
@@ -694,12 +736,30 @@ impl Manager {
         } else {
             Vec::new()
         };
+        let selected: bool = goodwin_plugin::read_json(&self.vpn_selection(&manifest.id))?;
+        goodwin_error::ensure!(
+            !selected || manifest.vpn_capable(),
+            "Plugin cannot use its assigned VPN"
+        );
+        #[cfg(target_os = "linux")]
+        let network = if selected || manifest.id == "vpn" {
+            let gateway = self.vpn.get_or_try_init(super::vpn::Gateway::open).await?;
+            super::process::Network {
+                proxy: selected.then_some(gateway.url.as_str()),
+                gateway: (manifest.id == "vpn").then_some(gateway),
+            }
+        } else {
+            Default::default()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let network = Default::default();
         let (process, registration) = Process::start(
             &slot.join("package"),
             &slot.join("data"),
             manifest,
             sound,
             self.registry.changes.clone(),
+            network,
         )
         .await?;
         Ok(Active {
@@ -712,8 +772,7 @@ impl Manager {
     }
 
     async fn activate(&self, manifest: Manifest, notice: Option<&'static str>) -> bool {
-        self.registry
-            .insert(manifest.clone(), None, Status::Starting, notice);
+        self.publish(manifest.clone(), None, Status::Starting, notice);
         match self.start(&manifest).await {
             Ok(active) => {
                 log::info!(
@@ -721,13 +780,12 @@ impl Manager {
                     manifest.id,
                     manifest.version
                 );
-                self.registry
-                    .insert(manifest, Some(active), Status::Ready, notice);
+                self.publish(manifest, Some(active), Status::Ready, notice);
                 true
             }
             Err(error) => {
                 log::error!("Could not activate plugin {}: {error}", manifest.id);
-                self.registry.insert(
+                self.publish(
                     manifest,
                     None,
                     Status::Error,
