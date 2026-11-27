@@ -17,7 +17,7 @@ cargo build --locked -p goodwin-timers --release
 python scripts/package-plugin.py plugins/timers target/release/goodwin-timers.exe windows-x86_64 target/plugins/timers-windows-x86_64.tar.gz
 ```
 
-Use `./scripts/build-station.ps1` on Windows to produce the separate Station packages for Timers, the [OpenAI-compatible provider](openai-compatible/) and [Wake-word dataset](wake-dataset/). Open **Plugins** in a password-protected panel to upload an archive. The manifest ID identifies the plugin across updates.
+Use `./scripts/build-station.ps1` on Windows to produce the separate Station packages for Timers, the [OpenAI-compatible provider](openai-compatible/) and [Wake-word dataset](wake-dataset/). Open **Plugins** in the panel to upload an archive. The manifest ID identifies the plugin across updates.
 
 ## Package and process contract
 
@@ -25,7 +25,7 @@ A `.tar.gz` package contains `manifest.json`, an executable under `bin/`, and op
 
 Goodwin runs the executable in its data directory and sets `GOODWIN_PLUGIN_DATA` to that directory. Keep persistent state there. Treat stdout as newline-delimited JSON-RPC 2.0 and send logs to stderr. The host sends `initialize` with `apiVersion: 1`. Reply with the same ID and a result containing `apiVersion` and any `routes`, `pages`, or `tools`. Publish readiness after the process can handle requests. The host waits up to five seconds for this response and closes stdin to stop the process.
 
-- HTTP routes declare a method and a path such as `/timers/:id`. Goodwin serves them below `/api/plugins/{id}/`. Set `password_required: true` on private routes to require a signed-in session. The `http` request includes `method`, `path`, `query`, and the parsed JSON `body`. Reply with `status` and an optional JSON `body`.
+- HTTP routes declare a method and a path such as `/timers/:id`. Goodwin serves them below `/api/plugins/{id}/`. Plugin routes use the panel access mode. For compatibility, Goodwin accepts and ignores the legacy `password_required` field. The `http` request includes `method`, `path`, `query`, and the parsed JSON `body`. Reply with `status` and an optional JSON `body`.
 - Pages declare an `id`, a relative `path`, an English and Russian `title`, and an optional `navigation` flag. An empty path maps to `/plugins/{id}`. The host publishes registered endpoints and pages together after readiness. Set `navigation` to `true` to list a page in the sidebar and mobile menu. Use the optional `icon` field on that page, such as `"icon": "timer"`.
 - Tools declare a lowercase `name`, a `description` and an object `parameters` schema. Specify `properties`, `required`, and `additionalProperties: false`. Properties may be strings, integers, numbers or booleans. Validate domain constraints in the plugin handler. The `tool` request includes `name`, `arguments` and `voiceTurn`, a counter for successive voice requests during the service run.
 - Optionally set `voiceContextTool` to a registered read-only tool that accepts `{}`. Goodwin may call it before each voice request and send its result to the configured model as `pluginContext`, under the plugin ID. Return a small JSON object with current state. Keep credentials and private data out of this result. Provide the same validation in the action tools as for calls made without a snapshot.
@@ -39,7 +39,7 @@ Station and ESP32-S3 builds use the same WAMR Fast adapter and guest contract. T
 
 The Timers WASM build uses `no_std` with `alloc` and enables full LTO in the build script.
 
-Use `wasm32` as the package target. The Station build packages Timers, OpenAI-compatible and Wake-word dataset as `target/plugins/<id>-wasm32.tar.gz`. To package Timers manually, run the following command and upload the archive from a password-protected panel.
+Use `wasm32` as the package target. The Station build packages Timers, OpenAI-compatible and Wake-word dataset as `target/plugins/<id>-wasm32.tar.gz`. To package Timers manually, run the following command and upload the archive from the panel.
 
 ```sh
 python scripts/package-plugin.py plugins/timers target/wasm32-unknown-unknown/release/goodwin-timers.wasm \

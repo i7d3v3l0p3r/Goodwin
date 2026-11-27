@@ -164,17 +164,6 @@ async fn session_expiry(
         .filter(|expiry| SystemTime::now() < *expiry)
 }
 
-pub(super) async fn require_password_owner(
-    State(panel): State<Panel>,
-    request: Request,
-    next: Next,
-) -> Response {
-    match password_rejection(&panel, request.headers(), "plugin_password_required").await {
-        None => next.run(request).await,
-        Some(response) => response,
-    }
-}
-
 pub(super) async fn password_rejection(
     panel: &Panel,
     headers: &HeaderMap,
@@ -191,7 +180,7 @@ pub(super) async fn password_rejection(
 
 pub(super) async fn require_owner(
     State(panel): State<Panel>,
-    request: axum::extract::Request,
+    request: Request,
     next: Next,
 ) -> Response {
     if authorized(&panel, request.headers()).await {

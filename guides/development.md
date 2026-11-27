@@ -23,7 +23,7 @@ cargo run --locked --release -- serve goodwin-data
 
 The panel opens at `http://127.0.0.1:8787`. To edit the panel with live reload, leave Goodwin running there and start `npm run dev --prefix web` in another terminal.
 
-To try a text conversation, set a panel password and sign in. Install a provider package for your host and configure a connection in the panel. The [OpenAI-compatible provider guide](../plugins/openai-compatible/README.md) includes packaging instructions for a native Windows build. The [plugin SDK guide](../plugins/README.md#wasm-plugins) covers WASM support on Linux.
+To try a text conversation, install a provider package for your host and configure a connection in the panel. The [OpenAI-compatible provider guide](../plugins/openai-compatible/README.md) includes packaging instructions for a native Windows build. The [plugin SDK guide](../plugins/README.md#wasm-plugins) covers WASM support on Linux.
 
 ## Build targets
 

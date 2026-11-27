@@ -467,7 +467,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
         || path.starts_with("/plugin-assets/"))
         && let Some(plugins) = panel.plugins.get()
     {
-        return plugins::handle(request, plugins, access.protected);
+        return plugins::handle(request, plugins);
     }
     match (method, path) {
         #[cfg(feature = "wake-tflite")]

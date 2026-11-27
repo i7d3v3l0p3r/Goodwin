@@ -123,13 +123,8 @@ impl Uploads {
         if !access.authorized {
             return Err((401, "login_required"));
         }
-        if !access.protected {
-            let code = match route {
-                Route::Firmware => "core_update_password_required",
-                #[cfg(feature = "wasm-plugins")]
-                Route::Package => "plugin_password_required",
-            };
-            return Err((403, code));
+        if matches!(route, Route::Firmware) && !access.protected {
+            return Err((403, "core_update_password_required"));
         }
 
         // SAFETY: The parser has already validated Content-Length. It belongs

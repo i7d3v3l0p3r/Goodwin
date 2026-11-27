@@ -22,7 +22,7 @@ Goodwin on ESP32-S3 runs WASM add-ons on ESP-IDF. A controller for that platform
 ## Configure Goodwin
 
 1. Create a Spotify Web API app for catalogue access and obtain its client ID and client secret. The plugin uses the Client Credentials flow and renews the app token in memory. The Soloist API key belongs on the receiver. Spotify's public Developer Policy §III.3 restricts voice control. Check the terms applicable to your integration before use. [Client Credentials](https://developer.spotify.com/documentation/web-api/tutorials/client-credentials-flow) · [Developer Policy](https://developer.spotify.com/policy)
-2. Build the native package with `./scripts/build-station.ps1`. Upload `target/plugins/spotify-linux-aarch64.tar.gz` under **Plugins** in a password-protected Goodwin panel.
+2. Build the native package with `./scripts/build-station.ps1`. Upload `target/plugins/spotify-linux-aarch64.tar.gz` under **Plugins** in the Goodwin panel.
 3. Open **Spotify → Settings**, enter the Web API client ID and secret, and set the two-letter country code of the listening account. The Soloist address defaults to `ws://127.0.0.1:9090` on the Goodwin host. Change it when using another forwarded port or a private WebSocket proxy.
 
 Try “Гудвин, включи в Spotify песню «Группа крови» группы «Кино»”, “поставь Spotify на паузу”, “продолжи музыку” or “следующий трек”. A play request selects the first available match of the requested type in the configured market. A request for a playlist searches the public catalogue. [Search API](https://developer.spotify.com/documentation/web-api/reference/search)

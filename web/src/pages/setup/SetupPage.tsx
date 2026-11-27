@@ -7,7 +7,6 @@ import { usePanel } from "../../helpers/panel";
 import { assistantStagePath, capabilities, stationPath } from "../../helpers/readiness";
 import { errorLabel } from "../../helpers/words";
 import { VoiceCheck, isVoiceTest } from "../settings/components/VoiceCheck";
-import { settingsSectionPath } from "../settings/sections";
 import styles from "./SetupPage.module.css";
 
 const providerPackage = "https://github.com/i7d3v3l0p3r/Goodwin/releases/latest/download/openai-compatible-wasm32.tar.gz";
@@ -81,25 +80,21 @@ export function SetupPage() {
             <Show when={missing()?.issue} fallback={<p role="status">{panel.reachable() ? copy().checking : panel.status()}</p>}>{issue =>
               <Switch>
                 <Match when={issue().kind === "install"}>
-                  <Show when={panel.access()?.protected} fallback={
-                    <p>{panel.t().plugins.password} <a href={settingsSectionPath("panel")}>{panel.t().enablePassword}</a></p>
-                  }>
-                    <p>{copy().packageHint}</p>
-                    <div class="gw-row">
-                      <ButtonLink href={providerPackage}>{copy().download}</ButtonLink>
-                      <Button type="button" variant="primary" disabled={panel.pending() || !panel.reachable()} onClick={() => archive?.click()}>
-                        {uploading() ? copy().uploading : copy().upload}
-                      </Button>
-                      <input ref={archive} type="file" hidden accept=".tar.gz,.tgz,application/gzip" onChange={event => {
-                        const file = event.currentTarget.files?.[0];
-                        event.currentTarget.value = "";
-                        if (file) {
-                          setUploading(true);
-                          void panel.uploadPlugin(file).finally(() => setUploading(false));
-                        }
-                      }} />
-                    </div>
-                  </Show>
+                  <p>{copy().packageHint}</p>
+                  <div class="gw-row">
+                    <ButtonLink href={providerPackage}>{copy().download}</ButtonLink>
+                    <Button type="button" variant="primary" disabled={panel.pending() || !panel.reachable()} onClick={() => archive?.click()}>
+                      {uploading() ? copy().uploading : copy().upload}
+                    </Button>
+                    <input ref={archive} type="file" hidden accept=".tar.gz,.tgz,application/gzip" onChange={event => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      if (file) {
+                        setUploading(true);
+                        void panel.uploadPlugin(file).finally(() => setUploading(false));
+                      }
+                    }} />
+                  </div>
                 </Match>
                 <Match when={issue().kind === "configure" || issue().kind === "select"}>
                   <p>{issue().kind === "configure" ? copy().configureHint : copy().selectHint}</p>

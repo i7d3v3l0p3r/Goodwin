@@ -33,8 +33,8 @@ use crate::{
 };
 
 use auth::{
-    Auth, access, enable_password, login, logout, open_access, require_owner,
-    require_password_owner, require_same_origin, response_headers, setup_password,
+    Auth, access, enable_password, login, logout, open_access, require_owner, require_same_origin,
+    response_headers, setup_password,
 };
 use json_body::{Json, JsonDocument};
 use plugin_routes::{
@@ -83,6 +83,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/voice/cancel", post(cancel_voice))
         .route("/api/voice/correct", post(correct_voice))
         .route("/api/plugins", get(plugin_catalog))
+        .route("/api/plugin-packages", post(upload_plugin))
+        .route("/api/plugin-packages/{id}", delete(remove_plugin))
         .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
         .route(
             "/api/plugin-connections/{id}",
@@ -105,14 +107,6 @@ pub fn router(app: Arc<App>) -> Router {
     let protected =
         protected.route_layer(middleware::from_fn_with_state(panel.clone(), require_owner));
 
-    let packages = Router::new()
-        .route("/api/plugin-packages", post(upload_plugin))
-        .route("/api/plugin-packages/{id}", delete(remove_plugin));
-    let packages = packages.route_layer(middleware::from_fn_with_state(
-        panel.clone(),
-        require_password_owner,
-    ));
-
     assets::routes()
         .route(
             "/api/capabilities",
@@ -126,7 +120,6 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .merge(protected)
-        .merge(packages)
         .layer(DefaultBodyLimit::max(16_384))
         .layer(middleware::from_fn(response_headers))
         .layer(middleware::from_fn(require_same_origin))

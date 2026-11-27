@@ -72,7 +72,6 @@ pub enum Failure {
     InvalidPackage,
     InvalidSettings,
     NotFound,
-    PasswordRequired,
     StartFailed,
     RolledBack,
     Busy,
@@ -85,7 +84,6 @@ impl Failure {
         match self {
             Self::InvalidPackage | Self::InvalidSettings => 400,
             Self::NotFound => 404,
-            Self::PasswordRequired => 403,
             Self::StartFailed | Self::RolledBack => 409,
             Self::Busy => 409,
             Self::Storage => 500,
@@ -98,7 +96,6 @@ impl Failure {
             Self::InvalidPackage => "invalid_plugin_package",
             Self::InvalidSettings => "invalid_plugin_settings",
             Self::NotFound => "plugin_not_found",
-            Self::PasswordRequired => "plugin_password_required",
             Self::StartFailed => "plugin_start_failed",
             Self::RolledBack => "plugin_update_rolled_back",
             Self::Busy => "plugin_busy",

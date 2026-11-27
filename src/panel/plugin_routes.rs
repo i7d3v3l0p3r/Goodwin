@@ -8,9 +8,8 @@ use axum::{
 use goodwin_plugin::{HttpRequest, provider::Capability};
 use serde_json::{Map, Value};
 
-use crate::{
-    config::Access,
-    plugins::{ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure, package::asset_mime},
+use crate::plugins::{
+    ARCHIVE_LIMIT, ConnectionUpdate, Failure as PluginFailure, package::asset_mime,
 };
 
 use super::{Json, Panel, problem};
@@ -152,7 +151,6 @@ pub(super) async fn plugin_http(
                 query: parts.uri.query().map(str::to_owned),
                 body,
             },
-            matches!(panel.app.configuration().access(), Access::Password { .. }),
         )
         .await
     {

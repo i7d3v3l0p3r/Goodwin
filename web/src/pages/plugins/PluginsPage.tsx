@@ -9,7 +9,6 @@ import { api, ApiError, type Plugin } from "../../helpers/api";
 import { usePanel } from "../../helpers/panel";
 import { pluginLandingPage, pluginPagePath, pluginSettingsPath } from "../../helpers/plugins";
 import { setupPath } from "../../helpers/readiness";
-import { settingsSectionPath } from "../settings/sections";
 import { errorLabel } from "../../helpers/words";
 import styles from "./PluginsPage.module.css";
 
@@ -40,7 +39,6 @@ export function PluginsPage() {
     return plugins.filter(plugin => plugin.title[language].toLowerCase().includes(term) || plugin.id.includes(term)
       || plugin.pages.some(page => page.navigation && page.title[language].toLowerCase().includes(term)));
   });
-  const allowed = () => panel.access()?.protected;
   const pending = () => panel.pending() || !panel.reachable();
   let archive!: HTMLInputElement;
   let uploadButton: HTMLButtonElement | undefined;
@@ -61,7 +59,7 @@ export function PluginsPage() {
 
   async function remove() {
     const target = removing();
-    if (!target || !allowed() || pending() || deleting()) return;
+    if (!target || pending() || deleting()) return;
     setDeleting(true);
     try {
       if (await panel.removePlugin(target.id)) setRemoving(undefined);
@@ -73,20 +71,18 @@ export function PluginsPage() {
   return <>
     <PageHeader title={words().title} />
     <section class={["gw-page", styles.catalog]} aria-label={words().title}>
-      <Show when={allowed()} fallback={<p class={styles.note}>{words().password} <a href={settingsSectionPath("panel")}>{panel.t().enablePassword}</a></p>}>
-        <div class={styles.upload}>
-          <div>
-            <Button ref={node => { uploadButton = node; }} type="button" variant="primary" disabled={pending()}
-              onClick={() => archive.click()}><Icon name="plus" size={17} />{words().upload}</Button>
-            <input ref={archive} type="file" hidden accept=".tar.gz,.tgz,application/gzip" onChange={event => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              if (file) void panel.uploadPlugin(file);
-            }} />
-          </div>
-          <p class={styles.note}>{words().archive}</p>
+      <div class={styles.upload}>
+        <div>
+          <Button ref={node => { uploadButton = node; }} type="button" variant="primary" disabled={pending()}
+            onClick={() => archive.click()}><Icon name="plus" size={17} />{words().upload}</Button>
+          <input ref={archive} type="file" hidden accept=".tar.gz,.tgz,application/gzip" onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = "";
+            if (file) void panel.uploadPlugin(file);
+          }} />
         </div>
-      </Show>
+        <p class={styles.note}>{words().archive}</p>
+      </div>
       <Show when={panel.stageIssue("chat")?.kind === "install"}>
         <p class={styles.note}><a href={setupPath}>{panel.t().firstRun.install}</a></p>
       </Show>
@@ -154,14 +150,12 @@ export function PluginsPage() {
                       <Icon name="bookmark" size={16} />
                     </button>
                   </Show>
-                  <Show when={allowed()}>
-                    <button type="button" class={styles.remove} disabled={pending()}
-                      title={words().remove} aria-label={`${words().remove} · ${title()}`} onClick={event => {
-                        removeTrigger = event.currentTarget;
-                        panel.clearError();
-                        setRemoving({ id: plugin().id, title: title() });
-                      }}><Icon name="trash" size={16} /></button>
-                  </Show>
+                  <button type="button" class={styles.remove} disabled={pending()}
+                    title={words().remove} aria-label={`${words().remove} · ${title()}`} onClick={event => {
+                      removeTrigger = event.currentTarget;
+                      panel.clearError();
+                      setRemoving({ id: plugin().id, title: title() });
+                    }}><Icon name="trash" size={16} /></button>
                 </div>
                 <Show when={extraPages().length}>
                   <div class={styles.pages}><For each={extraPages()}>{page =>

@@ -4,6 +4,7 @@
 
 ### English
 
+- Open panels can install, update, and remove plugins and access wake-word dataset recordings without a password.
 - The plugin catalog has a VPN switch for Spotify 0.2.2 and the OpenAI-compatible provider. Spotify can route its Web API and cover-art requests through the VPN while controlling Soloist locally.
 - Plugins appear in a compact list. Select a name to open its page or settings. The bookmark adds or removes a menu shortcut in one click.
 - VLESS VPN accepts provider subscription URLs, checks the tunnel at a configurable interval and switches to a verified replacement when the current profile stops working. Open panels can manage VPN profiles and choose which plugins use them.
@@ -20,6 +21,7 @@
 
 ### Русский
 
+- В открытой панели можно устанавливать, обновлять и удалять плагины, а также работать с записями датасета слова активации без пароля.
 - В каталоге плагинов появился переключатель VPN для Spotify 0.2.2 и OpenAI-совместимого провайдера. Spotify может загружать обложки и обращаться к Web API через VPN, сохраняя локальное управление плеером Soloist.
 - Плагины собраны в компактный список. Нажатие на название открывает страницу или настройки плагина. Значок закладки добавляет страницу в меню или убирает её одним нажатием.
 - VLESS VPN принимает ссылки на подписки провайдеров, проверяет туннель с заданным интервалом и переключается на проверенный профиль, если прежний перестал работать. В открытой панели можно управлять профилями VPN и выбирать плагины, которые их используют.

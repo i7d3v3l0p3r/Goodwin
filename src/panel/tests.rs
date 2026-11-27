@@ -447,16 +447,6 @@ async fn panel_serves_direct_navigation_to_settings() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let response = client
-        .post(format!("{panel}/api/plugin-packages"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["error"],
-        "plugin_password_required"
-    );
-    let response = client
         .get(format!("{panel}/api/core-update"))
         .send()
         .await

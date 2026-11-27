@@ -18,8 +18,9 @@ pub struct HttpResponse {
 pub struct Route {
     pub method: String,
     pub path: String,
-    #[serde(default)]
-    pub password_required: bool,
+    // Existing packages can still send this field. The panel authorizes all plugin routes.
+    #[serde(default, rename = "password_required", skip_serializing)]
+    _password_required: bool,
 }
 
 impl Route {

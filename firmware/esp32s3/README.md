@@ -131,7 +131,7 @@ password, provider and microphone settings.
 After upgrading a board with an Argon2 panel password, use this USB
 provisioning procedure and then set a new panel password. Saved PBKDF2
 passwords continue to work. You can enable or disable the password in
-**Settings → Panel**. Updates, add-on management and logs require a password.
+**Settings → Panel**. Updates and logs require a password. Plugin packages and recordings are available in open mode.
 Sign-in sessions last up to 30 days while the board remains running.
 
 ```sh

@@ -520,7 +520,7 @@ async fn vpn_routing_uses_the_panels_access_mode() {
 }
 
 #[tokio::test]
-async fn private_plugin_routes_require_a_signed_in_session() {
+async fn plugin_routes_follow_the_panel_access_mode() {
     let dir = tempfile::tempdir().unwrap();
     let start = |access| async {
         let app = App::new(
@@ -544,29 +544,93 @@ async fn private_plugin_routes_require_a_signed_in_session() {
         );
         serve(router(app)).await
     };
-    let (panel, task) = start(Access::Open).await;
-    let response = reqwest::get(format!("{panel}/api/plugins/fixture/private"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["error"], "plugin_password_required");
-    task.abort();
+    for (access, expected) in [
+        (Access::Open, StatusCode::OK),
+        (Access::PendingPassword, StatusCode::UNAUTHORIZED),
+        (
+            Access::Password {
+                hash: password::hash(PASSWORD).unwrap(),
+            },
+            StatusCode::UNAUTHORIZED,
+        ),
+    ] {
+        let (panel, task) = start(access.clone()).await;
+        let client = reqwest::Client::new();
+        let url = format!("{panel}/api/plugins/fixture/private");
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.status(), expected);
+        if matches!(access, Access::Password { .. }) {
+            let response = client
+                .get(&url)
+                .header(header::COOKIE, login(&client, &panel).await)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+        task.abort();
+    }
+}
 
-    let (panel, task) = start(Access::Password {
-        hash: password::hash(PASSWORD).unwrap(),
-    })
-    .await;
+#[tokio::test]
+async fn plugin_package_management_follows_the_panel_access_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().into(),
+        Config {
+            access: Access::Open,
+            settings: Settings::default(),
+            system_prompt: String::new(),
+        },
+        Player::new(),
+        DEFAULT_MICROPHONE_GAIN,
+    );
+    let (panel, task) = serve(router(app)).await;
     let client = reqwest::Client::new();
-    let cookie = login(&client, &panel).await;
+    let packages = format!("{panel}/api/plugin-packages");
     let response = client
-        .get(format!("{panel}/api/plugins/fixture/private"))
-        .header(header::COOKIE, cookie)
+        .post(&packages)
+        .header(header::ORIGIN, "https://example.invalid")
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let requests = || {
+        [
+            (
+                client.post(&packages).body("invalid archive"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                client.delete(format!("{packages}/missing")),
+                StatusCode::NOT_FOUND,
+            ),
+        ]
+    };
+    for (request, expected) in requests() {
+        assert_eq!(request.send().await.unwrap().status(), expected);
+    }
+    let response = client
+        .post(format!("{panel}/api/access/password"))
+        .json(&json!({"password": PASSWORD, "confirmation": PASSWORD}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let cookie = login(&client, &panel).await;
+    for (request, expected) in requests() {
+        assert_eq!(
+            request.try_clone().unwrap().send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = request
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
     task.abort();
 }
 

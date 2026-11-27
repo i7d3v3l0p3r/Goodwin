@@ -522,25 +522,18 @@ impl Plugins {
         fs::read(file).ok()
     }
 
-    pub async fn http(
-        &self,
-        id: &str,
-        request: HttpRequest,
-        password_session: bool,
-    ) -> Result<HttpResponse, Failure> {
+    pub async fn http(&self, id: &str, request: HttpRequest) -> Result<HttpResponse, Failure> {
         let process = {
             let entries = self.0.registry.read();
             let entry = entries.get(id).ok_or(Failure::NotFound)?;
             let active = entry.live().ok_or(Failure::Unavailable)?;
-            let mut routes = active
+            if !active
                 .registration
                 .routes
                 .iter()
-                .filter(|route| route.accepts(&request.method, &request.path));
-            let route = routes.next().ok_or(Failure::NotFound)?;
-            let private = route.password_required || routes.any(|route| route.password_required);
-            if private && !password_session {
-                return Err(Failure::PasswordRequired);
+                .any(|route| route.accepts(&request.method, &request.path))
+            {
+                return Err(Failure::NotFound);
             }
             active.process.clone()
         };
