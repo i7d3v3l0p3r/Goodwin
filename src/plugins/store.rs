@@ -22,6 +22,8 @@ pub(crate) const DATA_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const DATA_BYTES: u64 = 132 * 1024 * 1024;
 const DATA_ENTRIES: usize = 8192;
 const DATA_DEPTH: usize = 16;
+// Host-owned marker beside the package and data. Older installations are enabled.
+const DISABLED: &str = "disabled";
 
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -49,6 +51,23 @@ impl Store {
     }
     pub(crate) fn slot(&self, id: &str) -> PathBuf {
         self.installed().join(id)
+    }
+    pub(crate) fn enabled(&self, id: &str) -> Result<bool> {
+        Ok(!self.slot(id).join(DISABLED).try_exists()?)
+    }
+
+    pub(crate) fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        let slot = self.slot(id);
+        let marker = slot.join(DISABLED);
+        if enabled {
+            fs::remove_dir(marker)?;
+        } else {
+            fs::create_dir(marker)?;
+        }
+        if let Err(error) = sync_directory(&slot) {
+            log::warn!("Synchronize plugin {id} activation setting: {error:#}");
+        }
+        Ok(())
     }
     pub(crate) fn backup(&self, id: &str) -> PathBuf {
         self.backups().join(id)
@@ -102,6 +121,7 @@ impl Store {
         let slot = self.slot(id);
         Ok(Update {
             existed: slot.try_exists()?,
+            enabled: self.enabled(id)?,
             slot,
             staged: work.join("slot"),
             backup: self.backup(id),
@@ -119,6 +139,7 @@ impl Store {
 /// Callers must quiesce the current plugin for the lifetime of this operation.
 pub(crate) struct Update {
     existed: bool,
+    pub(crate) enabled: bool,
     slot: PathBuf,
     staged: PathBuf,
     backup: PathBuf,
@@ -136,6 +157,9 @@ impl Update {
                 entries: DATA_ENTRIES,
             };
             copy_data(&self.slot.join("data"), &data, &mut budget, DATA_DEPTH)?;
+        }
+        if !self.enabled {
+            fs::create_dir(self.staged.join(DISABLED))?;
         }
         sync_tree(&self.staged)
     }

@@ -104,6 +104,8 @@ export function PluginsPage() {
           <For each={matches()} keyed={plugin => plugin.id}>
             {plugin => {
               const title = () => plugin().title[panel.language()];
+              const enabled = () => plugin().status !== "disabled";
+              const changing = () => ["starting", "updating", "removing"].includes(plugin().status);
               const landing = () => landingPage(plugin());
               const settings = () => plugin().has_settings || (plugin().web && plugin().pages.some(page => page.path === "settings"))
                 ? pluginSettingsPath(plugin().id) : undefined;
@@ -123,13 +125,19 @@ export function PluginsPage() {
                     </Show></h2>
                     <div class={styles.metadata}>
                       <span>{plugin().version}</span>
-                      <StatusIndicator tone={plugin().status === "ready" ? "success" : plugin().status === "error" ? "error" : "pending"}>
+                      <StatusIndicator tone={!enabled() ? "neutral" : plugin().status === "ready" ? "success" : plugin().status === "error" ? "error" : "pending"}>
                         {words().status[plugin().status]}
                       </StatusIndicator>
                     </div>
                   </div>
                 </div>
                 <div class={styles.actions}>
+                  <button type="button" role="switch" aria-checked={enabled() ? "true" : "false"}
+                    aria-label={`${words().enabled} · ${title()}`} title={enabled() ? words().disable : words().enable}
+                    disabled={pending() || Boolean(routing()) || changing()}
+                    onClick={() => void panel.setPluginEnabled(plugin().id, !enabled())}>
+                    <span aria-hidden="true" class={styles.track} />
+                  </button>
                   <Show when={plugin().vpn !== undefined && (plugin().vpn || installed()?.some(entry => entry.id === "vpn"))}>
                     <button type="button" class={styles.vpn} role="switch" aria-checked={plugin().vpn ? "true" : "false"}
                       aria-label={`${words().vpnRouting} · ${title()}`} title={plugin().vpn ? words().vpnOff : words().vpnOn}

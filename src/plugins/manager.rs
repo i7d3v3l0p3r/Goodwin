@@ -194,6 +194,29 @@ impl Plugins {
         self.0.registry.changes.subscribe()
     }
 
+    pub(crate) async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), Failure> {
+        let _operation = self.0.lifecycle.lock().await;
+        let manifest = self
+            .0
+            .registry
+            .read()
+            .get(id)
+            .ok_or(Failure::NotFound)?
+            .manifest
+            .clone();
+        if self.0.store.unresolved(id).map_err(storage)? {
+            return Err(Failure::Storage);
+        }
+        if self.0.store.enabled(id).map_err(storage)? == enabled {
+            return Ok(());
+        }
+        self.0.withdraw(id, Status::Updating).await?;
+        let saved = self.0.store.set_enabled(id, enabled).map_err(storage);
+        let restored = self.0.activate(manifest, None).await;
+        saved?;
+        restored.then_some(()).ok_or(Failure::StartFailed)
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) async fn route_via_vpn(&self, id: &str, selected: bool) -> Result<(), Failure> {
         let _operation = self.0.lifecycle.lock().await;
@@ -588,33 +611,40 @@ impl Plugins {
                 .map_err(storage)
                 .and_then(|result| result.map_err(storage))
         };
-        let failure = match staged {
-            Ok(()) => match self.0.start(&manifest).await {
-                Ok(active) => {
-                    let commit = {
-                        let update = update.clone();
-                        tokio::task::spawn_blocking(move || update.commit())
-                            .await
-                            .map_err(storage)
-                            .and_then(|result| result.map_err(storage))
-                    };
-                    if let Err(error) = commit {
+        let candidate = match staged {
+            Ok(()) if update.enabled => self.0.start(&manifest).await.map(Some).map_err(|error| {
+                log::warn!("Could not start plugin {id}: {error:#}");
+                if old.is_some() {
+                    Failure::RolledBack
+                } else {
+                    Failure::StartFailed
+                }
+            }),
+            Ok(()) => Ok(None),
+            Err(error) => Err(error),
+        };
+        let failure = match candidate {
+            Ok(active) => {
+                let transaction = update.clone();
+                let commit = tokio::task::spawn_blocking(move || transaction.commit())
+                    .await
+                    .map_err(storage)
+                    .and_then(|result| result.map_err(storage));
+                if let Err(error) = commit {
+                    if let Some(active) = active {
                         active.process.stop().await;
-                        error
-                    } else {
-                        self.0.publish(manifest, Some(active), Status::Ready, None);
-                        return Ok(());
                     }
-                }
-                Err(error) => {
-                    log::warn!("Could not start plugin {id}: {error:#}");
-                    if old.is_some() {
-                        Failure::RolledBack
+                    error
+                } else {
+                    let status = if active.is_some() {
+                        Status::Ready
                     } else {
-                        Failure::StartFailed
-                    }
+                        Status::Disabled
+                    };
+                    self.0.publish(manifest, active, status, None);
+                    return Ok(());
                 }
-            },
+            }
             Err(error) => error,
         };
 
@@ -765,6 +795,17 @@ impl Manager {
     }
 
     async fn activate(&self, manifest: Manifest, notice: Option<&'static str>) -> bool {
+        match self.store.enabled(&manifest.id) {
+            Ok(false) => {
+                self.publish(manifest, None, Status::Disabled, notice);
+                return true;
+            }
+            Err(error) => {
+                self.publish(manifest, None, Status::Error, Some(storage(error).code()));
+                return false;
+            }
+            Ok(true) => {}
+        }
         self.publish(manifest.clone(), None, Status::Starting, notice);
         match self.start(&manifest).await {
             Ok(active) => {

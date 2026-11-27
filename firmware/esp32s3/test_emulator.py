@@ -485,12 +485,16 @@ class Panel:
             sleep(0.4)
         self.request("/api/plugin-packages", "POST", path.read_bytes(), 204, timeout=90)
         assert saved in self.request(route)["timers"]
+        self.request("/api/plugin-enabled/timers", "PUT", False, 204)
+        assert self.request(route, status=503) == {"error": "plugin_unavailable"}
+        self.request("/api/plugin-packages", "POST", path.read_bytes(), 204, timeout=90)
         self.print_resources("after Timers activation and replacement")
 
     def verify_timers_after_restart(self):
         route = "/api/plugins/timers/timers"
-        assert any(plugin["id"] == "timers" and plugin["status"] == "ready"
+        assert any(plugin["id"] == "timers" and plugin["status"] == "disabled" and not plugin["pages"]
                    for plugin in self.request("/api/plugins"))
+        self.request("/api/plugin-enabled/timers", "PUT", True, 204)
         timers = self.request(route)["timers"]
         timer = next(timer for timer in timers if timer["name"] == "Persistent timer")
         assert not timer["completed"]

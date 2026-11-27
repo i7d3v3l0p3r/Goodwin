@@ -170,7 +170,7 @@ export interface Plugin {
   id: string;
   title: Label;
   version: string;
-  status: "starting" | "ready" | "updating" | "removing" | "error";
+  status: "disabled" | "starting" | "ready" | "updating" | "removing" | "error";
   error: string | null;
   revision: string | null;
   settings_revision?: number;

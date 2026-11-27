@@ -606,6 +606,12 @@ async fn plugin_package_management_follows_the_panel_access_mode() {
                 client.delete(format!("{packages}/missing")),
                 StatusCode::NOT_FOUND,
             ),
+            (
+                client
+                    .put(format!("{panel}/api/plugin-enabled/missing"))
+                    .json(&false),
+                StatusCode::NOT_FOUND,
+            ),
         ]
     };
     for (request, expected) in requests() {

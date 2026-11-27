@@ -79,6 +79,9 @@ export function SetupPage() {
           <Match when={step() === "service"}>
             <Show when={missing()?.issue} fallback={<p role="status">{panel.reachable() ? copy().checking : panel.status()}</p>}>{issue =>
               <Switch>
+                <Match when={issue().kind === "enable"}>
+                  <ButtonLink variant="primary" href={issue().href}>{panel.t().plugins.enable}</ButtonLink>
+                </Match>
                 <Match when={issue().kind === "install"}>
                   <p>{copy().packageHint}</p>
                   <div class="gw-row">

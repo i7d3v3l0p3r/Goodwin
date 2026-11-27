@@ -86,8 +86,8 @@
   background: var(--paper);
 }
 .track::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
-.vpn[aria-checked=true] .track { border-color: var(--accent); background: var(--accent); }
-.vpn[aria-checked=true] .track::before { transform: translateX(10px); background: var(--paper); }
+.actions [aria-checked=true] .track { border-color: var(--accent); background: var(--accent); }
+.actions [aria-checked=true] .track::before { transform: translateX(10px); background: var(--paper); }
 .vpn[aria-checked=true], .bookmark[aria-pressed=true] { color: var(--accent); }
 .bookmark[aria-pressed=true] svg { fill: currentColor; }
 .actions button:disabled { opacity: .55; }
@@ -108,6 +108,6 @@
 @media (forced-colors: active) {
   .track { forced-color-adjust: none; border-color: ButtonText; background: Canvas; }
   .track::before { background: ButtonText; }
-  .vpn[aria-checked=true] .track { border-color: Highlight; background: Highlight; }
-  .vpn[aria-checked=true] .track::before { background: HighlightText; }
+  .actions [aria-checked=true] .track { border-color: Highlight; background: Highlight; }
+  .actions [aria-checked=true] .track::before { background: HighlightText; }
 }

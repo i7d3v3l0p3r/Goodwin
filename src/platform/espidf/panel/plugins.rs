@@ -20,6 +20,12 @@ pub(super) fn handle(mut request: PanelRequest<'_, '_>, plugins: &Plugins) -> Re
         .map_or((uri.as_str(), None), |(path, query)| (path, Some(query)));
     let result: Result<(), Failure> = match (method, path) {
         (Method::Get, "/api/plugins") => return send_json(request, &plugins.catalog()),
+        (Method::Put, path) if path.starts_with("/api/plugin-enabled/") => {
+            let Ok(enabled) = super::read_json::<bool>(&mut request) else {
+                return failure(request, Failure::InvalidSettings);
+            };
+            plugins.set_enabled(&path["/api/plugin-enabled/".len()..], enabled)
+        }
         (Method::Delete, path) if path.starts_with("/api/plugin-packages/") => {
             plugins.remove(&path["/api/plugin-packages/".len()..])
         }

@@ -19,6 +19,8 @@ python scripts/package-plugin.py plugins/timers target/release/goodwin-timers.ex
 
 Use `./scripts/build-station.ps1` on Windows to produce the separate Station packages for Timers, the [OpenAI-compatible provider](openai-compatible/) and [Wake-word dataset](wake-dataset/). Open **Plugins** in the panel to upload an archive. The manifest ID identifies the plugin across updates.
 
+Use the switch beside an installed plugin to stop or start it. Goodwin keeps its package, settings and data. A disabled plugin stays off when Goodwin restarts or its package is updated. Its pages, assistant tools and providers become available again after it starts.
+
 ## Package and process contract
 
 A `.tar.gz` package contains `manifest.json`, an executable under `bin/`, and optional prebuilt files under `ui/`. Use [the Timers manifest](timers/manifest.json) as a starting point. The packaging script adds `target` and `executable`. Keep the upload under 16 MiB and the expanded files under 48 MiB. Package paths use lowercase ASCII and forward slashes. Use regular files and include no explicit directory entries.

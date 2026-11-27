@@ -23,7 +23,7 @@ export function stageProvider(snapshot: Snapshot, capability: Capability) {
   return { plugin, connection: owner?.connections?.find(connection => connection.providerId === id) };
 }
 
-export type StageIssue = { kind: "install" | "select" | "configure" | "checking"; href: string };
+export type StageIssue = { kind: "enable" | "install" | "select" | "configure" | "checking"; href: string };
 
 export function createProviderReadiness(snapshot: () => Snapshot | undefined, reachable: () => boolean) {
   const settingsPlugins = createMemo(() => {
@@ -52,6 +52,10 @@ export function createProviderReadiness(snapshot: () => Snapshot | undefined, re
     if (!state) return { kind: "checking", href: setupPath };
     const provider = stageProvider(state, capability);
     if (!provider) {
+      const [id] = state.settings.assistant.pipeline[capability].provider.split(":");
+      if (state.plugins.some(plugin => plugin.id === id && plugin.status === "disabled")) {
+        return { kind: "enable", href: "/plugins" };
+      }
       const candidates = state.plugins.filter(plugin => plugin.providers.includes(capability));
       if (candidates.some(plugin => plugin.status === "starting" || plugin.status === "updating")) {
         return { kind: "checking", href: setupPath };

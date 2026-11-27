@@ -1,6 +1,6 @@
 import type { ParentProps } from "solid-js";
 
-export function StatusIndicator(props: ParentProps<{ tone: "pending" | "success" | "error" }>) {
+export function StatusIndicator(props: ParentProps<{ tone: "neutral" | "pending" | "success" | "error" }>) {
   return <span class="gw-status" data-tone={props.tone}>{props.children}</span>;
 }
 

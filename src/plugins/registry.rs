@@ -139,6 +139,7 @@ impl Active {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Status {
+    Disabled,
     Starting,
     Ready,
     Updating,

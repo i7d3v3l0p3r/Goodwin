@@ -181,6 +181,7 @@ export const words = {
       search: "Search plugins", noMatches: "No matching plugins.",
       vpnRouting: "VPN for external requests", vpnOn: "Route external requests through VPN", vpnOff: "Use a direct connection",
       open: "Open", configure: "Configure", inMenu: "In menu",
+      enabled: "Plugin enabled", enable: "Enable plugin", disable: "Disable plugin",
       archive: "Choose a .tar.gz package to install or update.", remove: "Remove", cancel: "Cancel",
       removeTitle: "Remove plugin?", removing: "Removing…",
       confirm: (name: string) => `“${name}” and all its saved data will be removed.`,
@@ -193,7 +194,7 @@ export const words = {
       settingsLoading: "Loading settings…", settingsMissing: "Settings for this plugin are unavailable.",
       retry: "Retry", secretSaved: "A value is saved.", replaceSecret: "Enter a new value", removeSecret: "Remove saved value",
       unset: "Unset", yes: "Yes", no: "No",
-      status: { starting: "Starting", ready: "Ready", updating: "Updating", removing: "Removing", error: "Unavailable" },
+      status: { disabled: "Disabled", starting: "Starting", ready: "Ready", updating: "Updating", removing: "Removing", error: "Unavailable" },
     },
     stages: {
       awaiting_wake: "Say the wake word near the Station", awaiting_speech: "Listening for your next question", recording: "Listening", transcribing: "Recognizing speech",
@@ -427,6 +428,7 @@ export const words = {
       search: "Поиск плагинов", noMatches: "По этому запросу плагины не найдены.",
       vpnRouting: "VPN для внешних запросов", vpnOn: "Отправлять внешние запросы через VPN", vpnOff: "Подключаться напрямую",
       open: "Открыть", configure: "Настроить", inMenu: "В меню",
+      enabled: "Плагин включён", enable: "Включить плагин", disable: "Выключить плагин",
       archive: "Выберите архив .tar.gz для установки или обновления.", remove: "Удалить", cancel: "Отмена",
       removeTitle: "Удалить плагин?", removing: "Удаляем…",
       confirm: (name: string) => `Плагин «${name}» и все его сохранённые данные будут удалены.`,
@@ -439,7 +441,7 @@ export const words = {
       settingsLoading: "Загружаю настройки…", settingsMissing: "Настройки этого плагина недоступны.",
       retry: "Повторить", secretSaved: "Значение сохранено.", replaceSecret: "Введите новое значение", removeSecret: "Удалить сохранённое значение",
       unset: "Не задано", yes: "Да", no: "Нет",
-      status: { starting: "Запускается", ready: "Готов", updating: "Обновляется", removing: "Удаляется", error: "Недоступен" },
+      status: { disabled: "Выключен", starting: "Запускается", ready: "Готов", updating: "Обновляется", removing: "Удаляется", error: "Недоступен" },
     },
     stages: {
       awaiting_wake: "Произнесите слово активации рядом с колонкой", awaiting_speech: "Жду следующую реплику", recording: "Слушаю", transcribing: "Распознаю речь",

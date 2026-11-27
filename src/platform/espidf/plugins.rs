@@ -65,6 +65,7 @@ struct Runtime {
 
 struct Entry {
     manifest: Manifest,
+    enabled: bool,
     active: Option<Instance>,
     connections: Vec<connections::View>,
     settings_revision: u64,
@@ -122,11 +123,9 @@ impl Plugins {
             };
             match Manifest::read(&item.path().join("package")) {
                 Ok(manifest) if manifest.id == id => {
-                    let active =
-                        super::memory::external(|| Instance::open(&manifest, &item.path()))
-                            .inspect_err(|error| log::warn!("Start plugin {id}: {error:#}"))
-                            .ok();
-                    entries.insert(id, Entry::new(manifest, active, &item.path()));
+                    let enabled = store.enabled(&id)?;
+                    let active = Instance::start(&manifest, &item.path(), enabled).unwrap_or(None);
+                    entries.insert(id, Entry::new(manifest, enabled, active, &item.path()));
                 }
                 Ok(_) => log::warn!("Plugin {id} has a mismatched manifest identity"),
                 Err(error) => log::warn!("Read plugin {id}: {error:#}"),
@@ -381,8 +380,8 @@ impl Plugins {
             let registration = entry.registration();
             json!({
                 "id": manifest.id, "title": manifest.title, "version": manifest.version,
-                "status": if entry.updating { "updating" } else if registration.is_some() { "ready" } else { "error" },
-                "error": (registration.is_none() && !entry.updating).then_some("plugin_unavailable"),
+                "status": if entry.updating { "updating" } else if !entry.enabled { "disabled" } else if registration.is_some() { "ready" } else { "error" },
+                "error": (entry.enabled && registration.is_none() && !entry.updating).then_some("plugin_unavailable"),
                 "revision": entry.revision(),
                 "settings_revision": entry.settings_revision,
                 "web": registration.and(manifest.web.as_ref()),
@@ -465,17 +464,17 @@ impl Plugins {
         let update = store.update(id, work).map_err(store::storage);
         let installed = update.as_ref().map_err(|error| *error).and_then(|update| {
             update.prepare().map_err(store::storage)?;
-            let mut guest =
-                super::memory::external(|| Instance::open(&manifest, staged)).map_err(|error| {
-                    log::warn!("Start plugin {id}: {error:#}");
-                    if previous {
-                        Failure::RolledBack
-                    } else {
-                        Failure::StartFailed
-                    }
-                })?;
+            let mut guest = Instance::start(&manifest, staged, update.enabled).map_err(|_| {
+                if previous {
+                    Failure::RolledBack
+                } else {
+                    Failure::StartFailed
+                }
+            })?;
             update.publish().map_err(store::storage)?;
-            guest.relocate(&manifest, &store.slot(id));
+            if let Some(guest) = &mut guest {
+                guest.relocate(&manifest, &store.slot(id));
+            }
             update.commit().map_err(store::storage)?;
             Ok(guest)
         });
@@ -483,7 +482,7 @@ impl Plugins {
             Ok(guest) => {
                 let slot = store.slot(id);
                 let id = id.clone();
-                let entry = Entry::new(manifest, Some(guest), &slot);
+                let entry = Entry::new(manifest, guest.is_some(), guest, &slot);
                 let mut runtime = self.lock();
                 runtime.entries.insert(id, entry);
                 self.refresh_wake_targets(&mut runtime);
@@ -503,6 +502,33 @@ impl Plugins {
                 Err(error)
             }
         }
+    }
+
+    pub(super) fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), Failure> {
+        let mut runtime = self.lock();
+        let Runtime { store, entries, .. } = &mut *runtime;
+        let entry = entries.get_mut(id).ok_or(Failure::NotFound)?;
+        if entry.updating {
+            return Err(Failure::Busy);
+        }
+        if store.unresolved(id).map_err(store::storage)? {
+            return Err(Failure::Storage);
+        }
+        if entry.enabled == enabled {
+            return Ok(());
+        }
+        if entry.in_use() {
+            return Err(Failure::Busy);
+        }
+        store.set_enabled(id, enabled).map_err(store::storage)?;
+        entry.enabled = enabled;
+        let slot = store.slot(id);
+        let active =
+            Instance::start(&entry.manifest, &slot, enabled).map_err(|_| Failure::StartFailed)?;
+        *entry = Entry::new(entry.manifest.clone(), enabled, active, &slot);
+        self.refresh_wake_targets(&mut runtime);
+        self.wake_scheduler();
+        Ok(())
     }
 
     pub(super) fn remove(&self, id: &str) -> Result<(), Failure> {
@@ -666,7 +692,7 @@ impl VoiceTools<'_> {
 }
 
 impl Entry {
-    fn new(manifest: Manifest, active: Option<Instance>, slot: &Path) -> Self {
+    fn new(manifest: Manifest, enabled: bool, active: Option<Instance>, slot: &Path) -> Self {
         let saved = manifest.provider_connections.then(|| {
             connections::Store::read(&slot.join("data"))
                 .map_err(store::storage)
@@ -679,6 +705,7 @@ impl Entry {
                 .unwrap_or_default(),
             settings_revision: saved.as_ref().map_or(0, connections::Store::revision),
             manifest,
+            enabled,
             active,
             leased: None,
             updating: false,
@@ -745,6 +772,15 @@ impl Entry {
 }
 
 impl Instance {
+    fn start(manifest: &Manifest, slot: &Path, enabled: bool) -> Result<Option<Self>> {
+        if !enabled {
+            return Ok(None);
+        }
+        super::memory::external(|| Self::open(manifest, slot))
+            .inspect_err(|error| log::warn!("Start plugin {}: {error:#}", manifest.id))
+            .map(Some)
+    }
+
     fn open(manifest: &Manifest, root: &Path) -> Result<Self> {
         ensure!(manifest.is_wasm(), "ESP supports WASM plugin modules");
         let data = root.join("data");

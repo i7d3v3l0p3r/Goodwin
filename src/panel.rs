@@ -85,6 +85,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/plugins", get(plugin_catalog))
         .route("/api/plugin-packages", post(upload_plugin))
         .route("/api/plugin-packages/{id}", delete(remove_plugin))
+        .route(
+            "/api/plugin-enabled/{id}",
+            put(plugin_routes::set_plugin_enabled),
+        )
         .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
         .route(
             "/api/plugin-connections/{id}",

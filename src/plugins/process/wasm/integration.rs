@@ -123,6 +123,43 @@ async fn upload_commits_a_started_package_and_restores_data_after_a_failed_updat
         "2.0.0"
     );
     assert!(!store.unresolved(id).unwrap());
+    assert!(plugins.set_enabled(id, false).await.is_ok());
+    assert!(plugins.set_enabled(id, false).await.is_ok());
+    plugins.shutdown().await;
+    plugins
+        .restore_selected(&[crate::assistant::DEFAULT_PROVIDER])
+        .await;
+    let catalog = serde_json::to_value(plugins.catalog()).unwrap();
+    assert_eq!(catalog[0]["status"], "disabled");
+    assert!(catalog[0]["error"].is_null());
+    assert!(
+        plugins
+            .provider(crate::assistant::DEFAULT_PROVIDER, Capability::Chat)
+            .is_none()
+    );
+    assert!(
+        plugins
+            .upload(archive("3.0.0", wasm!("openai-compatible")))
+            .await
+            .is_ok()
+    );
+    assert_eq!(fs::read(slot.join("data/saved")).unwrap(), b"original");
+    assert_eq!(
+        serde_json::to_value(plugins.catalog()).unwrap()[0]["status"],
+        "disabled"
+    );
+    assert!(plugins.set_enabled(id, true).await.is_ok());
+    assert!(
+        plugins
+            .provider(crate::assistant::DEFAULT_PROVIDER, Capability::Chat)
+            .is_some()
+    );
+    let revision = serde_json::to_value(plugins.catalog()).unwrap()[0]["revision"].clone();
+    assert!(plugins.set_enabled(id, true).await.is_ok());
+    assert_eq!(
+        serde_json::to_value(plugins.catalog()).unwrap()[0]["revision"],
+        revision
+    );
     plugins.shutdown().await;
 }
 

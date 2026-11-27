@@ -18,6 +18,19 @@ pub(super) async fn plugin_catalog(State(panel): State<Panel>) -> impl IntoRespo
     Json(panel.app.plugins.catalog())
 }
 
+pub(super) async fn set_plugin_enabled(
+    State(panel): State<Panel>,
+    Path(id): Path<String>,
+    Json(enabled): Json<bool>,
+) -> Response {
+    let plugins = panel.app.plugins.clone();
+    match tokio::spawn(async move { plugins.set_enabled(&id, enabled).await }).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(error)) => plugin_problem(error),
+        Err(_) => plugin_problem(PluginFailure::Storage),
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(super) async fn route_via_vpn(
     State(panel): State<Panel>,

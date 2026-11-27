@@ -294,6 +294,7 @@ export function createPanel() {
       action(() => api("test", "POST", { mode }), { onError }),
     uploadPlugin: (file: File) => action(() => api("plugin-packages", "POST", file, builtinProvider() ? 90_000 : undefined)),
     removePlugin: (id: string) => action(() => api(`plugin-packages/${id}`, "DELETE")),
+    setPluginEnabled: (id: string, enabled: boolean) => action(() => api(`plugin-enabled/${encodeURIComponent(id)}`, "PUT", enabled, 60_000)),
   };
 }
 
