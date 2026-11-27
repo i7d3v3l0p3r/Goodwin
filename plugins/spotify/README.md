@@ -13,7 +13,13 @@ This native Goodwin plugin searches Spotify for a track, album or playlist and s
 
 3. In the Spotify app on the same network, choose **Goodwin** in the device picker and play a track. Check that you hear it on the intended speaker. Leave Soloist running. Its local WebSocket has no authentication. For a receiver on another computer, forward its loopback port over a private tunnel to the Goodwin host. [Receiver API](https://developer.spotify.com/documentation/soloist/reference/websocket-api)
 
-The current plugin connects to an existing receiver. On Linux, Soloist uses PipeWire or PulseAudio. Goodwin on Mini 3 normally uses ALSA through `aplay -D speakers`. One existing bergamot setup runs Soloist with a private AArch64 loader, matching libraries and an apulse adapter for ALSA. The official Soloist 1.4.0.21 ARM64 binary passed a `--version` check under QEMU with that runtime. Playback on the physical Mini 3 with this build remains unverified. [Soloist requirements](https://github.com/spotify/soloist#requirements)
+On Linux, the official Soloist build uses PipeWire or PulseAudio. A Mini 3 installation can use a private AArch64 loader, matching libraries and an apulse adapter for its ALSA output. [Soloist requirements](https://github.com/spotify/soloist#requirements)
+
+### Managed Soloist on Mini 3
+
+The Spotify plugin starts a local Soloist receiver when the WebSocket address is empty or set to `ws://127.0.0.1:9090` and an administrator has provisioned `/data/opt/soloist/goodwin-receiver`. The launcher must be executable, take the standard Soloist arguments, and use `exec` to run Soloist in the foreground. It can be a symlink to the station's existing `soloist-cli` compatibility wrapper. Soloist reads its stored API key and session from `/data/opt/soloist/data`.
+
+When migrating an existing installation, stop Soloist and disable its standalone boot script before restarting Goodwin. The managed receiver needs a Linux mount namespace and permission to mount tmpfs. Its cache is capped at 10 MiB and released when the receiver stops. Removing the plugin or stopping Goodwin also stops the receiver. Restart the plugin after changing its receiver address. For an independently managed receiver, use the WebSocket setup above.
 
 For a receiver on a separate computer, you can pair the Mini 3 to that computer as a Bluetooth speaker and select it as the computer's audio output. [Station Bluetooth audio](https://alice.yandex.ru/support/ru/station/speaker)
 

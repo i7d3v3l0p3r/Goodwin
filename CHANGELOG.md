@@ -4,10 +4,12 @@
 
 ### English
 
+- Spotify can start a provisioned Soloist receiver on Mini 3 and stops it when the plugin is removed. The local receiver uses a 10 MiB memory-backed cache.
 - The Spotify play/pause button stays visible while a new track buffers in the player and on Now.
 
 ### Русский
 
+- Плагин Spotify может запускать настроенный Soloist на Мини 3 и останавливает его при удалении плагина. Локальному плееру выделяется до 10 МиБ под кэш в tmpfs.
 - Кнопка воспроизведения и паузы в Spotify остаётся видимой при загрузке нового трека в плеере и на странице «Сейчас».
 
 ## [0.6.1] - 2026-11-27

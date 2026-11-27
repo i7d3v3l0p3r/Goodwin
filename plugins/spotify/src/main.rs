@@ -3,6 +3,8 @@ mod catalog;
 #[path = "../../../shared/http_tls.rs"]
 mod http_tls;
 mod player;
+#[cfg(target_os = "linux")]
+mod receiver;
 mod soloist;
 
 use std::{sync::Arc, time::Duration};
@@ -113,6 +115,8 @@ impl Requests {
 }
 
 struct Spotify {
+    #[cfg(target_os = "linux")]
+    receiver: Option<receiver::Receiver>,
     runtime: Runtime,
     client: reqwest::Client,
     catalog: Arc<Mutex<Catalog>>,
@@ -120,6 +124,16 @@ struct Spotify {
 }
 
 impl Plugin for Spotify {
+    #[cfg(target_os = "linux")]
+    fn ready(&mut self, _host: goodwin_plugin::Host) {
+        match read_settings::<Settings>()
+            .and_then(|settings| receiver::start(&settings.soloist_url))
+        {
+            Ok(receiver) => self.receiver = receiver,
+            Err(error) => eprintln!("Could not start the local Soloist receiver: {error}"),
+        }
+    }
+
     fn registration(&self) -> Value {
         let empty = json!({"type": "object", "properties": {}, "required": [], "additionalProperties": false});
         let mut tools = vec![json!({
@@ -225,6 +239,8 @@ fn main() -> goodwin_error::Result<()> {
         "https://api.spotify.com/v1/search",
     );
     goodwin_plugin::run(Spotify {
+        #[cfg(target_os = "linux")]
+        receiver: None,
         client,
         runtime: tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
