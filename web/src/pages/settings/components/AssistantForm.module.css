@@ -2,11 +2,22 @@
 .stages { min-width: 0; border: 0; margin: 0; padding: 0; }
 .stage {
   --stage-node-size: 36px;
-  --gw-disclosure-inset: var(--gw-space-3);
+  --gw-disclosure-inset: var(--gw-space-4);
   position: relative;
 }
 .stage + .stage { border-top: 1px solid var(--edge); }
-.stage > summary { --gw-disclosure-height: 65px; }
+.stages > .stage > summary {
+  --gw-disclosure-height: 65px;
+  border-radius: 0;
+}
+.stages > .stage:first-child > summary {
+  border-start-start-radius: var(--gw-control-radius);
+  border-start-end-radius: var(--gw-control-radius);
+}
+.stages > .stage:last-child:not([open]) > summary {
+  border-end-start-radius: var(--gw-control-radius);
+  border-end-end-radius: var(--gw-control-radius);
+}
 .stage > summary > :global(.gw-disclosure-label) { flex: 1; min-width: 0; }
 .node {
   position: relative; z-index: 1; flex: 0 0 var(--stage-node-size); height: var(--stage-node-size);
