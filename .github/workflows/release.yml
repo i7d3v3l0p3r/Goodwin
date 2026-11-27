@@ -85,6 +85,9 @@ jobs:
               --config 'profile.release.package.goodwin.strip="symbols"' --release --target "$target"
 
           python scripts/package-station.py --output target/release-assets/goodwin-mini3-aarch64.tar.gz
+          cargo zigbuild --locked -p goodwin-spotify --release --target "$target"
+          python scripts/package-plugin.py plugins/spotify "target/$target/release/goodwin-spotify" \
+            linux-aarch64 target/release-assets/spotify-linux-aarch64.tar.gz
           cargo zigbuild --locked -p goodwin-vpn --bins --profile vpn-release --target "$target"
           cargo zigbuild --locked --manifest-path plugins/vpn/engines/Cargo.toml --bins --release --target "$target" --target-dir target
           python scripts/package-vpn.py "target/$target/vpn-release/goodwin-vpn" aarch64 target/release-assets/vpn-linux-aarch64.tar.gz \
@@ -190,7 +193,7 @@ jobs:
           installers=(goodwin-installer-windows-x64.exe goodwin-installer-linux-x64.tar.gz
             goodwin-installer-macos-arm64.tar.gz goodwin-installer-macos-x64.tar.gz)
           assets=(goodwin-mini3-aarch64.tar.gz timers-wasm32.tar.gz openai-compatible-wasm32.tar.gz wake-dataset-wasm32.tar.gz
-            vpn-linux-aarch64.tar.gz vless-{stream,http2,xtls}-linux-aarch64.gz "${installers[@]}" SHA256SUMS)
+            spotify-linux-aarch64.tar.gz vpn-linux-aarch64.tar.gz vless-{stream,http2,xtls}-linux-aarch64.gz "${installers[@]}" SHA256SUMS)
           sha256sum -- "${installers[@]}" >> SHA256SUMS
           sha256sum -c SHA256SUMS
 

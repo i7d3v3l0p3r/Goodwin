@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-27
+
 ### English
 
 - Spotify shows a loading indicator on the pressed playback button. The player and Now card keep the previous cover visible while the next one loads, then fade in the new cover.

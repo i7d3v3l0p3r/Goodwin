@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "base64",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin-spotify"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "axum",
  "base64",
