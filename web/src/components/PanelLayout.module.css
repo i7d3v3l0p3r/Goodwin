@@ -1,6 +1,7 @@
 .shell {
   height: 100vh;
   height: 100dvh;
+  overflow: clip;
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
 }

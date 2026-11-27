@@ -4,6 +4,7 @@
 
 ### English
 
+- Switching plugin VPN routing no longer flashes the provider installation link. Scrolling stays inside the panel during page transitions.
 - Plugin actions have wider hover highlights, and versions and statuses align on the same line. The Models and Voice stage headers have more space around the icons and square corners at dividers.
 - Collapsible settings have more compact headers, aligned padding, and a clear gap above the expanded fields.
 - The Spotify card on Now has previous and next track controls. Long titles scroll once in each direction with faded edges.
@@ -25,6 +26,7 @@
 
 ### Русский
 
+- При переключении VPN у плагина больше не мигает ссылка «Установить провайдера». При переходах между страницами прокручивается только содержимое панели.
 - У кнопок плагинов шире подсветка при наведении, а версия и статус выровнены по вертикали. В настройках моделей и голоса добавлены отступы у иконок, углы подсветки на стыках строк стали прямыми.
 - У раскрывающихся разделов настроек компактнее заголовки, выровнены отступы и добавлен зазор перед полями.
 - В карточке Spotify на странице «Сейчас» появились кнопки предыдущего и следующего трека. Длинные названия плавно прокручиваются до конца и обратно с затуханием по краям.

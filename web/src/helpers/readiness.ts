@@ -60,9 +60,12 @@ export function createProviderReadiness(snapshot: () => Snapshot | undefined, re
       if (plugins.some(plugin => !plugin.connection_settings || plugin.connections?.length)) {
         return { kind: "select", href: assistantStagePath(capability) };
       }
-      return plugins.length
-        ? { kind: "configure", href: pluginSettingsPath(plugins[0].id) }
-        : { kind: "install", href: "/plugins" };
+      if (plugins.length) return { kind: "configure", href: pluginSettingsPath(plugins[0].id) };
+      // The catalog cannot report capabilities while a plugin process restarts.
+      if (state.plugins.some(plugin => !plugin.providers.length && (plugin.status === "starting" || plugin.status === "updating"))) {
+        return { kind: "checking", href: setupPath };
+      }
+      return { kind: "install", href: "/plugins" };
     }
     const { plugin, connection } = provider;
     const href = pluginSettingsPath(plugin.id);
