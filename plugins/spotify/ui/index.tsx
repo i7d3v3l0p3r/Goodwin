@@ -1,4 +1,4 @@
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
 export { NowCard } from "./NowCard";
@@ -57,6 +57,31 @@ function Sleeve(props: { image?: string }) {
     <span class="spotify-vinyl" />
     <Show when={props.image}>{src => <img src={src()} alt="" />}</Show>
   </div>;
+}
+
+function TrackTitle(props: { title: string }) {
+  let heading!: HTMLHeadingElement;
+  let text!: HTMLSpanElement;
+
+  createEffect(() => null, () => {
+    const observer = new ResizeObserver(() => {
+      const overflow = text.getBoundingClientRect().width - heading.getBoundingClientRect().width;
+      heading.toggleAttribute("data-title-overflow", overflow > 0);
+      if (overflow > 0) {
+        heading.style.setProperty("--title-overflow", `${overflow}px`);
+        heading.style.setProperty("--title-duration", `${Math.max(2, overflow / 30)}s`);
+      }
+    });
+    observer.observe(heading);
+    observer.observe(text);
+    return () => observer.disconnect();
+  });
+
+  return <h3 ref={heading} title={props.title}>
+    <span class="spotify-title">
+      <span class="spotify-title-text" ref={text}>{props.title}</span>
+    </span>
+  </h3>;
 }
 
 export default function SpotifyPage({ language, request }: PluginContext) {
@@ -172,7 +197,9 @@ export default function SpotifyPage({ language, request }: PluginContext) {
             <div class="spotify-info">
               <header class="spotify-caption"><h2>{statusText()}</h2><span class="spotify-device">{device()}</span></header>
               <Show when={track()}>{item => <>
-                <h3>{item().title ?? item().uri ?? t.unknown}</h3>
+                <Show when={item().title || item().uri || t.unknown} keyed>
+                  {title => <TrackTitle title={title} />}
+                </Show>
                 <Show when={item().artists.length}><p class="spotify-artist">{item().artists.join(", ")}</p></Show>
                 <Show when={item().album}><p class="spotify-album">{item().album}</p></Show>
               </>}</Show>

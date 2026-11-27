@@ -53,6 +53,24 @@
 .spotify-caption h2::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 7px; }
 .spotify-device, .spotify-album { color: var(--player-soft); }
 .spotify-player h3 { margin-top: 12px; color: var(--player-ink); font-size: clamp(1.65rem, 4vw, 2.65rem); line-height: 1.09; letter-spacing: -.035em; }
+.spotify-title, .spotify-title-text { display: block; white-space: nowrap; overflow: hidden; }
+.spotify-title-text { text-overflow: ellipsis; }
+@media (prefers-reduced-motion: no-preference) {
+  .spotify-title-text { width: max-content; }
+  [data-title-overflow] .spotify-title {
+    --title-fade: 12px;
+    margin-left: calc(-1 * var(--title-fade));
+    padding-left: var(--title-fade);
+    mask-image: linear-gradient(to right, transparent, #000 var(--title-fade), #000 calc(100% - var(--title-fade)), transparent);
+  }
+  [data-title-overflow] .spotify-title-text {
+    animation: spotify-title-scroll var(--title-duration) linear 800ms 2 alternate;
+  }
+}
+@keyframes spotify-title-scroll {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(-1 * (var(--title-overflow) + var(--title-fade)))); }
+}
 .spotify-artist { margin-top: 7px !important; font-size: 1.04rem; }
 .spotify-album { margin-top: 4px !important; font-size: .9rem; }
 .spotify-transport { grid-area: transport; display: grid; gap: 12px; }

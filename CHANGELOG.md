@@ -4,6 +4,7 @@
 
 ### English
 
+- On the Spotify player page, track titles stay on one line. Long titles scroll once in each direction with faded edges.
 - Open panels can install, update, and remove plugins and access wake-word dataset recordings without a password.
 - The plugin catalog has a VPN switch for Spotify 0.2.2 and the OpenAI-compatible provider. Spotify can route its Web API and cover-art requests through the VPN while controlling Soloist locally.
 - Plugins appear in a compact list. Select a name to open its page or settings. The bookmark adds or removes a menu shortcut in one click.
@@ -21,6 +22,7 @@
 
 ### Русский
 
+- На странице плеера Spotify название трека занимает одну строку. Длинные названия плавно прокручиваются до конца и обратно с затуханием по краям.
 - В открытой панели можно устанавливать, обновлять и удалять плагины, а также работать с записями датасета слова активации без пароля.
 - В каталоге плагинов появился переключатель VPN для Spotify 0.2.2 и OpenAI-совместимого провайдера. Spotify может загружать обложки и обращаться к Web API через VPN, сохраняя локальное управление плеером Soloist.
 - Плагины собраны в компактный список. Нажатие на название открывает страницу или настройки плагина. Значок закладки добавляет страницу в меню или убирает её одним нажатием.
