@@ -2,12 +2,12 @@ import { createEffect, createSignal, Show } from "solid-js";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
 import { livePlugin } from "../../../web/src/helpers/plugin-live";
 import { CoverArt } from "./CoverArt";
-import { PlaybackControls, type Command } from "./PlaybackControls";
+import { PlaybackControls, type Command, type PlaybackStatus } from "./PlaybackControls";
 import { TrackTitle } from "./TrackTitle";
 
 interface State {
   connection: string; device: string | null;
-  player?: { status: string; active: boolean; artwork: string | null; controls: Command[];
+  player?: { status: PlaybackStatus | null; active: boolean | null; artwork: string | null; controls: Command[];
     track: { title: string | null; artists: string[] } | null };
 }
 
@@ -42,7 +42,7 @@ export function NowCard({ language, request, setNowActive }: PluginContext) {
       </Show>
       <small>{[player()?.status === "paused" ? t.paused : "", player()?.track?.artists.join(", ")].filter(Boolean).join(" · ")}</small>
     </div>
-    <PlaybackControls language={language} controls={player()?.controls} action={playing() ? "pause" : "play"}
+    <PlaybackControls language={language} controls={player()?.controls} status={player()?.status}
       pending={pending()} disabled={!!feed.error()} onCommand={command => void control(command)} />
     <Show when={feed.actionError() || (feed.error() && feed.data())}><small class="spotify-now-error" role="status">{t.offline}</small></Show>
   </div>;

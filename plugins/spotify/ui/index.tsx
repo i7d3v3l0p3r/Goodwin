@@ -2,7 +2,7 @@ import { createSignal, For, onCleanup, Show } from "solid-js";
 import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
 import { CoverArt } from "./CoverArt";
-import { PlaybackControls, type Command } from "./PlaybackControls";
+import { PlaybackControls, type Command, type PlaybackStatus } from "./PlaybackControls";
 import { TrackTitle } from "./TrackTitle";
 export { NowCard } from "./NowCard";
 
@@ -37,10 +37,9 @@ const copy = {
   },
 };
 
-type Status = "playing" | "paused" | "idle" | "buffering";
 interface Track { title: string | null; artists: string[]; album: string | null; duration: number | null; uri: string | null }
 interface Player {
-  status: Status; active: boolean | null; track: Track | null; controls: Command[];
+  status: PlaybackStatus | null; active: boolean | null; track: Track | null; controls: Command[];
   artwork: string | null;
   position: number | null; timestamp: number | null; speed: number | null;
 }
@@ -168,8 +167,7 @@ export default function SpotifyPage({ language, request }: PluginContext) {
                   <progress aria-label={t.progress} value={position()} max={track()!.duration!} />
                   <span>{time(track()!.duration!)}</span></div>
               </Show>
-              <PlaybackControls language={language} controls={player()?.controls}
-                action={player()?.status === "playing" || player()?.status === "buffering" ? "pause" : "play"}
+              <PlaybackControls language={language} controls={player()?.controls} status={player()?.status}
                 pending={pending()} onCommand={command => void control(command)} />
               <Show when={commandError()}><p class="spotify-control-error" role="alert">{t.actionError}</p></Show>
             </div>

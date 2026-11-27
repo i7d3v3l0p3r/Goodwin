@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### English
+
+- The Spotify play/pause button stays visible while a new track buffers in the player and on Now.
+
+### Русский
+
+- Кнопка воспроизведения и паузы в Spotify остаётся видимой при загрузке нового трека в плеере и на странице «Сейчас».
+
 ## [0.6.1] - 2026-11-27
 
 ### English
