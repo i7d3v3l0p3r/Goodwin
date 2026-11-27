@@ -10,6 +10,7 @@ import ChevronDown from "@lucide/solid/icons/chevron-down";
 import ChevronRight from "@lucide/solid/icons/chevron-right";
 import Database from "@lucide/solid/icons/database";
 import Download from "@lucide/solid/icons/download";
+import Ellipsis from "@lucide/solid/icons/ellipsis";
 import Headphones from "@lucide/solid/icons/headphones";
 import House from "@lucide/solid/icons/house";
 import ListChecks from "@lucide/solid/icons/list-checks";
@@ -20,6 +21,7 @@ import MicOff from "@lucide/solid/icons/mic-off";
 import Monitor from "@lucide/solid/icons/monitor";
 import Plug from "@lucide/solid/icons/plug";
 import Plus from "@lucide/solid/icons/plus";
+import Power from "@lucide/solid/icons/power";
 import Search from "@lucide/solid/icons/search";
 import Settings from "@lucide/solid/icons/settings";
 import Sparkles from "@lucide/solid/icons/sparkles";
@@ -38,6 +40,8 @@ const icons = {
   wifi: Wifi,
   send: ArrowUp,
   plus: Plus,
+  more: Ellipsis,
+  power: Power,
   mic: Mic,
   micOff: MicOff,
   sparkles: Sparkles,

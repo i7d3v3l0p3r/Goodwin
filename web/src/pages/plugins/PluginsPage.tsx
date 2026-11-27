@@ -25,6 +25,7 @@ export function PluginsPage() {
   const panel = usePanel();
   const [removing, setRemoving] = createSignal<{ id: string; title: string }>();
   const [deleting, setDeleting] = createSignal(false);
+  const [expanded, setExpanded] = createSignal("");
   const [routing, setRouting] = createSignal("");
   const [routeError, setRouteError] = createSignal<{ id: string; code: string }>();
   const words = () => panel.t().plugins;
@@ -104,6 +105,13 @@ export function PluginsPage() {
           <For each={matches()} keyed={plugin => plugin.id}>
             {plugin => {
               const title = () => plugin().title[panel.language()];
+              const open = () => expanded() === plugin().id;
+              const actionsId = `actions-${plugin().id}`;
+              let trigger!: HTMLButtonElement;
+              function closeActions() {
+                setExpanded("");
+                trigger.focus();
+              }
               const enabled = () => plugin().status !== "disabled";
               const changing = () => ["starting", "updating", "removing"].includes(plugin().status);
               const landing = () => landingPage(plugin());
@@ -112,7 +120,9 @@ export function PluginsPage() {
               const pinned = () => panel.pinnedPlugins().includes(plugin().id);
               const extraPages = () => plugin().web && plugin().revision
                 ? plugin().pages.filter(page => page.navigation && ![landing(), settings()].includes(pluginPagePath(plugin().id, page.path))) : [];
-              return <li class={styles.item} data-status={plugin().status}>
+              return <li class={styles.item} data-status={plugin().status} onKeyDown={event => {
+                if (event.key === "Escape" && open()) closeActions();
+              }}>
                 <div class={styles.identity}>
                   <span class={styles.tile} data-icon={catalogIcon(plugin())} aria-hidden="true">
                     <PluginNavigationIcon name={catalogIcon(plugin())} />
@@ -132,12 +142,6 @@ export function PluginsPage() {
                   </div>
                 </div>
                 <div class={styles.actions}>
-                  <button type="button" role="switch" aria-checked={enabled() ? "true" : "false"}
-                    aria-label={`${words().enabled} · ${title()}`} title={enabled() ? words().disable : words().enable}
-                    disabled={pending() || Boolean(routing()) || changing()}
-                    onClick={() => void panel.setPluginEnabled(plugin().id, !enabled())}>
-                    <span aria-hidden="true" class={styles.track} />
-                  </button>
                   <Show when={plugin().vpn !== undefined && (plugin().vpn || installed()?.some(entry => entry.id === "vpn"))}>
                     <button type="button" class={styles.vpn} role="switch" aria-checked={plugin().vpn ? "true" : "false"}
                       aria-label={`${words().vpnRouting} · ${title()}`} title={plugin().vpn ? words().vpnOff : words().vpnOn}
@@ -146,24 +150,34 @@ export function PluginsPage() {
                       VPN<span aria-hidden="true" class={styles.track} />
                     </button>
                   </Show>
+                  <button ref={trigger} type="button" aria-expanded={open() ? "true" : "false"} aria-controls={actionsId}
+                    title={words().actions} aria-label={`${words().actions} · ${title()}`}
+                    onClick={() => setExpanded(open() ? "" : plugin().id)}>
+                    <Icon name="more" />
+                  </button>
+                </div>
+                <div id={actionsId} class={styles.options} hidden={!open()} role="group" aria-label={`${words().actions} · ${title()}`}>
+                  <button type="button" disabled={pending() || Boolean(routing()) || changing()} onClick={() => {
+                    closeActions();
+                    void panel.setPluginEnabled(plugin().id, !enabled());
+                  }}><Icon name="power" size={16} />{enabled() ? words().disable : words().enable}</button>
                   <Show when={landing() && settings()}>{href =>
-                    <a href={href()} title={words().configure} aria-label={`${words().configure} · ${title()}`}>
-                      <Icon name="settings" size={16} />
-                    </a>
+                    <a href={href()}><Icon name="settings" size={16} />{words().configure}</a>
                   }</Show>
                   <Show when={landing()}>
-                    <button type="button" class={styles.bookmark} aria-pressed={pinned() ? "true" : "false"}
-                      aria-label={`${words().inMenu} · ${title()}`} title={pinned() ? panel.t().now.unpin : panel.t().now.pin}
-                      onClick={() => panel.togglePluginPin(plugin().id)}>
-                      <Icon name="bookmark" size={16} />
+                    <button type="button" onClick={() => {
+                      panel.togglePluginPin(plugin().id);
+                      closeActions();
+                    }}>
+                      <Icon name="bookmark" size={16} />{pinned() ? panel.t().now.unpin : panel.t().now.pin}
                     </button>
                   </Show>
-                  <button type="button" class={styles.remove} disabled={pending()}
-                    title={words().remove} aria-label={`${words().remove} · ${title()}`} onClick={event => {
-                      removeTrigger = event.currentTarget;
-                      panel.clearError();
-                      setRemoving({ id: plugin().id, title: title() });
-                    }}><Icon name="trash" size={16} /></button>
+                  <button type="button" class={styles.remove} disabled={pending()} onClick={() => {
+                    removeTrigger = trigger;
+                    closeActions();
+                    panel.clearError();
+                    setRemoving({ id: plugin().id, title: title() });
+                  }}><Icon name="trash" size={16} />{words().remove}</button>
                 </div>
                 <Show when={extraPages().length}>
                   <div class={styles.pages}><For each={extraPages()}>{page =>

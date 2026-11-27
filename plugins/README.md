@@ -19,7 +19,7 @@ python scripts/package-plugin.py plugins/timers target/release/goodwin-timers.ex
 
 Use `./scripts/build-station.ps1` on Windows to produce the separate Station packages for Timers, the [OpenAI-compatible provider](openai-compatible/) and [Wake-word dataset](wake-dataset/). Open **Plugins** in the panel to upload an archive. The manifest ID identifies the plugin across updates.
 
-Use the switch beside an installed plugin to stop or start it. Goodwin keeps its package, settings and data. A disabled plugin stays off when Goodwin restarts or its package is updated. Its pages, assistant tools and providers become available again after it starts.
+Open **…** beside an installed plugin and choose **Disable plugin** or **Enable plugin**. Goodwin keeps its package, settings and data. A disabled plugin stays off when Goodwin restarts or its package is updated. Its pages, assistant tools and providers become available again after it starts.
 
 ## Package and process contract
 

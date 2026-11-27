@@ -59,8 +59,16 @@
 .metadata :global(.gw-status) { min-height: 0; padding: 0; gap: 4px; background: none; font: inherit; }
 .metadata :global(.gw-status)::before { flex-basis: 4px; height: 4px; }
 .actions { display: flex; align-items: center; gap: 4px; }
-.actions:empty { display: none; }
-.actions > :is(a, button) {
+.options:not([hidden]) {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin: 2px 0 5px;
+  padding-top: 4px;
+  border-top: 1px solid var(--edge);
+}
+.actions > button, .options > :is(a, button) {
   display: inline-flex;
   justify-content: center;
   align-items: center;
@@ -73,6 +81,9 @@
   color: var(--muted);
   touch-action: manipulation;
 }
+.options > :is(a, button) { font-size: .85rem; text-decoration: none; gap: 6px; }
+.options .remove { color: var(--danger); }
+.actions button[aria-expanded=true] { color: var(--accent); background: var(--active-soft); }
 .actions .vpn { gap: 5px; font-size: .72rem; font-weight: 650; }
 .track {
   display: inline-flex;
@@ -88,19 +99,14 @@
 .track::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .actions [aria-checked=true] .track { border-color: var(--accent); background: var(--accent); }
 .actions [aria-checked=true] .track::before { transform: translateX(10px); background: var(--paper); }
-.vpn[aria-checked=true], .bookmark[aria-pressed=true] { color: var(--accent); }
-.bookmark[aria-pressed=true] svg { fill: currentColor; }
-.actions button:disabled { opacity: .55; }
+.vpn[aria-checked=true] { color: var(--accent); }
+.item button:disabled { opacity: .55; }
 .item > :global(.gw-inline-error), .pages { grid-column: 1 / -1; margin: 3px 0 6px; }
 .pages { display: flex; flex-wrap: wrap; gap: 8px; font-size: .85rem; }
-@media (max-width: 400px) {
-  .item:has(.actions > :nth-child(3)) .identity { grid-column: 1 / -1; }
-  .item:has(.actions > :nth-child(3)) .actions { grid-column: 1 / -1; justify-self: end; }
-}
 @media (hover: hover) {
   .identity:has(a:hover) h2 { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-  .actions > :is(a, button:enabled):hover { color: var(--accent); background: var(--active-soft); }
-  .actions .remove:enabled:hover { color: var(--danger); background: var(--gw-color-danger-surface); }
+  .actions > button:enabled:hover, .options > :is(a, button:enabled):hover { color: var(--accent); background: var(--active-soft); }
+  .options .remove:enabled:hover { color: var(--danger); background: var(--gw-color-danger-surface); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .track::before { transition: transform 120ms var(--ease); }
