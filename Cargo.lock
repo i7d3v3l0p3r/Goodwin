@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "axum",
  "base64",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "goodwin-openai-compatible"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "base64",

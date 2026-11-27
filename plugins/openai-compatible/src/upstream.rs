@@ -319,7 +319,7 @@ impl Upstream {
                     &["models"]
                 },
             )?
-            .timeout(Duration::from_secs(5));
+            .timeout(Duration::from_secs(15));
         if openrouter && !speech {
             let endpoint = match capability {
                 Capability::Transcription => "/api/v1/audio/transcriptions",

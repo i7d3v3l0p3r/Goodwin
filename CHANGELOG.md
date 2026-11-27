@@ -2,16 +2,18 @@
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-11-28
+## [0.7.1] - 2026-11-28
 
 ### English
 
+- The OpenAI-compatible provider has more time to load large model catalogs on slower devices.
 - Open **…** beside a plugin to enable, disable, configure, pin or remove it. VPN routing has its own switch. Plugin settings, data and enabled state survive restarts and package updates.
 - Spotify can start a provisioned Soloist receiver on Mini 3 and stops it when the plugin is removed. The local receiver uses a 10 MiB memory-backed cache.
 - The Spotify play/pause button stays visible while a new track buffers in the player and on Now.
 
 ### Русский
 
+- У OpenAI-совместимого провайдера увеличено время ожидания при загрузке больших каталогов моделей на медленных устройствах.
 - В меню «…» можно включить, выключить, настроить, закрепить или удалить плагин. У VPN отдельный переключатель. Настройки, данные и выбранное состояние плагина сохраняются при перезапуске и обновлении пакета.
 - Плагин Spotify может запускать настроенный Soloist на Мини 3 и останавливает его при удалении плагина. Локальному плееру выделяется до 10 МиБ под кэш в tmpfs.
 - Кнопка воспроизведения и паузы в Spotify остаётся видимой при загрузке нового трека в плеере и на странице «Сейчас».
