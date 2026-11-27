@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
+import { CoverArt } from "./CoverArt";
 import { PlaybackControls, type Command } from "./PlaybackControls";
 import { TrackTitle } from "./TrackTitle";
 export { NowCard } from "./NowCard";
@@ -51,10 +52,10 @@ function time(ms: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function Sleeve(props: { image?: string }) {
+function Sleeve(props: { artwork?: string | null; request: PluginContext["request"] }) {
   return <div class="spotify-sleeve" aria-hidden="true">
     <span class="spotify-vinyl" />
-    <Show when={props.image}>{src => <img src={src()} alt="" />}</Show>
+    <CoverArt artwork={props.artwork} request={props.request} />
   </div>;
 }
 
@@ -63,29 +64,12 @@ export default function SpotifyPage({ language, request }: PluginContext) {
   const [snapshot, setSnapshot] = createSignal<Snapshot>();
   const [error, setError] = createSignal("");
   const [commandError, setCommandError] = createSignal(false);
-  const [busy, setBusy] = createSignal(false);
+  const [pending, setPending] = createSignal<Command>();
   const [history, setHistory] = createSignal(false);
   const [now, setNow] = createSignal(Date.now());
-  const [image, setImage] = createSignal("");
-  let requestedArt: string | null = null;
-  let retryArtAfter = 0;
   let stopped = false;
   let revision = 0;
   let poll = 0;
-
-  async function updateArtwork(id: string | null) {
-    if (id === requestedArt && (!id || Date.now() < retryArtAfter)) return;
-    if (id !== requestedArt) setImage("");
-    requestedArt = id;
-    retryArtAfter = Infinity;
-    if (!id) return;
-    try {
-      const art = await request<{ image: string }>(`/artwork/${id}`);
-      if (!stopped && requestedArt === id) setImage(art.image);
-    } catch {
-      if (!stopped && requestedArt === id) retryArtAfter = Date.now() + 60000;
-    }
-  }
 
   async function refresh() {
     const version = ++revision;
@@ -96,7 +80,6 @@ export default function SpotifyPage({ language, request }: PluginContext) {
       setNow(Date.now());
       setSnapshot(data);
       setError("");
-      void updateArtwork(data.connection === "ready" ? data.player.artwork : null);
     } catch (failure) {
       if (!stopped && version === revision) {
         const code = failure instanceof Error && "code" in failure ? failure.code : "";
@@ -109,7 +92,7 @@ export default function SpotifyPage({ language, request }: PluginContext) {
 
   function visibility() {
     clearTimeout(poll);
-    if (!document.hidden && !busy()) void refresh();
+    if (!document.hidden && !pending()) void refresh();
   }
   document.addEventListener("visibilitychange", visibility);
   const clock = window.setInterval(() => { if (!document.hidden && player()?.status === "playing") setNow(Date.now()); }, 1000);
@@ -122,15 +105,15 @@ export default function SpotifyPage({ language, request }: PluginContext) {
   void refresh();
 
   async function control(command: Command) {
-    if (busy()) return;
-    setBusy(true);
+    if (pending()) return;
+    setPending(command);
     setCommandError(false);
     clearTimeout(poll);
     revision++;
     try { await request(`/player/${command}`, "POST"); }
     catch { if (!stopped) setCommandError(true); }
     finally {
-      if (!stopped) { await refresh(); setBusy(false); }
+      if (!stopped) { await refresh(); setPending(undefined); }
     }
   }
 
@@ -163,11 +146,11 @@ export default function SpotifyPage({ language, request }: PluginContext) {
       <button class="gw-button" type="button" onClick={() => void refresh()}>{t.retry}</button></div></gw-card>}>
       <Show when={snapshot()} fallback={<StatusIndicator tone="pending">{t.loading}</StatusIndicator>}>
         <Show when={ready()} fallback={<section class="spotify-setup">
-          <header class="spotify-setup-head"><Sleeve /><div><span class="spotify-device">{device()}</span><h2>{t.connect}</h2></div></header>
+          <header class="spotify-setup-head"><Sleeve request={request} /><div><span class="spotify-device">{device()}</span><h2>{t.connect}</h2></div></header>
           {instructions()}
         </section>}>
           <section class="spotify-player">
-            <Sleeve image={image()} />
+            <Sleeve artwork={player()?.artwork ?? (player()?.status === "buffering" ? undefined : null)} request={request} />
             <div class="spotify-info">
               <header class="spotify-caption"><h2>{statusText()}</h2><span class="spotify-device">{device()}</span></header>
               <Show when={track()}>{item => <>
@@ -187,7 +170,7 @@ export default function SpotifyPage({ language, request }: PluginContext) {
               </Show>
               <PlaybackControls language={language} controls={player()?.controls}
                 action={player()?.status === "playing" || player()?.status === "buffering" ? "pause" : "play"}
-                disabled={busy()} onCommand={command => void control(command)} />
+                pending={pending()} onCommand={command => void control(command)} />
               <Show when={commandError()}><p class="spotify-control-error" role="alert">{t.actionError}</p></Show>
             </div>
           </section>

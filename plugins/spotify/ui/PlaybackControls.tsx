@@ -12,17 +12,21 @@ export function PlaybackControls(props: {
   language: PluginContext["language"];
   controls: Command[] | undefined;
   action: "play" | "pause";
-  disabled: boolean;
+  disabled?: boolean;
+  pending: Command | undefined;
   onCommand: (command: Command) => void;
 }) {
   const commands = (): Command[] => ["skip_prev", props.action, "skip_next"];
 
   return <div class="spotify-controls">
-    <For each={commands()} keyed={command => command}>
+    <For each={commands()} keyed={false}>
       {command => <Show when={props.controls?.includes(command())}>
         <button class="spotify-control" data-command={command()} aria-label={copy[props.language][command()]}
           title={copy[props.language][command()]} type="button" disabled={props.disabled}
-          onClick={() => props.onCommand(command())}><span aria-hidden="true" /></button>
+          aria-disabled={props.pending ? "true" : undefined} aria-busy={props.pending === command() ? "true" : undefined}
+          onClick={() => {
+            if (!props.pending) props.onCommand(command());
+          }}><span aria-hidden="true" /></button>
       </Show>}
     </For>
   </div>;
