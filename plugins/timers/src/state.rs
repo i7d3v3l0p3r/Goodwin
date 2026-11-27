@@ -84,9 +84,18 @@ pub(super) struct State {
     next_id: u64,
     timers: Vec<Timer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    phrases: Vec<Phrase>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_alarms: Vec<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     offline_session: Option<u64>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Phrase {
+    phrase: String,
+    seconds: u64,
+    name: Option<String>,
 }
 
 impl State {
@@ -369,7 +378,64 @@ impl Clock {
                 view
             })
             .collect::<Vec<_>>();
-        json!({"now": timestamp, "timers": timers})
+        json!({"now": timestamp, "timers": timers, "phrases": state.phrases, "canExtend": true})
+    }
+
+    pub fn phrases(&self) -> Value {
+        json!(self.state_mut().phrases)
+    }
+
+    pub fn set_phrase(
+        &self,
+        body: &Value,
+        remove: bool,
+    ) -> Result<Result<(), &'static str>, ClockError> {
+        let phrase = body["phrase"].as_str().unwrap_or("").trim();
+        let key = goodwin_plugin::timer::phrase_key(phrase);
+        if key.is_empty() || phrase.chars().count() > 64 || phrase.chars().any(char::is_control) {
+            return Ok(Err("invalid_phrase"));
+        }
+        let mut state = self.state_mut();
+        let mut next = state.clone();
+        next.phrases
+            .retain(|p| goodwin_plugin::timer::phrase_key(&p.phrase) != key);
+        if !remove {
+            let Some(timer) = state
+                .timers
+                .iter()
+                .find(|t| Some(t.id) == body["timer"].as_u64())
+            else {
+                return Ok(Err("timer_not_found"));
+            };
+            if next.phrases.len() >= 20 {
+                return Ok(Err("phrase_limit"));
+            }
+            next.phrases.push(Phrase {
+                phrase: phrase.into(),
+                seconds: timer.seconds,
+                name: timer.name.clone(),
+            });
+        }
+        self.commit(&mut state, next, sample())?;
+        Ok(Ok(()))
+    }
+
+    pub fn extend(&self, id: u64) -> Result<bool, ClockError> {
+        let time = sample();
+        let mut state = self.state_mut();
+        state.resolve(time);
+        let mut next = state.clone();
+        let Some(timer) = next
+            .timers
+            .iter_mut()
+            .find(|t| t.id == id && t.active(time.elapsed_ms))
+        else {
+            return Ok(false);
+        };
+        timer.expires_at = timer.expires_at.saturating_add(60_000);
+        timer.deadline = timer.deadline.map(|value| value.saturating_add(60_000));
+        self.commit(&mut state, next, time)?;
+        Ok(true)
     }
 
     pub fn matches(&self, filter: &Filter) -> Vec<Timer> {
@@ -563,6 +629,7 @@ mod tests {
             &State {
                 next_id: 2,
                 timers: vec![timer(1, expiry), timer(2, next)],
+                phrases: Vec::new(),
                 pending_alarms: Vec::new(),
                 offline_session: None,
             },
@@ -591,6 +658,41 @@ mod tests {
         .unwrap();
         assert_eq!(legacy.finish(2000), 0);
         assert!(legacy.pending_alarms.is_empty());
+    }
+
+    #[test]
+    fn extending_a_timer_preserves_its_saved_voice_duration_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timers.json");
+        let clock = Clock::load(path.clone()).unwrap();
+        let timer = clock
+            .create(&json!({"name":"Паста","seconds":540}))
+            .unwrap()
+            .unwrap();
+        assert!(clock.extend(timer.id).unwrap());
+        assert_eq!(
+            clock.list()["timers"][0]["expiresAt"],
+            timer.expires_at + 60_000
+        );
+        assert_eq!(
+            clock
+                .set_phrase(&json!({"timer":timer.id,"phrase":"Варим пасту"}), false)
+                .unwrap(),
+            Ok(())
+        );
+        drop(clock);
+        let clock = Clock::load(path).unwrap();
+        assert_eq!(
+            clock.phrases(),
+            json!([{"phrase":"Варим пасту","name":"Паста","seconds":540}])
+        );
+        clock.cancel(timer.id).unwrap();
+        assert!(!clock.extend(timer.id).unwrap());
+        clock
+            .set_phrase(&json!({"phrase":"варим, пасту!"}), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(clock.phrases(), json!([]));
     }
 
     #[test]

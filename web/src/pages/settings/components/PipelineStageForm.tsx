@@ -1,5 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Button } from "../../../components/ui-kit/Button";
+import { ChoicePicker } from "../../../components/ui-kit/ChoicePicker";
+import { Icon } from "../../../components/icons";
 import { Disclosure } from "../../../components/ui-kit/Disclosure";
 import { Field } from "../../../components/ui-kit/Field";
 import { Switch } from "../../../components/ui-kit/Switch";
@@ -80,6 +82,13 @@ export function PipelineStageForm(props: {
   const defaultLabel = () => catalog()?.default ? `${props.t.defaultModel} · ${catalog()!.default}` : props.t.defaultModel;
   const manualActive = () => manual() || Boolean(props.draft.model && !models().some(model => model.id === props.draft.model));
   const modelValue = () => manualActive() ? manualModel : props.draft.model ? `model:${props.draft.model}` : "";
+  const modelOptions = createMemo(() => [
+    { value: "", label: props.t.defaultModel, detail: catalog()?.default || undefined },
+    ...models().map(model => ({
+      value: `model:${model.id}`, label: model.name || model.id,
+      detail: model.name && model.name !== model.id ? model.id : undefined,
+    })),
+  ]);
   const voices = () => models().find(model => model.id === (props.draft.model || catalog()?.default))?.voices ?? [];
   const voiceList = () => `voices-${props.capability}`;
   const edit = (field: "model" | "voice", value: string) => props.change({ [field]: value });
@@ -92,38 +101,34 @@ export function PipelineStageForm(props: {
   const modelLabel = () => models().find(model => model.id === props.draft.model)?.name || props.draft.model || defaultLabel();
 
   return <Disclosure ref={node => { stage = node; }} class={styles.stage} name="assistant-stages"
+    leading={<span class={styles.node} data-stage={props.capability} aria-hidden="true">
+      <Icon name={({ transcription: "mic", chat: "chat", speech: "audioLines" } as const)[props.capability]} size={18} />
+    </span>}
     title={props.t[headings[props.capability]]} description={`${providerLabel()} · ${modelLabel()}`}
     onToggle={event => { if (event.currentTarget.open) setVisited(true); }}>
     <div class={styles.stageFields}>
       <Field class={styles.primaryField} label={props.t.modelProvider}>
-        {control => <select {...control} value={props.draft.provider} onChange={event => {
-          setManual(false);
-          props.change({ provider: event.currentTarget.value, model: "", voice: "", speed: undefined, parameters: {} });
-        }}>
-          <Show when={!current()}>
-            <option value={props.draft.provider} selected>{providerLabel()}</option>
-          </Show>
-          <For each={providers()}>{plugin =>
-            <option value={plugin.id} selected={plugin.id === props.draft.provider}>{plugin.name}</option>
-          }</For>
-        </select>}
+        {control => <ChoicePicker {...control} title={props.t.modelProvider} t={props.t} value={props.draft.provider}
+          options={[...(!current() ? [{ value: props.draft.provider, label: providerLabel() }] : []),
+            ...providers().map(plugin => ({ value: plugin.id, label: plugin.name }))]}
+          onSelect={provider => {
+            if (provider === props.draft.provider) return;
+            setManual(false);
+            props.change({ provider, model: "", voice: "", speed: undefined, parameters: {} });
+          }} />}
       </Field>
       <Show when={current() && !current()?.model_catalog && current()?.id !== "builtin"}>
         <p class={styles.note}>{props.t.providerUpdate}</p>
       </Show>
       <Show when={current()?.model_catalog}>
         <Field class={styles.primaryField} label={props.t.modelName}>
-          {control => <select {...control} value={modelValue()} onChange={event => {
-            const value = event.currentTarget.value;
-            setManual(value === manualModel);
-            if (value !== manualModel) edit("model", value ? value.slice(6) : "");
-          }}>
-            <option value="" selected={!modelValue()}>{defaultLabel()}</option>
-            <For each={models()}>{model => <option value={`model:${model.id}`} selected={modelValue() === `model:${model.id}`}>
-              {model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id}
-            </option>}</For>
-            <option value={manualModel} selected={manualActive()}>{props.t.manualModel}</option>
-          </select>}
+          {control => <ChoicePicker {...control} title={props.t.modelName} t={props.t} searchHint={props.t.searchModels}
+            options={modelOptions()} action={{ value: manualModel, label: props.t.manualModel, queryLabel: props.t.now.useId }} value={modelValue()}
+            onSelect={(value, query) => {
+              setManual(value === manualModel);
+              if (query) edit("model", query);
+              else if (value !== manualModel) edit("model", value ? value.slice(6) : "");
+            }} />}
         </Field>
         <Show when={loading()}><p class={styles.note} role="status">{props.t.modelCatalogLoading}</p></Show>
         <Show when={visited() && !loading() && !catalog()?.available}>

@@ -46,7 +46,10 @@ def main():
         source = (args.plugin / web["entry"]).with_suffix(".tsx")
         if source.is_file():
             builder = Path(__file__).resolve().parents[1] / "web" / "build-plugin.mjs"
-            compiled_entry = subprocess.check_output(["node", str(builder), str(source)])
+            command = ["node", str(builder), str(source)]
+            if web.get("now"):
+                command.append("--now")
+            compiled_entry = subprocess.check_output(command)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:

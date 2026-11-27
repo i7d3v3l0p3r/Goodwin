@@ -17,7 +17,8 @@ pub(crate) use languages::AssistantLanguages;
 
 pub(crate) fn first_voice_stage(source: Source) -> Stage {
     match source {
-        Source::WakeTest => Stage::AwaitingWake,
+        Source::WakeTest | Source::WakeProbe => Stage::AwaitingWake,
+        Source::Correction => Stage::Thinking,
         Source::FollowUp => Stage::AwaitingSpeech,
         _ => Stage::Recording,
     }
@@ -114,11 +115,37 @@ pub(crate) struct VoiceRequest {
 #[derive(Default)]
 struct Cancellation {
     reason: Option<Failure>,
+    actions: Vec<crate::panel_core::ToolStep>,
     #[cfg(not(target_os = "espidf"))]
     waiter: Option<Waker>,
 }
 
 impl VoiceRequest {
+    #[cfg(any(not(target_os = "espidf"), feature = "wasm-plugins"))]
+    pub(crate) fn record_tool(&self, name: &str, result: &serde_json::Value) {
+        let failed = result.get("error").is_some();
+        let fallback = if failed { "failed" } else { "done" };
+        let status = result[if failed { "error" } else { "status" }]
+            .as_str()
+            .filter(|s| {
+                !s.is_empty()
+                    && s.len() <= 64
+                    && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
+            .unwrap_or(fallback);
+        let mut state = self.state.lock().expect("voice report");
+        if state.actions.len() < 4 {
+            state.actions.push(crate::panel_core::ToolStep {
+                tool: name.chars().take(128).collect(),
+                status: status.into(),
+                failed,
+            });
+        }
+    }
+
+    pub(crate) fn take_actions(&self) -> Vec<crate::panel_core::ToolStep> {
+        std::mem::take(&mut self.state.lock().expect("voice report").actions)
+    }
     pub(crate) fn new(id: u64) -> Self {
         Self {
             id,
@@ -298,16 +325,31 @@ pub(crate) trait Turn {
     fn play(&mut self, speech: Self::Speech) -> impl Future<Output = Result<(), Failure>> + Send;
 }
 
+pub(crate) enum VoiceInput {
+    Audio(RecordingWav),
+    Text(String),
+}
+
+impl From<RecordingWav> for VoiceInput {
+    fn from(audio: RecordingWav) -> Self {
+        Self::Audio(audio)
+    }
+}
+
 pub(crate) async fn run<T: Turn>(
     request: &VoiceRequest,
     turn: &mut T,
-    wav: RecordingWav,
+    input: impl Into<VoiceInput>,
     wake_word: Option<&str>,
 ) -> Result<(), Failure> {
     request.check()?;
-    turn.stage(Stage::Transcribing);
-    let text = request.step(turn.transcribe(wav.as_bytes())).await?;
-    drop(wav);
+    let text = match input.into() {
+        VoiceInput::Audio(wav) => {
+            turn.stage(Stage::Transcribing);
+            request.step(turn.transcribe(wav.as_bytes())).await?
+        }
+        VoiceInput::Text(text) => text,
+    };
     let text = wake_word.map_or_else(|| text.trim(), |word| strip_wake_word(&text, word));
     if text.is_empty() {
         return Err(Failure::NoSpeech);

@@ -1,25 +1,54 @@
-.page { gap: 22px; }
+.page { --gw-page-content-width: 820px; gap: 20px; }
 .summary {
-  display: grid;
-  justify-items: start;
-  gap: 10px;
-  padding: clamp(15px, 4vw, 25px);
-  border: 1px solid var(--edge);
-  border-radius: var(--gw-radius);
-  background: var(--paper);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, 37%); align-items: center;
+  min-height: 210px; padding: clamp(20px, 4vw, 38px); gap: 14px;
+  border: 1px solid #e1d7c6; border-radius: 22px;
+  background: radial-gradient(ellipse at 86% 28%, #f9e5bb, transparent 56%), #f6eee0;
+  color: #3b3026;
 }
-.summary h2 { font-size: 1.15rem; }
-.summary p, .destinations small { color: var(--muted); }
-.destinations { display: grid; gap: 3px; }
+.instrument { position: relative; z-index: 1; min-width: 0; }
+.instrument h2 { color: #685336; font-size: .9rem; font-weight: 600; }
+.instrument p { margin: 5px 0 20px; font-size: clamp(1.8rem, 4.5vw, 3.3rem); font-weight: 720; line-height: 1.09; letter-spacing: -.045em; overflow-wrap: anywhere; }
+.instrument a { min-height: 44px; max-width: 100%; white-space: normal; }
+.illustration {
+  position: relative; isolation: isolate; display: grid; place-items: center; min-height: 140px;
+  background: repeating-radial-gradient(ellipse at 50% 70%, transparent 0 23px, #b9a78355 24px, transparent 25px 34px);
+  mask-image: radial-gradient(ellipse, #000 52%, transparent 78%);
+}
+.speaker {
+  display: block; position: relative; width: min(70%, 132px); aspect-ratio: 1.38;
+  border-radius: 49% 49% 40% 40% / 23% 23% 29% 29%;
+  background:
+    repeating-linear-gradient(63deg, transparent 0 2px, #efe9d91f 2px 3px),
+    repeating-linear-gradient(-63deg, transparent 0 2px, #18201f45 2px 3px),
+    linear-gradient(90deg, #464740, #737369 37%, #4d4f47 70%, #343934);
+  box-shadow: 0 12px 10px -6px #3e372d65;
+}
+.speaker::before {
+  content: ""; position: absolute; inset: 0 1% auto; height: 46%; border-radius: 50%;
+  background: radial-gradient(ellipse at 40% 28%, #787a70, #565a51 69%);
+  box-shadow: inset 0 2px 1px #aaab9f, 0 3px 0 #353d34;
+}
+.illustration[data-listening=true] .speaker::before { box-shadow: inset 0 2px 1px #aaab9f, 0 3px 0 #a9e7b6; }
+.destinations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(235px, 100%), 1fr)); gap: 12px; }
 .destinations a {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  min-height: 64px;
-  padding: 10px;
-  border-bottom: 1px solid var(--edge);
-  text-decoration: none;
+  display: grid; grid-template-columns: 1fr auto; align-content: start;
+  align-items: center; gap: 12px; min-width: 0; padding: 17px;
+  border: 1px solid var(--edge); border-radius: 16px; background: var(--paper); text-decoration: none;
 }
-.destinations a:hover, .destinations a:focus-visible { background: var(--active-soft); }
-.destinations small { display: block; }
+.destinations a > span:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+.destinations a > svg { grid-column: 2; grid-row: 1; color: var(--muted); }
+.symbol { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; color: #355e55; background: #dfefe5; }
+[data-section=diagnostics] .symbol { color: #305c79; background: #e1edf5; }
+[data-section=update] .symbol { color: #69537d; background: #ede6f2; }
+.destinations strong, .destinations small { display: block; overflow-wrap: anywhere; }
+.destinations small { margin-top: 3px; color: var(--muted); font-size: .86rem; }
+@media (hover: hover) { .destinations a:hover { border-color: #99b5a5; } }
+@media (max-width: 580px) {
+  .summary { grid-template-columns: minmax(0, 1fr) 31%; min-height: 168px; padding: 18px; gap: 4px; }
+  .illustration { min-height: 95px; }
+  .speaker { width: 84%; }
+  .destinations { grid-template-columns: 1fr; gap: 8px; }
+  .destinations a { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; padding: 12px 14px; }
+  .destinations a > span:nth-child(2), .destinations a > svg { grid-column: auto; grid-row: auto; }
+}

@@ -1,7 +1,24 @@
+#[cfg(target_arch = "wasm32")]
+use alloc::string::String;
 use serde::{Deserialize, Serialize};
 
 pub const POLL_METHOD: &str = "timer.poll";
 pub const MIN_TRUSTED_WALL_MS: u64 = 1_577_836_800_000;
+
+/// Compare a spoken shortcut as complete words, ignoring ASR punctuation and case.
+pub fn phrase_key(text: &str) -> String {
+    let mut key = String::new();
+    for word in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        if !key.is_empty() {
+            key.push(' ');
+        }
+        key.push_str(&word.to_lowercase());
+    }
+    key
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

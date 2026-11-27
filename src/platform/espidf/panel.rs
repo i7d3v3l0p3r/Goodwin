@@ -71,6 +71,7 @@ pub(super) struct Panel {
 pub(super) enum Command {
     Chat(String),
     VoiceTest(VoiceJob),
+    Correction(VoiceJob, String),
     FollowUp(VoiceJob, std::time::Instant),
     #[cfg(feature = "wake-tflite")]
     WakeTest(VoiceJob),
@@ -92,6 +93,8 @@ enum TestMode {
     Manual,
     #[serde(rename = "wake")]
     Wake,
+    #[serde(rename = "probe")]
+    Probe,
 }
 
 #[derive(Deserialize)]
@@ -683,7 +686,9 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 TestMode::Manual => Source::ManualTest,
                 #[cfg(feature = "wake-tflite")]
                 TestMode::Wake if state.wake_loaded() => Source::WakeTest,
-                TestMode::Wake => return problem(request, 409, "model"),
+                #[cfg(feature = "wake-tflite")]
+                TestMode::Probe if state.wake_loaded() => Source::WakeProbe,
+                TestMode::Wake | TestMode::Probe => return problem(request, 409, "model"),
             };
             if state.audio.microphone_muted {
                 return problem(request, 409, "microphone_muted");
@@ -700,7 +705,7 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
             let voice = job.request.clone();
             let command = match source {
                 #[cfg(feature = "wake-tflite")]
-                Source::WakeTest => Command::WakeTest(job),
+                Source::WakeTest | Source::WakeProbe => Command::WakeTest(job),
                 _ => Command::VoiceTest(job),
             };
             if crate::diagnostics::Queue::Device
@@ -711,7 +716,36 @@ fn handle(mut request: Request<&mut EspHttpConnection<'_>>, panel: &Arc<Panel>) 
                 return problem(request, 409, "busy");
             }
             drop(state);
-            send(request, 202, "text/plain", &[], &[])
+            send_json_status(request, 202, &json!({"request_id":voice.id}))
+        }
+        (Method::Post, "/api/voice/correct") => {
+            let Ok(input) = read_json::<crate::panel_core::Correction>(&mut request) else {
+                return problem(request, 400, "invalid_message");
+            };
+            if !input.valid() {
+                return problem(request, 400, "invalid_message");
+            }
+            let mut state = State::lock(&panel.state);
+            if state.busy()
+                || panel.firmware_busy()
+                || state.last_voice_id() != Some(input.request_id)
+            {
+                return problem(request, 409, "busy");
+            }
+            let Ok(job) = VoiceJob::admit(&mut state, panel, Source::Correction) else {
+                return problem(request, 409, "provider_unavailable");
+            };
+            let voice = job.request.clone();
+            state.transcript(input.text.clone());
+            if crate::diagnostics::Queue::Device
+                .send(&panel.command, Command::Correction(job, input.text))
+                .is_err()
+            {
+                state.finish_voice(&voice, Some(crate::panel_core::Failure::Busy));
+                return problem(request, 409, "busy");
+            }
+            drop(state);
+            send_json_status(request, 202, &json!({"request_id":voice.id}))
         }
         (Method::Post, "/api/voice/cancel") => {
             let Ok(cancel) = read_json::<crate::panel_core::CancelVoice>(&mut request) else {

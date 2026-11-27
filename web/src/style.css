@@ -35,6 +35,9 @@
   --green: #25805a;
   --danger: #9b352a;
   --ease: cubic-bezier(.23, 1, .32, 1);
+  --motion-fast: 120ms;
+  --motion-enter: 190ms;
+  --motion-arrival: gw-arrive var(--motion-enter) var(--ease);
   --gw-color-surface: var(--surface);
   --gw-color-paper: var(--paper);
   --gw-color-text: var(--text);
@@ -100,4 +103,48 @@ input[type="range"], input[type="checkbox"] { accent-color: var(--accent); }
 
 @media (max-width: 650px) {
   .gw-page { padding: 12px 15px 26px; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes gw-arrive {
+    from { opacity: .55; translate: 0 4px; }
+    to { opacity: 1; translate: 0; }
+  }
+
+  #panel-content > :nth-child(2):not(dialog) {
+    animation: var(--motion-arrival);
+  }
+  :where(button, a, summary, .gw-control, .gw-status, .gw-switch-track) {
+    transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+  }
+  .gw-disclosure > summary::after { transition: transform var(--motion-enter) var(--ease); }
+  @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
+    .gw-disclosure::details-content {
+      interpolate-size: allow-keywords;
+      block-size: 0;
+      opacity: 0;
+      overflow: clip;
+      overflow-clip-margin: 5px;
+      transition: block-size var(--motion-enter) var(--ease), opacity var(--motion-fast),
+        content-visibility var(--motion-enter) allow-discrete;
+    }
+    .gw-disclosure[open]::details-content { block-size: auto; opacity: 1; }
+  }
+
+  dialog {
+    opacity: 0;
+    translate: 0 var(--dialog-offset, 8px);
+    transition: opacity var(--motion-fast), translate var(--motion-enter) var(--ease),
+      overlay var(--motion-enter) allow-discrete, display var(--motion-enter) allow-discrete;
+  }
+  dialog[open] { opacity: 1; translate: 0; }
+  dialog::backdrop {
+    opacity: 0;
+    transition: opacity var(--motion-fast), overlay var(--motion-enter) allow-discrete, display var(--motion-enter) allow-discrete;
+  }
+  dialog[open]::backdrop { opacity: 1; }
+  @starting-style {
+    dialog[open] { opacity: 0; translate: 0 var(--dialog-offset, 8px); }
+    dialog[open]::backdrop { opacity: 0; }
+  }
 }

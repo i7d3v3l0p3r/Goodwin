@@ -79,8 +79,17 @@ pub struct Web {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     solid_runtime_version: Option<u32>,
     pub entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<NowSize>,
     #[serde(default)]
     pub styles: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NowSize {
+    Standard,
+    Wide,
 }
 
 pub fn name(value: &str) -> bool {
@@ -214,6 +223,10 @@ impl Manifest {
             ensure!(
                 web.entry.ends_with(".mjs") && web_file(root, &web.entry).is_some(),
                 "Missing web entry module"
+            );
+            ensure!(
+                web.now.is_none() || web.solid_runtime_version == Some(1),
+                "Now cards require the Solid runtime"
             );
             ensure!(
                 web.styles.len() <= 8

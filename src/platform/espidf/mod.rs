@@ -197,6 +197,13 @@ fn run_device() -> Result<()> {
                 Command::VoiceTest(job) => {
                     start_recording(&mut audio, Recording::ManualTest, &panel, &worker, job);
                 }
+                Command::Correction(job, text) => {
+                    let request = job.request.clone();
+                    if let Err(error) = worker.voice(job, crate::voice_core::VoiceInput::Text(text))
+                    {
+                        State::lock(&panel.state).finish_voice(&request, Some(error));
+                    }
+                }
                 Command::FollowUp(job, started) => {
                     follow_up = Some((job, started, FollowUpListener::default()));
                 }
@@ -311,6 +318,11 @@ fn run_device() -> Result<()> {
                             .map(|(_, job)| job)
                             .or_else(|| start_voice(&panel, Source::Wake));
                         if let Some(job) = job {
+                            if job.source == Source::WakeProbe {
+                                State::lock(&panel.state).finish_voice(&job.request, None);
+                                detector.reset();
+                                continue;
+                            }
                             State::lock(&panel.state).stage(Stage::Recording);
                             start_recording(&mut audio, recording, &panel, &worker, job);
                         }

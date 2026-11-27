@@ -12,7 +12,7 @@
 }
 
 .steps {
-  gap: 4px 12px;
+  flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; min-width: min(100%, 205px);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -20,11 +20,12 @@
   font-size: .875rem;
 }
 
-.steps li { padding: 5px 0; }
+.steps li { align-self: start; padding: 7px 0; border-top: 4px solid var(--edge); overflow-wrap: anywhere; }
+.steps li[data-complete=true] { border-color: #81b69a; }
 .steps li[aria-current="step"] {
   color: var(--accent);
   font-weight: 700;
-  box-shadow: 0 2px 0 var(--accent);
+  border-color: var(--accent);
 }
 
 .card {
@@ -33,11 +34,15 @@
   min-width: 0;
   padding: clamp(16px, 4vw, 26px);
   border: 1px solid var(--edge);
-  border-radius: var(--gw-radius);
+  border-radius: 18px;
   background: var(--paper);
 }
 
-.card h2 { font-size: 1.25rem; }
+.card h2 { font-size: clamp(1.25rem, 3vw, 1.65rem); letter-spacing: -.025em; }
 .card p { color: var(--muted); overflow-wrap: anywhere; }
 .card a:not([data-variant]) { color: var(--accent); overflow-wrap: anywhere; text-underline-offset: 3px; }
 .card button, .card a[data-variant] { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 460px) {
+  .progress { display: grid; gap: 2px; }
+  .progress > button { justify-self: end; }
+}

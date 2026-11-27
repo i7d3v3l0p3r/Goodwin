@@ -30,7 +30,10 @@ impl App {
         else {
             return;
         };
-        let error = self.voice_answer(&request, samples, woke, gain).await.err();
+        let error = self
+            .voice_answer(&request, Input::Recording(samples, gain), woke)
+            .await
+            .err();
         let announcement: Option<&[u8]> = match error {
             Some(Failure::ProviderUnavailable | Failure::ProviderFailed) => {
                 Some(include_bytes!("../../assets/error-ru.wav"))
@@ -63,12 +66,28 @@ impl App {
         self.finish(id, error);
     }
 
+    pub(crate) async fn correct_voice(&self, id: u64, text: String) {
+        let request = self
+            .runtime()
+            .active
+            .as_ref()
+            .filter(|t| t.id == id)
+            .and_then(|t| t.voice_request.clone());
+        if let Some(request) = request {
+            self.update_voice(id, |details, _| details.transcript = Some(text.clone()));
+            let error = self
+                .voice_answer(&request, Input::Correction(text), false)
+                .await
+                .err();
+            self.finish(id, error);
+        }
+    }
+
     async fn voice_answer(
         &self,
         request: &VoiceRequest,
-        mut samples: Vec<i16>,
+        input: Input,
         woke: bool,
-        gain: RecordingGain,
     ) -> Result<(), Failure> {
         let id = request.id;
         let (providers, system_prompt, languages, speech_streaming, wake_word) = self
@@ -91,11 +110,18 @@ impl App {
             self.update_voice(id, |details, _| details.error_stage = Some(stage));
             error
         })?;
-        gain.prepare(&mut samples);
-        let wav = voice_core::recording_wav(samples).map_err(|error| {
-            log::warn!("Could not encode recording id={id}: {error}");
-            Failure::Microphone
-        })?;
+        let input = match input {
+            Input::Correction(text) => voice_core::VoiceInput::Text(text),
+            Input::Recording(mut samples, gain) => {
+                gain.prepare(&mut samples);
+                voice_core::recording_wav(samples)
+                    .map_err(|error| {
+                        log::warn!("Could not encode recording id={id}: {error}");
+                        Failure::Microphone
+                    })?
+                    .into()
+            }
+        };
         voice_core::run(
             request,
             &mut StationTurn {
@@ -105,15 +131,22 @@ impl App {
                 system_prompt: &system_prompt,
                 languages,
                 speech_streaming,
+                request,
             },
-            wav,
+            input,
             woke.then_some(wake_word.as_deref().unwrap_or("Гудвин")),
         )
         .await
     }
 }
 
+enum Input {
+    Recording(Vec<i16>, RecordingGain),
+    Correction(String),
+}
+
 struct StationTurn<'a> {
+    request: &'a VoiceRequest,
     app: &'a App,
     id: u64,
     providers: VoiceProviders<Provider>,
@@ -168,6 +201,7 @@ impl Turn for StationTurn<'_> {
             &self.languages.voice_instructions(self.system_prompt),
             history,
             self.app.plugins.voice_tools(voice_turn),
+            self.request,
         )
         .await
         .map_err(Provider::failure)
@@ -231,6 +265,7 @@ async fn reply_with_tools(
     instructions: &str,
     history: Vec<Message>,
     tools: VoiceTools,
+    request: &VoiceRequest,
 ) -> Result<String> {
     let definitions = tools.definitions();
     if definitions.len() == 0 {
@@ -245,7 +280,11 @@ async fn reply_with_tools(
         definitions,
         context,
         provider,
-        |call| async move { tools.call(&call.name, &call.arguments).await },
+        |call| async move {
+            let value = tools.call(&call.name, &call.arguments).await;
+            request.record_tool(&call.name, &value);
+            value
+        },
     )
     .await
 }

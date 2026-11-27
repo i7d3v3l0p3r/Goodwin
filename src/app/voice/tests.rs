@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::reply_with_tools;
+use super::VoiceRequest;
 use crate::{
     plugins::{Process, VoiceTools},
     providers::Provider,
@@ -11,6 +11,72 @@ use crate::{
 };
 
 const INSTRUCTIONS: &str = "Answer in English.";
+
+#[tokio::test]
+async fn a_saved_phrase_runs_the_original_timer_once_and_reports_its_result() {
+    let provider = Provider::mock(Process::mock_rpc(|_, body| {
+        assert_eq!(body["tool_choice"], "none");
+        assert!(
+            body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| !m["content"].as_str().unwrap_or("").contains("\"phrases\""))
+        );
+        Ok(json!({"message":{"role":"assistant","content":"Запущен таймер"}}))
+    }));
+    let schema = serde_json::from_value(
+        json!({"type":"object","properties":{},"required":[],"additionalProperties":false}),
+    )
+    .unwrap();
+    let request = VoiceRequest::new(4);
+    let answer = crate::voice_core::tools::complete(
+        INSTRUCTIONS,
+        "Варим, пасту!",
+        vec![],
+        std::iter::once(("timers__create", "Start a timer", &schema)),
+        std::collections::BTreeMap::from([(
+            "timers".into(),
+            json!({"phrases":[{"phrase":"варим пасту","name":"Паста","seconds":540}]}),
+        )]),
+        &provider,
+        |call| {
+            assert_eq!(call.name, "timers__create");
+            assert_eq!(
+                serde_json::from_str::<Value>(&call.arguments).unwrap(),
+                json!({"name":"Паста","seconds":540})
+            );
+            let result = json!({"created":{"seconds":540}});
+            request.record_tool(&call.name, &result);
+            std::future::ready(result)
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer, "Запущен таймер");
+    let actions = request.take_actions();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].tool, "timers__create");
+    assert!(!actions[0].failed);
+}
+
+async fn reply_with_tools(
+    provider: &Provider,
+    text: &str,
+    instructions: &str,
+    history: Vec<crate::panel_core::Message>,
+    tools: VoiceTools,
+) -> goodwin_error::Result<String> {
+    super::reply_with_tools(
+        provider,
+        text,
+        instructions,
+        history,
+        tools,
+        &VoiceRequest::new(1),
+    )
+    .await
+}
 
 #[tokio::test]
 async fn voice_model_can_reply_directly_or_use_a_registered_plugin_tool() {

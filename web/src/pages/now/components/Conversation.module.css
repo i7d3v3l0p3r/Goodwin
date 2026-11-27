@@ -1,7 +1,8 @@
 .chat {
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  background: linear-gradient(160deg, #faf9fc, var(--paper) 60%);
 }
 
 .threadArea {
@@ -12,6 +13,7 @@
 }
 
 .threadScroll {
+  max-height: clamp(13rem, 36dvh, 23rem);
   overflow: auto;
   scrollbar-color: #bdd4c5 transparent;
 }
@@ -31,14 +33,14 @@
   max-width: 720px;
   min-height: 100%;
   margin: 0 auto;
-  padding: 39px 0 25px;
+  padding: 12px 0 2px;
 }
 
 .message {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 29px;
+  margin-bottom: 12px;
 }
 
 .message[data-from="user"] { justify-content: flex-end; }
@@ -76,7 +78,8 @@
 .message[data-from="user"] .messageContent > p {
   padding: 10px 15px;
   border-radius: 14px 14px 4px 14px;
-  background: var(--active);
+  background: #e5edf9;
+  color: #243751;
 }
 
 .messageFeedback { display: grid; justify-items: end; gap: 6px; margin-top: 7px; }
@@ -84,46 +87,42 @@
 .message[data-from="assistant"] .messageContent { padding-top: 1px; }
 
 .emptyChat {
-  min-height: min(60vh, 420px);
+  min-height: 5rem;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 12px;
   text-align: center;
 }
 
-.emptyMark {
-  --mark-width: 43px;
-  --mark-height: 43px;
-  margin-bottom: 3px;
-}
-
-.emptyChat h2 {
-  font-size: 1.65rem;
-  font-weight: 710;
-  letter-spacing: -.035em;
-}
-
 .emptyChat p { color: var(--muted); }
-.setupAction { margin-top: 5px; }
+.examples { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.examples button {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 44px; max-width: 100%; padding: 8px 14px; border: 1px solid #d8dbe2;
+  border-radius: 22px; background: var(--paper); color: #35463e; font-size: .875rem; text-align: start;
+}
+.examples svg { color: var(--accent); }
+@media (hover: hover) { .examples button:hover { border-color: var(--accent); background: var(--active-soft); } }
+
 
 .composeArea {
-  padding: 13px 28px 24px;
-  background: var(--surface);
+  padding: 8px 16px 14px;
+  background: transparent;
 }
 
 .compose {
   display: flex;
-  align-items: flex-end;
-  gap: 9px;
+  align-items: center;
+  gap: 6px;
   max-width: 720px;
   margin: auto;
-  padding: 8px 8px 8px 16px;
+  padding: 2px 4px 2px 14px;
   border: 1px solid #c7d9ce;
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--paper);
-  box-shadow: 0 4px 16px #163f2b0b;
+  box-shadow: 0 5px 22px #273e3010;
 }
 
 .compose:focus-within { border-color: #508970; }
@@ -131,24 +130,34 @@
 .compose textarea {
   flex: 1;
   min-width: 0;
-  min-height: 35px;
+  display: block;
+  min-height: 1.5em;
   max-height: 8rem;
-  padding: 7px 1px 4px;
+  field-sizing: content;
+  line-height: 1.5;
+  padding: 0;
   border: 0;
   outline: 0;
-  resize: vertical;
+  resize: none;
   background: transparent;
 }
 
 .send {
-  --button-padding: 0;
-  --button-radius: 10px;
-  --button-disabled-background: #d9ebe0;
-  --button-disabled-color: #4a6d5b;
+  display: grid;
+  place-items: center;
+  align-self: flex-end;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  touch-action: manipulation;
   width: 44px;
   height: 44px;
   flex: 0 0 44px;
 }
+.send span { display: grid; place-items: center; width: 30px; height: 30px; color: white; background: var(--accent); border-radius: 50%; }
+.send:disabled span { color: #4a6d5b; background: #d9ebe0; }
+@media (hover: hover) { .send:hover:not(:disabled) span { background: var(--accent-hover); } }
 
 .composeFeedback:not(:empty) {
   max-width: 720px;
@@ -161,12 +170,12 @@
 @media (max-width: 650px) {
   .thread {
     width: calc(100% - 27px);
-    padding-top: 24px;
+    padding-top: 10px;
   }
 
   .message {
     gap: 7px;
-    margin-bottom: 22px;
+    margin-bottom: 10px;
   }
 
   .messageMark {
@@ -178,6 +187,7 @@
 }
 
 @media (max-height: 450px) {
+  .emptyChat { min-height: 0; gap: 5px; }
   .thread { padding-top: 12px; }
   .message { margin-bottom: 13px; }
   .composeArea { padding-top: 5px; padding-bottom: max(7px, env(safe-area-inset-bottom)); }

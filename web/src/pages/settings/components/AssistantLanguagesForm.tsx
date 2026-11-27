@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For } from "solid-js";
 import codes from "../../../../../shared/language-codes.txt?raw";
 import { Disclosure } from "../../../components/ui-kit/Disclosure";
+import { ChoicePicker } from "../../../components/ui-kit/ChoicePicker";
 import { Field } from "../../../components/ui-kit/Field";
 import { SaveActions } from "../../../components/ui-kit/SaveActions";
 import type { AssistantLanguages, Settings } from "../../../helpers/api";
@@ -15,8 +16,8 @@ export function AssistantLanguagesForm(props: {
   const options = createMemo(() => {
     const names = new Intl.DisplayNames([props.language], { type: "language" });
     const sort = new Intl.Collator(props.language);
-    return codes.trim().split(/\s+/).map(code => ({ code, name: names.of(code) ?? code }))
-      .sort((a, b) => sort.compare(a.name, b.name));
+    return codes.trim().split(/\s+/).map(code => ({ value: code, label: names.of(code) ?? code, detail: code }))
+      .sort((a, b) => sort.compare(a.label, b.label));
   });
   const [draft, setDraft] = createSignal<Partial<AssistantLanguages>>({});
   const [saved, setSaved] = createSignal(false);
@@ -38,16 +39,12 @@ export function AssistantLanguagesForm(props: {
       <For each={["transcription", "reply"] as const}>{field =>
         <Field label={field === "reply" ? props.t.replyLanguage : props.t.transcriptionLanguage}
           hint={field === "reply" ? props.t.replyLanguageHint : undefined}>
-          {control => <select {...control} value={value(field)} disabled={props.pending}
-            onChange={event => {
-              const code = event.currentTarget.value;
+          {control => <ChoicePicker {...control} title={field === "reply" ? props.t.replyLanguage : props.t.transcriptionLanguage}
+            t={props.t} value={value(field)} options={options()} disabled={props.pending}
+            onSelect={code => {
               setDraft(previous => ({ ...previous, [field]: code }));
               setSaved(false);
-            }}>
-            <For each={options()}>{option =>
-              <option value={option.code} selected={value(field) === option.code}>{option.name}</option>
-            }</For>
-          </select>}
+            }} />}
         </Field>
       }</For>
       <SaveActions labels={props.t} dirty={dirty()} saving={props.pending && dirty()} saved={saved() && !dirty()}

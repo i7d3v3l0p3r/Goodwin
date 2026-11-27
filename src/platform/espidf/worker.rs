@@ -10,7 +10,7 @@ use goodwin_error::{Context, Result, ensure};
 use crate::{
     builtin_assistant::{ProviderSettings, State},
     panel_core::{Failure, Message, PlaybackMode, Stage},
-    voice_core::{self, RecordingGain, RecordingWav, Turn, VoiceRequest},
+    voice_core::{self, RecordingGain, Turn, VoiceInput, VoiceRequest},
 };
 
 use super::{
@@ -34,6 +34,7 @@ pub(super) struct RequestContext {
 }
 
 pub(super) struct VoiceJob {
+    pub(super) source: crate::panel_core::Source,
     pub(super) request: VoiceRequest,
     context: RequestContext,
     #[cfg(feature = "wasm-plugins")]
@@ -50,13 +51,15 @@ impl VoiceJob {
         panel: &Panel,
         source: crate::panel_core::Source,
     ) -> Result<Self, Failure> {
-        if !panel.voice_ready(state) {
+        let probe = source == crate::panel_core::Source::WakeProbe;
+        if !probe && !panel.voice_ready(state) {
             return Err(Failure::ProviderUnavailable);
         }
         #[cfg(feature = "wasm-plugins")]
         let bindings = state
             .assistant
             .as_ref()
+            .filter(|_| !probe)
             .zip(panel.plugins.get())
             .map(|(settings, plugins)| {
                 plugins
@@ -65,6 +68,7 @@ impl VoiceJob {
             })
             .transpose()?;
         Ok(Self {
+            source,
             request: state.start_voice(source),
             context: RequestContext::new(state),
             #[cfg(feature = "wasm-plugins")]
@@ -123,7 +127,7 @@ impl RequestContext {
 
 enum Job {
     Chat(RequestContext, String, Vec<Message>),
-    Voice(VoiceJob, RecordingWav),
+    Voice(VoiceJob, VoiceInput),
 }
 
 enum PlaybackRequest {
@@ -228,10 +232,10 @@ impl Worker {
         }
     }
 
-    pub(super) fn voice(&self, job: VoiceJob, wav: RecordingWav) -> Result<(), Failure> {
+    pub(super) fn voice(&self, job: VoiceJob, input: impl Into<VoiceInput>) -> Result<(), Failure> {
         job.request.check()?;
         crate::diagnostics::Queue::Provider
-            .send(&self.jobs, Job::Voice(job, wav))
+            .send(&self.jobs, Job::Voice(job, input.into()))
             .map_err(|_| Failure::ProviderUnavailable)
     }
 
@@ -415,7 +419,11 @@ impl Turn for EspTurn<'_> {
                 tools.definitions(),
                 tools.context(),
                 &self.provider,
-                |call| std::future::ready(tools.call(&call.name, &call.arguments)),
+                |call| {
+                    let result = tools.call(&call.name, &call.arguments);
+                    self.request.record_tool(&call.name, &result);
+                    std::future::ready(result)
+                },
             )
             .await
             .map_err(provider_failure);

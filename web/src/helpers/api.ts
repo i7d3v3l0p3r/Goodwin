@@ -95,7 +95,7 @@ export interface WakeModelCatalog {
 export interface Report {
   request_id?: number;
   stage: Stage;
-  source: "chat" | "wake" | "follow_up" | "manual_test" | "wake_test" | "push_to_talk";
+  source: "chat" | "wake" | "follow_up" | "manual_test" | "wake_test" | "push_to_talk" | "wake_probe" | "correction";
   timings: { stage: Stage; ms: number }[];
   error: string | null;
   message_id?: number;
@@ -103,6 +103,7 @@ export interface Report {
 }
 
 export interface VoiceReport extends Report {
+  actions?: { tool: string; status: string; failed: boolean }[];
   started_at_ms: number;
   transcription: VoiceModel;
   chat: VoiceModel;
@@ -125,7 +126,15 @@ export interface Message {
   error?: string;
 }
 
+export interface SystemMessage extends Report {
+  id: number;
+  actions?: VoiceReport["actions"];
+  transcript?: string;
+}
+
 export interface Snapshot {
+  system_events?: SystemMessage[];
+  last_probe?: Report | null;
   provider_ready?: boolean;
   voice_provider_ready?: boolean;
   settings: Settings;
@@ -164,7 +173,7 @@ export interface Plugin {
   error: string | null;
   revision: string | null;
   settings_revision?: number;
-  web: { entry: string; styles: string[] } | null;
+  web: { entry: string; styles: string[]; now?: "standard" | "wide" } | null;
   pages: PluginPage[];
   providers: Capability[];
   model_catalog: boolean;

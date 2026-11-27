@@ -3,7 +3,8 @@ import { SymbolMark } from "../../../components/Brand";
 import { Button } from "../../../components/ui-kit/Button";
 import { InlineError, StatusIndicator } from "../../../components/ui-kit/Feedback";
 import { Icon } from "../../../components/icons";
-import type { Message, Snapshot } from "../../../helpers/api";
+import type { Message, Snapshot, SystemMessage } from "../../../helpers/api";
+import { SystemEvent } from "../SystemEvent";
 import { errorLabel, type Words } from "../../../helpers/words";
 import { EmptyConversation } from "./EmptyConversation";
 import styles from "./Conversation.module.css";
@@ -27,21 +28,30 @@ function ThreadMessage(props: { entry: Message; t: Words; progress?: string; str
 }
 
 export function Conversation(props: {
-  t: Words; snapshot?: Snapshot; draftReply?: Message; reachable: boolean; disabled: boolean; error: string;
+  t: Words; showSystem: boolean; snapshot?: Snapshot; draftReply?: Message; reachable: boolean; disabled: boolean; error: string;
   draft: string; editDraft: (text: string) => void; wakeReady: boolean; setupRequired: boolean; setupHref: string;
   send: (text: string) => Promise<boolean>;
 }) {
   const [sending, setSending] = createSignal(false);
   const [unread, setUnread] = createSignal(false);
   let scroll!: HTMLDivElement;
+  let composer!: HTMLTextAreaElement;
   let following = true;
   const messages = createMemo(() => {
-    const history = props.snapshot?.messages ?? [];
+    const history: (Message | SystemMessage)[] = [...props.snapshot?.messages ?? [], ...props.snapshot?.system_events ?? []];
     const reply = props.draftReply;
-    return reply && history.at(-1)?.id !== reply.id ? [...history, reply] : history;
+    if (reply && !history.some(entry => entry.id === reply.id)) history.push(reply);
+    return history.sort((a, b) => a.id - b.id);
   });
-  const lastId = createMemo(() => messages().at(-1)?.id);
-  const lastError = createMemo(() => messages().at(-1)?.error);
+  const lastVisible = createMemo(() => {
+    const rows = messages();
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i];
+      if (props.showSystem || "role" in row || row.transcript) return row;
+    }
+  });
+  const lastId = createMemo(() => lastVisible()?.id);
+  const lastError = createMemo(() => lastVisible()?.error);
   const request = () => props.snapshot?.active?.source === "chat" ? props.snapshot.active : undefined;
   const progress = createMemo(() => {
     const stage = request()?.stage;
@@ -60,12 +70,12 @@ export function Conversation(props: {
     if (following) setUnread(false);
   }
 
-  createEffect(() => [lastId(), lastError(), props.draftReply?.text.length, progress(), sending()] as const, ([id, error, length], previous) => {
+  createEffect(() => [lastId(), lastError(), props.draftReply?.text.length, progress(), sending(), props.showSystem] as const, ([id, error, length], previous) => {
     if (id === undefined) {
       following = true;
       setUnread(false);
     }
-    const updated = id !== undefined && (id !== previous?.[0] || Boolean(error && error !== previous?.[1])
+    const updated = id !== undefined && props.showSystem === previous?.[5] && (id !== previous?.[0] || Boolean(error && error !== previous?.[1])
       || (length !== undefined && length !== previous?.[2]));
     if (!following) {
       if (updated) setUnread(true);
@@ -94,13 +104,22 @@ export function Conversation(props: {
     <div class={styles.threadArea}>
       <div class={styles.threadScroll} ref={scroll} tabindex={0} onScroll={trackScroll}>
         <div class={styles.thread} role="log" aria-label={props.t.chatHistory} aria-relevant="additions">
-          <Show when={messages().length} fallback={<EmptyConversation t={props.t} snapshot={props.snapshot}
-            wakeReady={props.wakeReady} setupRequired={props.setupRequired && Boolean(props.snapshot) && props.reachable} />}>
-            <For each={messages()} keyed={entry => entry.id}>{entry =>
-              <ThreadMessage entry={entry()} t={props.t} streaming={props.draftReply?.id === entry().id}
-                progress={request()?.message_id === entry().id ? progress() : undefined} />
-            }</For>
-          </Show>
+          <Show when={!lastVisible()}><EmptyConversation t={props.t} snapshot={props.snapshot}
+            showExamples={Boolean(props.snapshot) && !props.disabled && !props.setupRequired && !props.draft}
+            choose={text => { props.editDraft(text); composer.focus(); }}
+            wakeReady={props.wakeReady} setupRequired={props.setupRequired && Boolean(props.snapshot) && props.reachable} /></Show>
+            <For each={messages()} keyed={entry => entry.id}>{entry => {
+              const message = () => { const item = entry(); return "role" in item ? item : undefined; };
+              const event = () => entry() as SystemMessage;
+              return <Show when={message()} fallback={<>
+                <Show when={event().transcript}>{text => <ThreadMessage t={props.t} streaming={false}
+                  entry={{ id: event().id, role: "user", text: text() }} />}</Show>
+                <div hidden={!props.showSystem}><SystemEvent event={event()} /></div>
+              </>}>{item =>
+                <ThreadMessage entry={item()} t={props.t} streaming={props.draftReply?.id === item().id}
+                  progress={request()?.message_id === item().id ? progress() : undefined} />
+              }</Show>;
+            }}</For>
         </div>
       </div>
       <Show when={unread()}>
@@ -125,16 +144,16 @@ export function Conversation(props: {
         </div>
       </Show>
       <form class={styles.compose} onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <textarea rows={1} maxlength={2000} aria-label={props.t.draft} placeholder={props.t.draft} value={props.draft}
+        <textarea ref={composer} rows={1} maxlength={2000} aria-label={props.t.draft} placeholder={props.t.draft} value={props.draft}
           aria-describedby={props.setupRequired && props.snapshot && props.reachable ? "chat-setup-hint" : undefined}
           onInput={(event) => props.editDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
           }} />
-        <Button variant="primary" type="submit" class={styles.send} aria-label={props.t.send}
+        <button type="submit" class={styles.send} aria-label={props.t.send} title={props.t.send}
           disabled={props.disabled || props.setupRequired || sending() || !props.draft.trim()}>
-          <Icon name="send" size={21} />
-        </Button>
+          <span><Icon name="send" size={17} /></span>
+        </button>
       </form>
     </div>
   </section>;

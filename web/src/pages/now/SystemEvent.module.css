@@ -1,0 +1,14 @@
+.event { margin: 4px 0 14px; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+.log { border-block: 1px solid var(--edge); }
+.log summary { display: flex; gap: 7px; align-items: center; min-height: 40px; padding: 4px 2px; cursor: pointer; list-style: none; }
+.log summary::-webkit-details-marker { display: none; }
+.log summary span { flex: 1; }
+.log[open] summary svg:last-child { transform: rotate(180deg); }
+.event[data-failed=true] summary { color: var(--danger); }
+.log ol { display: grid; gap: 6px; margin: 0 0 12px; padding-inline-start: 20px; }
+.log li small { margin-inline-start: 8px; font-size: inherit; font-variant-numeric: tabular-nums; }
+.event a, .edit { display: inline-flex; align-items: center; min-height: 36px; color: var(--accent); font: inherit; }
+.edit { padding: 4px 8px; background: transparent; border: 0; text-decoration: underline; text-underline-offset: 3px; }
+.event form, .event label { display: grid; gap: 6px; }
+.event form { padding-block: 10px; }
+.event textarea { width: 100%; padding: 6px; border: 1px solid var(--edge); border-radius: 8px; }

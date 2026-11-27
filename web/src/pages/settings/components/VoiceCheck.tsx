@@ -178,13 +178,14 @@ export function EmbeddedVoiceDiagnostics(props: {
   </section>;
 }
 
-function RequestDetails(props: Omit<ReportProps, "report"> & { report: VoiceReport; stale?: boolean; showConfiguration?: boolean }) {
+export function RequestDetails(props: Omit<ReportProps, "report"> & { report: VoiceReport; stale?: boolean; showConfiguration?: boolean }) {
   const details = () => props.report;
   const dateFormat = createMemo(() => new Intl.DateTimeFormat(props.language, { dateStyle: "medium", timeStyle: "medium" }));
   const numberFormat = createMemo(() => new Intl.NumberFormat(props.language));
   const modes = () => ({
     wake: props.t.wakeRequest, manual_test: props.t.manualTest, wake_test: props.t.wakeTest, chat: props.t.chat,
     push_to_talk: props.t.embedded.pushToTalk, follow_up: props.t.followUp,
+    wake_probe: props.t.now.probe, correction: props.t.now.correction,
   });
   const failure = (code: string) => {
     const message = errorLabel(props.t, code);

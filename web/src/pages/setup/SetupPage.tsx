@@ -53,7 +53,8 @@ export function SetupPage() {
       <div class={styles.progress}>
         <ol class={styles.steps}>
           <For each={steps}>{name =>
-            <li aria-current={step() === name ? "step" : undefined}>{copy().steps[name]}</li>
+            <li data-complete={steps.indexOf(name) < steps.indexOf(step()) ? "true" : undefined}
+              aria-current={step() === name ? "step" : undefined}>{copy().steps[name]}</li>
           }</For>
         </ol>
         <Button type="button" variant="quiet" onClick={skip}>{copy().skip}</Button>
@@ -132,7 +133,7 @@ export function SetupPage() {
                   onClick={() => { setSelected("text"); void panel.testChat(copy().textMessage); }}>{copy().sendTest}</Button>
               }>
                 <Button type="button" variant="primary" onClick={() => goTo("voice")}>{copy().voiceNext}</Button>
-                <a href="/">{copy().inspectChat}</a>
+                <a href="/#conversation">{copy().inspectChat}</a>
               </Show>
               <Show when={textError()}><a href={assistantStagePath("chat")}>{copy().checkService}</a></Show>
             </div>

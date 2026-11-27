@@ -2,8 +2,10 @@ import { createContext, createEffect, createSignal, onSettled, useContext } from
 import { ApiError, api, apiOperation, type Access, type DeviceCapabilities, type Message, type Settings, type Snapshot } from "./api";
 import { initialLanguage, words, type Language } from "./words";
 import { capabilities, createProviderReadiness, wakeReady } from "./readiness";
+import { readPinnedPlugins } from "./plugins";
 
 export function createPanel() {
+  const [pinnedPlugins, setPinnedPlugins] = createSignal(readPinnedPlugins());
   const [language, setLanguage] = createSignal<Language>(initialLanguage());
   const [access, setAccess] = createSignal<Access>();
   const [device, setDevice] = createSignal<DeviceCapabilities>();
@@ -234,6 +236,12 @@ export function createPanel() {
 
   return {
     access, snapshot, chatDraft, draftMessage, setDraftMessage, reachable, pending, error, language, t, status, changeLanguage, clearError,
+    pinnedPlugins, togglePluginPin(id: string) {
+      const pins = pinnedPlugins();
+      const next = pins.includes(id) ? pins.filter(pin => pin !== id) : [...pins, id];
+      setPinnedPlugins(next);
+      try { localStorage.setItem("goodwin-pinned-plugins", JSON.stringify(next)); } catch { /* Keep this session's choice. */ }
+    },
     stageIssue, updateProviderSettings: providerReadiness.updateProviderSettings, builtinProvider,
     pluginPackages: () => device()?.plugin_packages ?? !builtinProvider(),
     hasWakeRuntime: () => Boolean(device()?.wake_runtimes.length),

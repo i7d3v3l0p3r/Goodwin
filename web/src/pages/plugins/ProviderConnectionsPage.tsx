@@ -2,6 +2,7 @@ import { useLocation } from "@solidjs/router";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { PageHeader } from "../../components/PageHeader";
 import { Button } from "../../components/ui-kit/Button";
+import { ChoicePicker } from "../../components/ui-kit/ChoicePicker";
 import { InlineError } from "../../components/ui-kit/Feedback";
 import { Field } from "../../components/ui-kit/Field";
 import { SaveActions } from "../../components/ui-kit/SaveActions";
@@ -123,23 +124,17 @@ export function ProviderConnectionsPage(props: { plugin: Plugin }) {
     <section class={["gw-page", styles.body]} aria-label={words().connections}>
       <div class="gw-row">
         <a class={styles.link} href="/plugins">{words().back}</a>
-        <a class={styles.link} href={setupPath}>{panel.t().firstRun.checkWork}</a>
+        <a class={styles.link} href={setupPath}>{panel.t().now.testVoice}</a>
       </div>
       <Show when={connections()} fallback={<Show when={error()} fallback={<p role="status">{words().settingsLoading}</p>}>
         <Button type="button" onClick={() => void load()}>{words().retry}</Button>
       </Show>}>
         {items => <form onSubmit={event => { event.preventDefault(); void save(); }}>
           <Field label={words().connections}>
-            {control => <select {...control} disabled={busy()} value={selected() ?? ""} onChange={event => {
-              const id = event.currentTarget.value;
-              choose(items().find(connection => connection.id === id));
-              event.currentTarget.value = selected() ?? "";
-            }}>
-              <For each={items()} keyed={connection => connection.id}>{connection =>
-                <option value={connection().id} selected={selected() === connection().id}>{connection().name}</option>
-              }</For>
-              <option value="" selected={!selected()}>{words().addConnection}</option>
-            </select>}
+            {control => <ChoicePicker {...control} title={words().connections} t={panel.t()} disabled={busy()} value={selected() ?? ""}
+              options={[...items().map(connection => ({ value: connection.id, label: connection.name })),
+                { value: "", label: words().addConnection }]}
+              onSelect={id => { if (id !== (selected() ?? "")) choose(items().find(connection => connection.id === id)); }} />}
           </Field>
           <fieldset class={styles.fields} disabled={busy()}>
             <Field label={words().connectionName}>

@@ -31,6 +31,7 @@ export function LoginPage() {
   }
 
   return <main class={styles.entry}>
+    <div class={styles.card}>
     <Brand class={styles.brand} />
     <label class={styles.language}>
       {panel.t().language}
@@ -45,5 +46,6 @@ export function LoginPage() {
         <PanelPasswordForm mode="setup" onSuccess={() => enter(true)} onSkip={skipPassword} />
       </Show>
     </Show>
+    </div>
   </main>;
 }

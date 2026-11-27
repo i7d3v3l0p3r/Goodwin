@@ -4,10 +4,24 @@
 
 ### English
 
+- Search model catalogs by name or ID and long language and provider lists by typing. Page changes, menus and settings sections now have short transitions that respect reduced-motion preferences.
+- Now includes a mini chat for recent spoken and written exchanges. Expand system messages for timings, actions and failures of the last eight requests, or edit and repeat the latest voice command. The chat header can hide all system messages. The compact send control leaves the placeholder centered. Old chat links open Now. Active plugin cards appear first, and plugins can be pinned to the menu in each browser.
+- Plugins can contribute standard or wide cards to the responsive Now grid. The compact Spotify player puts cover art, track details and playback control in a single row.
+- Timers 0.2 can extend an active timer by one minute and remember a spoken phrase for its original duration. Activation settings include a three-attempt wake-word check.
+- The chat offers editable example questions. The Station overview highlights the wake word, the assistant settings show the three voice stages, and the plugin catalogue groups actions with each package.
+- A native Spotify plugin can search for music by voice and play the result on a configured Soloist receiver.
+- Open Spotify from the desktop or mobile menu to pair a speaker, see the current track, browse upcoming and previous tracks, and control playback.
 - Choose speech recognition and reply languages independently in the Mini 3 and ESP32-S3 panels. Both default to Russian, including on upgrade. The reply language applies to voice and text chat.
 
 ### Русский
 
+- В каталогах моделей появился поиск по названию и ID, в длинных списках языков и провайдеров тоже можно искать. Страницы, меню и разделы настроек открываются плавнее и учитывают системную настройку уменьшения движения.
+- На странице «Сейчас» появился мини-чат с голосовыми и текстовыми репликами. Системные сообщения раскрывают длительность этапов, действия плагинов и ошибки последних восьми запросов. Последнюю голосовую команду можно исправить и повторить. Системные сообщения можно скрыть переключателем в шапке. Кнопка отправки стала компактнее, а текст поля ввода выровнен по центру строки. Старые ссылки на чат открывают «Сейчас». Активные карточки плагинов показываются первыми, а нужные плагины можно закрепить в меню своего браузера.
+- Плагины могут добавлять обычные и широкие карточки в адаптивную сетку «Сейчас». В компактном плеере Spotify обложка, название трека и кнопка воспроизведения занимают одну строку.
+- Таймеры 0.2 позволяют добавить минуту к отсчёту и сохранить голосовую фразу для запуска таймера исходной длительности. В настройках активации появилась проверка слова в три попытки.
+- В чате появились примеры вопросов, которые можно отредактировать перед отправкой. На экране колонки выделено слово активации, в настройках ассистента видны три этапа голосового ответа, а в каталоге действия собраны на карточке каждого плагина.
+- Нативный плагин Spotify ищет музыку по голосовому запросу и запускает её на выбранном плеере Soloist.
+- Из меню панели на компьютере и телефоне можно открыть Spotify. На странице есть подсказка по привязке колонки, текущий трек, очередь, история и управление воспроизведением.
 - На Мини 3 и ESP32-S3 в панели можно отдельно выбрать язык распознавания речи и язык ответов. По умолчанию, в том числе после обновления, оба языка — русский. Язык ответа действует в голосовом диалоге и текстовом чате.
 
 ## [0.6.0] - 2026-11-27

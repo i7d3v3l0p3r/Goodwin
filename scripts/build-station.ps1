@@ -114,7 +114,7 @@ python "%~dp0zig-tool.py" ar %*
     }
     Invoke-Checked cargo @('build', '--locked', '--workspace', '--bins', '--release', '--target', $target,
         '--jobs', "$Jobs", '--features', $features)
-    foreach ($plugin in @('timers', 'openai-compatible', 'wake-dataset')) {
+    foreach ($plugin in @('timers', 'openai-compatible', 'spotify', 'wake-dataset')) {
         Invoke-Checked python @('scripts/package-plugin.py', "plugins/$plugin", "target/$target/release/goodwin-$plugin",
             'linux-aarch64', "target/plugins/$plugin-linux-aarch64.tar.gz")
     }

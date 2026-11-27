@@ -1,12 +1,13 @@
 {
   "id": "timers",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "title": { "en": "Timers", "ru": "Таймеры" },
   "apiVersion": 1,
   "web": {
     "uiKitVersion": 1,
     "solidRuntimeVersion": 1,
     "entry": "ui/index.mjs",
+    "now": "standard",
     "styles": ["ui/style.css"]
   }
 }

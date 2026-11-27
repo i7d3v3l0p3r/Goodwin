@@ -1,0 +1,31 @@
+.page { --gw-page-content-width: 1120px; gap: 14px; align-content: start; container-type: inline-size; }
+.activity { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.plugin { grid-column: span 6; min-width: 0; padding: 3px 16px 13px; border: 1px solid var(--edge); border-radius: 14px; background: var(--paper); overflow-wrap: anywhere; container-type: inline-size; }
+.plugin[data-size=wide] { grid-column: 1 / -1; }
+.plugin h2 { font-size: .85rem; color: var(--muted); }
+.plugin h2 > a, .plugin h2 > span { display: inline-flex; gap: 7px; align-items: center; min-height: 44px; }
+.plugin h2 a { color: inherit; text-decoration: none; }
+.plugin h2 a:hover { text-decoration: underline; }
+.plugin h2 small { font-size: .85em; }
+.plugin h2 svg { width: 16px; height: 16px; }
+@container (min-width: 1000px) { .plugin { grid-column: span 4; } .plugin[data-size=wide] { grid-column: span 8; } }
+@container (max-width: 610px) { .plugin { grid-column: 1 / -1; } }
+.workspace { display: grid; gap: 14px; align-items: start; }
+.rack { min-width: 0; container-type: inline-size; }
+.conversation { min-width: 0; container: conversation / inline-size; overflow: clip; border: 1px solid var(--edge); border-radius: 15px; background: var(--paper); }
+.chatHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; padding: 4px 12px; min-height: 50px; border-bottom: 1px solid var(--edge); }
+.chatTools { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; }
+.chatTools :global(.gw-field-label) { font-size: .8rem; font-weight: 520; color: var(--muted); cursor: pointer; }
+.chatTools :global(.gw-field-heading) { gap: 2px; }
+@container conversation (max-width: 31rem) {
+  .newChat { --button-padding: 0; width: 44px; }
+  .newChat span { display: none; }
+}
+.chatHeader h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 1.04rem; }
+.chatHeader h2 svg { color: var(--accent); }
+.setup, .link { justify-self: start; display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-size: .9rem; font-weight: 600; text-underline-offset: 3px; }
+@container (min-width: 880px) {
+  .workspace:has(.rack):not(:has(.plugin:nth-child(3), .plugin[data-size=wide])) {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  }
+}

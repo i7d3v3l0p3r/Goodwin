@@ -27,6 +27,9 @@ const [chunk] = result.output;
 if (result.output.length !== 1 || chunk?.type !== "chunk" || !chunk.exports.includes("default")) {
   throw new Error("The plugin web entry must export a default component and build to one module.");
 }
+if (process.argv.includes("--now") && !chunk.exports.includes("NowCard")) {
+  throw new Error("A plugin with web.now must export a NowCard component.");
+}
 
 const declarations = await readFile(new URL("./src/helpers/plugin-runtime.ts", import.meta.url), "utf8");
 const available = new Set(parseAst(declarations).body.flatMap(node => node.type === "ExportNamedDeclaration"

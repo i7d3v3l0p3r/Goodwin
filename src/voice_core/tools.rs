@@ -5,7 +5,8 @@ use std::{
 
 use goodwin_error::{Result, ensure};
 use goodwin_plugin::provider::{
-    ChatMessage, ChatRequest, ChatRole, FunctionCall, ToolChoice, ToolDefinition, ToolSchema,
+    ChatMessage, ChatRequest, ChatRole, FunctionCall, ToolCall, ToolChoice, ToolDefinition,
+    ToolSchema,
 };
 use serde_json::{Value, json};
 
@@ -32,11 +33,16 @@ pub(crate) async fn complete<'a, ToolResult: Future<Output = Value>>(
     text: &str,
     history: Vec<Message>,
     definitions: impl Iterator<Item = (&'a str, &'a str, &'a ToolSchema)>,
-    context: BTreeMap<String, Value>,
+    mut context: BTreeMap<String, Value>,
     provider: &impl ToolChat,
     mut call_tool: impl FnMut(FunctionCall) -> ToolResult,
 ) -> Result<String> {
     const MAX_CALLS: usize = 4;
+    let shortcut = context
+        .get_mut("timers")
+        .and_then(Value::as_object_mut)
+        .and_then(|timers| timers.remove("phrases"))
+        .and_then(|phrases| timer_shortcut(&phrases, text));
     let mut instructions = format!("{voice_instructions}\n{TOOL_INSTRUCTIONS}");
     let context_message = if context.is_empty() {
         None
@@ -49,13 +55,16 @@ pub(crate) async fn complete<'a, ToolResult: Future<Output = Value>>(
         ))
     };
     let mut request = chat::request_with_context(instructions, text, history, context_message);
+    let mut timers_available = false;
     request.tools = definitions
+        .inspect(|(name, _, _)| timers_available |= *name == "timers__create")
         .map(|(name, description, parameters)| {
             ToolDefinition::function(name.into(), description.into(), parameters.clone())
         })
         .collect();
     let mut seen = HashSet::new();
     let mut clarify = false;
+    let mut preset = shortcut.filter(|_| timers_available);
     loop {
         let can_call = !clarify && seen.len() < MAX_CALLS;
         request.tool_choice = Some(if can_call {
@@ -63,7 +72,22 @@ pub(crate) async fn complete<'a, ToolResult: Future<Output = Value>>(
         } else {
             ToolChoice::None
         });
-        let message = provider.complete(&mut request).await?;
+        let saved_phrase = preset.is_some();
+        let message = if let Some(args) = preset.take() {
+            ChatMessage {
+                tool_calls: vec![ToolCall {
+                    id: "saved_timer".into(),
+                    kind: Default::default(),
+                    function: FunctionCall {
+                        name: "timers__create".into(),
+                        arguments: args.to_string(),
+                    },
+                }],
+                ..Default::default()
+            }
+        } else {
+            provider.complete(&mut request).await?
+        };
         let calls = &message.tool_calls;
         if calls.is_empty() {
             return chat::answer_text(message.content.unwrap_or_default());
@@ -85,7 +109,7 @@ pub(crate) async fn complete<'a, ToolResult: Future<Output = Value>>(
             } else {
                 call_tool(call.function.clone()).await
             };
-            clarify |= result["error"] == "clarification_required";
+            clarify |= saved_phrase || result["error"] == "clarification_required";
             results.push(ChatMessage::tool_result(
                 call.id.clone(),
                 result.to_string(),
@@ -94,4 +118,18 @@ pub(crate) async fn complete<'a, ToolResult: Future<Output = Value>>(
         request.messages.push(message);
         request.messages.extend(results);
     }
+}
+
+fn timer_shortcut(phrases: &Value, text: &str) -> Option<Value> {
+    let key = goodwin_plugin::timer::phrase_key(text);
+    let saved = phrases.as_array()?.iter().find(|p| {
+        p["phrase"]
+            .as_str()
+            .is_some_and(|s| goodwin_plugin::timer::phrase_key(s) == key)
+    })?;
+    let mut args = json!({"seconds":saved["seconds"].as_u64()?});
+    if let Some(name) = saved["name"].as_str() {
+        args["name"] = name.into();
+    }
+    Some(args)
 }

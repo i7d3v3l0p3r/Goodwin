@@ -8,7 +8,8 @@ use std::{
 use goodwin_plugin::provider::Capability;
 
 use crate::panel_core::{
-    ChatTest, Message, PlaybackMode, Report, VoiceDetails, VoiceModel, VoiceReport, recent_chat,
+    ChatTest, ConversationEvents, Message, PlaybackMode, Report, VoiceDetails, VoiceModel,
+    VoiceReport, recent_chat,
 };
 pub use crate::panel_core::{Failure, Source, Stage};
 use serde::Serialize;
@@ -50,6 +51,7 @@ impl VoiceDetails {
             chat: (&pipeline.chat).into(),
             speech: (&pipeline.speech).into(),
             transcript: None,
+            actions: Vec::new(),
             answer: None,
             playback: None,
             error_stage: None,
@@ -59,6 +61,7 @@ impl VoiceDetails {
 
 struct Turn {
     id: u64,
+    started_after: u64,
     started: Instant,
     report: Report,
     request: RequestSettings,
@@ -80,6 +83,8 @@ pub(crate) struct ActiveTurn {
 
 #[derive(Default)]
 struct Runtime {
+    system_events: ConversationEvents,
+    last_probe: Option<Report>,
     next_id: u64,
     next_message: u64,
     voice_turn: u64,
@@ -114,6 +119,8 @@ pub struct App {
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    system_events: ConversationEvents,
+    last_probe: Option<Report>,
     settings: Settings,
     system_prompt: String,
     microphone: bool,
@@ -247,8 +254,10 @@ impl App {
             wake_model: runtime.wake_model.clone(),
             active: runtime.active.as_ref().map(|turn| turn.report.clone()),
             last: runtime.last.clone(),
+            last_probe: runtime.last_probe.clone(),
             last_chat_test: runtime.last_chat_test.clone(),
             chat_test_current,
+            system_events: runtime.system_events.clone(),
             last_voice: runtime.last_voice.clone(),
             last_voice_test: runtime.last_voice_test.clone(),
             voice_test_current,
@@ -412,6 +421,19 @@ impl App {
         self.start_turn(source, false)
     }
 
+    pub(crate) fn start_correction(&self, original: u64) -> Result<u64, Failure> {
+        let mut runtime = self.runtime();
+        if runtime
+            .last_voice
+            .as_ref()
+            .and_then(|v| v.report.request_id)
+            != Some(original)
+        {
+            return Err(Failure::Busy);
+        }
+        self.admit_turn(&mut runtime, Source::Correction, false)
+    }
+
     pub(crate) fn start_chat_test(&self) -> Result<u64, Failure> {
         self.start_turn(Source::Chat, true)
     }
@@ -427,19 +449,22 @@ impl App {
         chat_test: bool,
     ) -> Result<u64, Failure> {
         let request = self.config.request_settings();
-        if source != Source::Chat && *self.microphone_mute.borrow() {
+        let needs_mic = !matches!(source, Source::Chat | Source::Correction);
+        if needs_mic && *self.microphone_mute.borrow() {
             return Err(Failure::MicrophoneMuted);
         }
         if runtime.active.is_some() {
             return Err(Failure::Busy);
         }
-        if matches!(source, Source::Wake | Source::WakeTest) && runtime.wake_model_switching {
+        if matches!(source, Source::Wake | Source::WakeTest | Source::WakeProbe)
+            && runtime.wake_model_switching
+        {
             return Err(Failure::Busy);
         }
-        if source != Source::Chat && !runtime.microphone {
+        if needs_mic && !runtime.microphone {
             return Err(Failure::Microphone);
         }
-        if matches!(source, Source::Wake | Source::WakeTest) && !runtime.model {
+        if matches!(source, Source::Wake | Source::WakeTest | Source::WakeProbe) && !runtime.model {
             return Err(Failure::Model);
         }
         if matches!(source, Source::Wake | Source::FollowUp) && !request.settings.listening {
@@ -460,6 +485,7 @@ impl App {
         };
         runtime.active = Some(Turn {
             id,
+            started_after: runtime.next_message,
             started: Instant::now(),
             report: Report {
                 request_id: (source != Source::Chat).then_some(id),
@@ -476,10 +502,10 @@ impl App {
                     || matches!(source, Source::ManualTest | Source::WakeTest))
                 .then(|| self.test_configuration(source, &request, runtime)),
             },
-            voice: (source != Source::Chat)
+            voice: (!matches!(source, Source::Chat | Source::WakeProbe))
                 .then(|| VoiceDetails::new(&request.settings.assistant.pipeline)),
             voice_request: (source != Source::Chat).then(|| VoiceRequest::new(id)),
-            voice_providers: (source != Source::Chat).then(|| {
+            voice_providers: (!matches!(source, Source::Chat | Source::WakeProbe)).then(|| {
                 self.plugins
                     .bind_voice(&request.settings.assistant.pipeline)
             }),
@@ -540,6 +566,9 @@ impl App {
             turn.record_timing();
             turn.report.error = error;
             let source = turn.report.source;
+            if source == Source::WakeProbe {
+                runtime.last_probe = Some(turn.report.clone());
+            }
             let elapsed_ms: u64 = turn.report.timings.iter().map(|timing| timing.ms).sum();
             if let Some(error) = error {
                 let stage = turn
@@ -581,10 +610,21 @@ impl App {
             {
                 message.error.get_or_insert(error);
             }
-            if let Some(mut details) = turn.voice {
+            if let Some(details) = turn.voice.as_mut() {
+                if let Some(request) = &turn.voice_request {
+                    details.actions = request.take_actions();
+                }
                 if error.is_some() {
                     details.error_stage.get_or_insert(turn.report.stage);
                 }
+            }
+            runtime.system_events.record(
+                &mut runtime.next_message,
+                turn.started_after,
+                &turn.report,
+                turn.voice.as_ref(),
+            );
+            if let Some(details) = turn.voice {
                 let voice = VoiceReport {
                     report: turn.report.clone(),
                     details,
@@ -614,6 +654,7 @@ impl App {
             return Err(Failure::Busy);
         }
         runtime.messages.clear();
+        runtime.system_events = ConversationEvents::default();
         let Runtime {
             last_voice,
             last_voice_test,
@@ -622,6 +663,7 @@ impl App {
         for voice in [last_voice, last_voice_test].into_iter().flatten() {
             voice.details.transcript = None;
             voice.details.answer = None;
+            voice.details.actions.clear();
         }
         self.changes.send_replace(());
         Ok(())

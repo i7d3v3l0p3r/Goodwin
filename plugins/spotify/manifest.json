@@ -1,0 +1,33 @@
+{
+  "id": "spotify",
+  "version": "0.2.1",
+  "title": { "en": "Spotify", "ru": "Spotify" },
+  "apiVersion": 1,
+  "web": {
+    "uiKitVersion": 1,
+    "solidRuntimeVersion": 1,
+    "entry": "ui/index.mjs",
+    "now": "standard",
+    "styles": ["ui/style.css"]
+  },
+  "settings": [
+    {
+      "id": "client_id", "type": "text", "required": true,
+      "label": { "en": "Spotify Web API client ID", "ru": "Client ID приложения Spotify Web API" }
+    },
+    {
+      "id": "client_secret", "type": "secret", "required": true,
+      "label": { "en": "Spotify Web API client secret", "ru": "Client Secret приложения Spotify Web API" }
+    },
+    {
+      "id": "market", "type": "text", "required": true, "maxLength": 2,
+      "label": { "en": "Spotify account country", "ru": "Страна аккаунта Spotify" },
+      "description": { "en": "Two-letter country code, for example DE.", "ru": "Двухбуквенный код страны, например DE." }
+    },
+    {
+      "id": "soloist_url", "type": "text",
+      "label": { "en": "Soloist WebSocket address", "ru": "Адрес WebSocket плеера Soloist" },
+      "description": { "en": "Defaults to ws://127.0.0.1:9090. Open the Spotify page in Goodwin for pairing instructions.", "ru": "По умолчанию ws://127.0.0.1:9090. Инструкция по привязке — на странице Spotify в Гудвине." }
+    }
+  ]
+}

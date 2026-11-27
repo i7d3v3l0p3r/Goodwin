@@ -1,0 +1,7 @@
+.probe { padding: 18px; border-radius: 16px; background: #edf4f2; border: 1px solid #cfded6; display: grid; gap: 12px; }
+.probe ol { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin: 0; padding: 0; list-style: none; }
+.probe li { display: grid; gap: 5px; padding: 10px; border-top: 3px solid #bccbc4; font-size: .85rem; }
+.probe li span { font-size: 1.2rem; font-weight: 700; }
+.probe li[data-outcome=hit] { border-color: #28714e; }
+.probe li[data-outcome=miss] { border-color: #a45c26; }
+.probe p:empty { display: none; }

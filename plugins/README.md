@@ -2,6 +2,8 @@
 
 Goodwin starts trusted native plugins as independent processes and runs WASM plugins through WAMR Fast. The [Timers plugin](timers/) uses the Rust SDK in [`sdk/`](sdk/) and provides a Solid page, a local scheduler, and assistant tools.
 
+The native [Spotify plugin](spotify/) searches the catalogue through the Web API and controls a Spotify Soloist receiver.
+
 ## Build a package
 
 For a Windows development instance, run these commands from the repository root.
@@ -164,3 +166,19 @@ Use `.gw-disclosure` on a native `details` element with a `summary` to group col
 Plugin pages can use `--gw-page-content-width` with a fallback for their own centered content. The host gives plugin pages the full available width.
 
 Scope your plugin styles to your page. The web module runs on the panel's origin with the current session, and the executable runs with the Goodwin service account's OS permissions.
+
+### Contribute a card to Now
+
+Add `"now": "standard"` to the manifest's `web` object and export a named Solid component alongside the default page. Goodwin discovers cards from ready installed packages and uses each package's title and main page link for its header. A standard card takes one column. Use `"wide"` for content that needs two columns on larger screens. Both sizes use one column on phones. The panel owns placement and spacing.
+
+```tsx
+export function NowCard({ language, navigate }: PluginContext) {
+  return <button type="button" onClick={() => navigate("")}>
+    {language === "ru" ? "Открыть расписание" : "Open schedule"}
+  </button>;
+}
+```
+
+The card receives the same scoped request, navigation, language and draft APIs as the full page. Put the most useful state and one frequent action in the card. Keep secondary controls on the full page or behind a disclosure. Scope card styles to a plugin-specific class and release subscriptions and timers on unmount. The panel reloads the card when its package revision or language changes. Omitting `web.now` leaves the plugin available through its usual pages.
+
+Call `context.setNowActive?.(active)` when playback starts or stops, a timer is running, or another activity changes state. Now places active cards first and holds their order while the plugin grid has keyboard focus or the mouse is over it.

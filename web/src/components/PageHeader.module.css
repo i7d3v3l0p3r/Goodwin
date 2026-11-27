@@ -79,3 +79,13 @@
   color: var(--danger);
   font-size: .84rem;
 }
+
+@media (min-width: 900px) {
+  .header {
+    grid-template-columns: fit-content(50%) minmax(0, 1fr) auto;
+    min-height: 66px; gap: 10px 16px; background: var(--paper);
+  }
+  .header h1 { font-size: 1.2rem; }
+  .status { grid-area: 1 / 2; border-inline-start: 1px solid var(--edge); padding-inline-start: 15px; }
+  .actions { grid-area: 1 / 3; }
+}

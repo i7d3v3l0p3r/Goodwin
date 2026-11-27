@@ -15,6 +15,8 @@ Ask why sunsets look red on Earth, then follow up with **“What about on Mars?�
 - **On an ESP32-S3** — Build a speaker with an N16R8 board, an I²S microphone and an amplifier. Activate it by voice or with a push-to-talk button. [Wiring and firmware](firmware/esp32s3/README.md)
 - **On your computer** — Start the web panel on localhost to explore the interface or develop a plugin. [Run the panel locally](guides/development.md#run-the-panel-on-your-computer)
 
+The panel opens on **Now**, where the chat shows recent spoken and written exchanges. Expand a **System** message to inspect stage durations, plugin actions and errors for that request. The **System messages** switch hides these rows and remembers your choice in this browser. You can type a follow-up or correct and repeat the last voice command. Active timers and Spotify playback take priority in the card grid. Pin a plugin to the menu from its actions in **Plugins**.
+
 ## Choose your models and voice
 
 ![Speech recognition → Language model → Speech synthesis](guides/images/voice-en.webp)

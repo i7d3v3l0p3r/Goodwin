@@ -47,6 +47,8 @@ pub enum Source {
     FollowUp,
     ManualTest,
     WakeTest,
+    WakeProbe,
+    Correction,
     #[cfg(target_os = "espidf")]
     PushToTalk,
 }
@@ -141,6 +143,8 @@ pub(crate) enum PlaybackMode {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct VoiceDetails {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) actions: Vec<ToolStep>,
     pub(crate) started_at_ms: u64,
     pub(crate) transcription: VoiceModel,
     pub(crate) chat: VoiceModel,
@@ -152,11 +156,78 @@ pub(crate) struct VoiceDetails {
 }
 
 #[derive(Clone, Serialize)]
+pub(crate) struct ToolStep {
+    pub(crate) tool: String,
+    pub(crate) status: String,
+    pub(crate) failed: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Correction {
+    pub(crate) request_id: u64,
+    pub(crate) text: String,
+}
+
+impl Correction {
+    pub(crate) fn valid(&self) -> bool {
+        !self.text.trim().is_empty() && self.text.len() <= 4096
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub(crate) struct VoiceReport {
     #[serde(flatten)]
     pub(crate) report: Report,
     #[serde(flatten)]
     pub(crate) details: VoiceDetails,
+}
+
+// Panel diagnostics share the messages' sequence, but never enter a provider's chat context.
+#[derive(Clone, Default, Serialize)]
+#[serde(transparent)]
+pub(crate) struct ConversationEvents(std::collections::VecDeque<SystemMessage>);
+
+#[derive(Clone, Serialize)]
+struct SystemMessage {
+    id: u64,
+    #[serde(flatten)]
+    report: Report,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<ToolStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcript: Option<String>,
+}
+
+impl ConversationEvents {
+    pub(crate) fn record(
+        &mut self,
+        next_id: &mut u64,
+        started_after: u64,
+        report: &Report,
+        voice: Option<&VoiceDetails>,
+    ) {
+        if report.source == Source::WakeProbe {
+            return;
+        }
+        // A failure before a user message was added can still have a recognized transcript.
+        let transcript = voice
+            .filter(|_| *next_id == started_after)
+            .and_then(|v| v.transcript.clone());
+        *next_id += 1;
+        if self.0.len() == 8 {
+            self.0.pop_front();
+        }
+        let mut report = report.clone();
+        if let Some(stage) = voice.and_then(|v| v.error_stage) {
+            report.stage = stage;
+        }
+        self.0.push_back(SystemMessage {
+            id: *next_id,
+            report,
+            transcript,
+            actions: voice.map(|v| v.actions.clone()).unwrap_or_default(),
+        });
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -242,6 +313,7 @@ pub(crate) const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; font-src '
 
 pub(crate) const PAGE_PATHS: &[&str] = &[
     "/",
+    "/chat",
     #[cfg(not(target_os = "espidf"))]
     "/setup",
     #[cfg(not(target_os = "espidf"))]

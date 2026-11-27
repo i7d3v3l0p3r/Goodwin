@@ -291,6 +291,11 @@ impl Detector {
             return;
         }
 
+        if let Some(turn) = wake_test.filter(|t| t.source == Source::WakeProbe) {
+            app.finish(turn.id, None);
+            self.reset_wake(app);
+            return;
+        }
         let turn = if let Some(id) = wake_test_id {
             app.stage(id, Stage::Recording);
             Ok(id)

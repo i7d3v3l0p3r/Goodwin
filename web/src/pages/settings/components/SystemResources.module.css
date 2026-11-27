@@ -12,9 +12,9 @@
   padding: 10px 12px;
   border: 1px solid var(--edge);
   border-radius: var(--gw-radius);
-  background: var(--paper);
+  background: var(--surface);
 }
 
 .metric dt { color: var(--muted); font-size: .8rem; }
-.metric dd { font-size: .96rem; font-weight: 620; font-variant-numeric: tabular-nums; }
+.metric dd { font-size: 1.08rem; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .metric meter { display: block; width: 100%; height: 9px; margin-top: 4px; accent-color: var(--accent); }

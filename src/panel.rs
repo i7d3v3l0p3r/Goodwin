@@ -81,6 +81,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/chat/clear", post(clear))
         .route("/api/test", post(test))
         .route("/api/voice/cancel", post(cancel_voice))
+        .route("/api/voice/correct", post(correct_voice))
         .route("/api/plugins", get(plugin_catalog))
         .route("/api/plugin-models/{id}/{capability}", get(plugin_models))
         .route(
@@ -228,6 +229,7 @@ async fn clear(State(panel): State<Panel>, _: JsonDocument) -> Response {
 enum TestMode {
     Manual,
     Wake,
+    Probe,
 }
 
 #[derive(Deserialize)]
@@ -239,9 +241,10 @@ async fn test(State(panel): State<Panel>, Json(test): Json<Test>) -> Response {
     let source = match test.mode {
         TestMode::Manual => Source::ManualTest,
         TestMode::Wake => Source::WakeTest,
+        TestMode::Probe => Source::WakeProbe,
     };
     match panel.app.start(source) {
-        Ok(_) => StatusCode::ACCEPTED.into_response(),
+        Ok(id) => (StatusCode::ACCEPTED, Json(json!({"request_id":id}))).into_response(),
         Err(error) => {
             log::warn!("Voice test could not start source={source:?} error={error:?}");
             blocked(error)
@@ -257,6 +260,24 @@ async fn cancel_voice(
         StatusCode::ACCEPTED.into_response()
     } else {
         problem(StatusCode::CONFLICT, "voice_request_inactive")
+    }
+}
+
+async fn correct_voice(
+    State(panel): State<Panel>,
+    Json(input): Json<crate::panel_core::Correction>,
+) -> Response {
+    if !input.valid() {
+        return problem(StatusCode::BAD_REQUEST, "invalid_message");
+    }
+    match panel.app.start_correction(input.request_id) {
+        Ok(id) => {
+            tokio::spawn(async move {
+                panel.app.correct_voice(id, input.text).await;
+            });
+            (StatusCode::ACCEPTED, Json(json!({"request_id":id}))).into_response()
+        }
+        Err(error) => blocked(error),
     }
 }
 

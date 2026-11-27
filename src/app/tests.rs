@@ -14,6 +14,31 @@ fn test_app(dir: &std::path::Path) -> Arc<App> {
     )
 }
 
+#[test]
+fn a_wake_probe_keeps_the_last_command_and_corrections_require_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = test_app(dir.path());
+    assert!(app.microphone_connected(&app.microphone_mute()));
+    app.set_model(true, None);
+    let original = app.start(Source::ManualTest).unwrap();
+    app.finish(original, None);
+    let probe = app.start(Source::WakeProbe).unwrap();
+    assert_eq!(app.active().unwrap().stage, Stage::AwaitingWake);
+    app.finish(probe, Some(Failure::NoWake));
+    let snapshot = app.snapshot();
+    assert_eq!(
+        snapshot.last_voice.unwrap().report.request_id,
+        Some(original)
+    );
+    assert_eq!(snapshot.last_probe.unwrap().request_id, Some(probe));
+    assert!(app.start_correction(probe).is_err());
+    let correction = app.start_correction(original).unwrap();
+    assert!(app.start_correction(original).is_err());
+    assert_eq!(app.active().unwrap().stage, Stage::Thinking);
+    app.finish(correction, None);
+    assert!(app.start_correction(original).is_err());
+}
+
 #[tokio::test]
 async fn chat_failure_stays_on_its_message_without_replacing_the_last_voice_test() {
     let dir = tempfile::tempdir().unwrap();
@@ -28,6 +53,17 @@ async fn chat_failure_stays_on_its_message_without_replacing_the_last_voice_test
     app.chat(next_chat, "second message".into()).await;
 
     let state = app.snapshot();
+    let events = serde_json::to_value(&state.system_events).unwrap();
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["request_id"], test);
+    assert_eq!(events[0]["error"], "no_speech");
+    assert_eq!(events[1]["message_id"], state.messages[0].id);
+    assert_eq!(events[2]["message_id"], state.messages[1].id);
+    assert!(events[0]["id"].as_u64().unwrap() < state.messages[0].id);
+    assert!(state.messages[0].id < events[1]["id"].as_u64().unwrap());
+    assert!(events[1]["id"].as_u64().unwrap() < state.messages[1].id);
+    assert_eq!(recent_chat(state.messages.iter().rev()).len(), 2);
     let last = state.last.unwrap();
     assert!(last.source == Source::Chat);
     assert_eq!(last.message_id, Some(state.messages[1].id));
@@ -49,7 +85,37 @@ async fn chat_failure_stays_on_its_message_without_replacing_the_last_voice_test
     assert!(app.clear_chat().is_ok());
     let cleared = app.snapshot();
     assert!(cleared.messages.is_empty());
+    assert_eq!(
+        serde_json::to_value(cleared.system_events).unwrap(),
+        serde_json::json!([])
+    );
     assert!(cleared.last_voice_test.is_some());
+}
+
+#[test]
+fn conversation_diagnostics_keep_recent_turns_and_skip_wake_probes() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = test_app(dir.path());
+    assert!(app.microphone_connected(&app.microphone_mute()));
+    app.set_model(true, None);
+    let mut latest = 0;
+    for _ in 0..10 {
+        latest = app.start(Source::ManualTest).unwrap();
+        app.update_voice(latest, |details, _| {
+            details.transcript = Some("unanswered".into())
+        });
+        app.finish(latest, Some(Failure::ProviderFailed));
+    }
+    let probe = app.start(Source::WakeProbe).unwrap();
+    app.finish(probe, Some(Failure::NoWake));
+    let state = app.snapshot();
+    assert!(state.messages.is_empty());
+    let events = serde_json::to_value(state.system_events).unwrap();
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 8);
+    assert_eq!(events[0]["request_id"], latest - 7);
+    assert_eq!(events[7]["request_id"], latest);
+    assert_eq!(events[7]["transcript"], "unanswered");
 }
 
 #[test]

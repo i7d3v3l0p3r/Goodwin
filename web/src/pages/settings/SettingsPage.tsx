@@ -15,6 +15,7 @@ import { FirmwareUpdate } from "./components/FirmwareUpdate";
 import { DiagnosticLogs } from "./components/DiagnosticLogs";
 import { SystemResources } from "./components/SystemResources";
 import { WakeWordSettings } from "./components/WakeWordSettings";
+import { WakeProbe } from "./components/WakeProbe";
 import { MicrophoneGainForm } from "./components/MicrophoneGainForm";
 import { DialogueForm } from "./components/DialogueForm";
 import { PanelAccessControls } from "./components/PanelAccessControls";
@@ -54,7 +55,7 @@ export function SettingsPage() {
       ? panel.t().embedded.provider : panel.t()[active()?.title ?? "settings"]}
       showRequestStatus={active()?.id !== "diagnostics" || !isVoiceTest(panel.snapshot()?.active)} />
     <div ref={body} class="gw-page">
-      <nav aria-label={panel.t().settings} hidden={!!active()}>
+      <nav class={styles.directory} aria-label={panel.t().settings} hidden={!!active()}>
         <For each={sections()}>{section =>
           <a id={`settings-link-${section.id}`} class={styles.destination} href={settingsSectionPath(section.id)}>
             <Icon name={section.icon} />
@@ -87,6 +88,7 @@ export function SettingsPage() {
                   const settings = state().settings;
                   void panel.saveSettings({ ...settings, listening: !settings.listening });
                 }} />
+              <Show when={active()?.id === "activation"}><WakeProbe /></Show>
             </Show>
             <MicrophoneGainForm t={panel.t()} snapshot={state()} pending={pending() || (panel.builtinProvider() && !!state().active)}
               showWakeGain={!panel.builtinProvider() || panel.hasWakeRuntime()} save={panel.saveSettings} />
@@ -96,16 +98,13 @@ export function SettingsPage() {
           </>}</Show>}
           {section.id === "assistant" && <Show when={panel.builtinProvider()} fallback={
             <Show when={assistantVisited() ? panel.snapshot() : undefined}>{state => <>
-            <div class={styles.group}>
-              <p>{panel.t().assistantDescription}</p>
-              <div class="gw-row">
+            <div class={["gw-row", styles.providerLinks]}>
                 <For each={state().plugins.filter(plugin => plugin.status === "ready" && plugin.connection_settings)}>{plugin =>
-                  <a class={styles.inlineLink} href={pluginSettingsPath(plugin.id)}>{panel.t().firstRun.manageProviders} · {plugin.title[panel.language()]}</a>
+                  <a class={styles.inlineLink} href={pluginSettingsPath(plugin.id)}><Icon name="plugin" size={16} />{panel.t().firstRun.manageProviders} · {plugin.title[panel.language()]}</a>
                 }</For>
                 <a class={styles.inlineLink} href={setupPath}>{panel.assistantNeedsSetup()
                   ? panel.setupDismissed() ? panel.t().firstRun.openWizard : panel.t().firstRun.resume
-                  : panel.t().firstRun.checkWork}</a>
-              </div>
+                  : panel.t().now.testVoice}</a>
             </div>
             <AssistantForm t={panel.t()} language={panel.language()} snapshot={state()}
               pending={pending()} error={panel.error()} save={panel.saveSettings} focusStage={focusStage()} />

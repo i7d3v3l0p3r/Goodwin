@@ -71,7 +71,8 @@ impl Timers {
             }],
             "routes": [
                 {"method": "GET", "path": "/timers"}, {"method": "POST", "path": "/timers"},
-                {"method": "DELETE", "path": "/timers/:id"}
+                {"method": "DELETE", "path": "/timers/:id"}, {"method":"POST","path":"/extend/:id"},
+                {"method":"POST","path":"/phrases"}, {"method":"POST","path":"/phrases/remove"}
             ],
             "tools": [
                 {"name": "create", "description": "Start a new countdown timer when the user explicitly asks to set or start one. Convert its duration to whole seconds.", "parameters": {
@@ -95,6 +96,21 @@ impl Timers {
     fn http(&mut self, request: HttpRequest) -> Result<HttpResponse, ClockError> {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/timers") => Ok(HttpResponse::json(200, self.clock.list())),
+            ("POST", "/phrases" | "/phrases/remove") => match self
+                .clock
+                .set_phrase(&request.body, request.path.ends_with("/remove"))?
+            {
+                Ok(()) => Ok(HttpResponse::empty(204)),
+                Err(code) => Ok(HttpResponse::json(400, json!({"error":code}))),
+            },
+            ("POST", path) if path.starts_with("/extend/") => {
+                let id = path["/extend/".len()..].parse().unwrap_or(0);
+                Ok(if self.clock.extend(id)? {
+                    HttpResponse::empty(204)
+                } else {
+                    HttpResponse::json(409, json!({"error":"timer_not_active"}))
+                })
+            }
             ("POST", "/timers") => match self.clock.create(&request.body)? {
                 Ok(timer) => Ok(HttpResponse::json(201, timer.view())),
                 Err("timer_limit") => Ok(HttpResponse::json(409, json!({"error": "timer_limit"}))),
@@ -123,7 +139,7 @@ impl Timers {
                 Err(error) => json!({"error": error}),
             }),
             "list" => Ok(
-                json!({"active": self.clock.matches(&Filter::default()).iter().map(|timer| timer.voice(now())).collect::<Vec<_>>() }),
+                json!({"active": self.clock.matches(&Filter::default()).iter().map(|timer| timer.voice(now())).collect::<Vec<_>>(), "phrases":self.clock.phrases() }),
             ),
             "cancel" => self.cancel(call),
             _ => Ok(json!({"error": "unknown_tool"})),

@@ -1,5 +1,6 @@
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, Show } from "solid-js";
 import { Button } from "../../../components/ui-kit/Button";
+import { ChoicePicker } from "../../../components/ui-kit/ChoicePicker";
 import { Switch } from "../../../components/ui-kit/Switch";
 import { api, apiOperation, ApiError, waitForOperation, type WakeModel, type WakeModelCatalog } from "../../../helpers/api";
 import { protectDraft } from "../../../helpers/drafts";
@@ -144,13 +145,11 @@ export function WakeWordSettings(props: {
       <p class={styles.modelStatus}>{props.t.currentWakeModel} · {props.currentModel
         ? modelLabel(props.currentModel)
         : props.modelLoaded ? props.t.localWakeModel : props.t.noWakeModel}</p>
-      <select id="wake-model" value={id()} disabled={loading() || installing() || Boolean(operation()) || props.pending || !catalog()?.models.length}
-        onChange={event => { setId(event.currentTarget.value); setInstalled(false); setError(undefined); }}>
-        <option value="" selected={!id()}>{props.t.chooseWakeModel}</option>
-        <For each={catalog()?.models}>{model =>
-          <option value={model.id} selected={id() === model.id}>{modelLabel(model)}</option>
-        }</For>
-      </select>
+      <ChoicePicker id="wake-model" title={props.t.wakeModel} t={props.t} value={id()} searchHint={props.t.searchModels}
+        options={[{ value: "", label: props.t.chooseWakeModel },
+          ...(catalog()?.models ?? []).map(model => ({ value: model.id, label: modelLabel(model), detail: model.id }))]}
+        disabled={loading() || installing() || Boolean(operation()) || props.pending || !catalog()?.models.length}
+        onSelect={value => { setId(value); setInstalled(false); setError(undefined); }} />
       <div class={styles.modelActions}>
         <Button variant="primary" type="submit" disabled={installing() || props.pending || (!operation() && (loading() || !canInstall()))}>
           {installing() ? props.t.installingWakeModel : operation() ? props.t.checkWakeInstall : props.t.installWakeModel}

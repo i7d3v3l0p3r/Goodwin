@@ -1,15 +1,21 @@
 .entry {
   min-height: 100dvh;
   display: grid;
-  align-content: center;
-  grid-template-columns: minmax(0, 350px);
-  justify-content: center;
-  gap: 12px;
-  padding: 22px;
+  place-items: center;
+  padding: 22px 14px;
+  background:
+    radial-gradient(ellipse at 21% 34%, #e4eee1, transparent 52%),
+    radial-gradient(ellipse at 83% 75%, #efe7dc, transparent 58%), var(--surface);
+}
+.card {
+  display: grid; gap: 14px; width: min(100%, 420px); min-width: 0;
+  padding: clamp(20px, 6vw, 36px);
+  border: 1px solid var(--edge); border-radius: 24px; background: var(--paper);
+  box-shadow: 0 18px 60px #26432e10;
 }
 
-.brand { margin-bottom: 4px; }
-.entry h1 { font-size: 1.5rem; line-height: 1.2; letter-spacing: -.02em; }
+.brand { margin-bottom: 2px; }
+.entry h1 { font-size: 1.85rem; line-height: 1.15; letter-spacing: -.035em; }
 .note { color: var(--muted); font-size: .92rem; }
 
 .entry form {
@@ -25,4 +31,5 @@
   gap: 8px 16px;
   color: var(--muted);
   font-size: .9rem;
+  padding-bottom: 15px; border-bottom: 1px solid var(--edge);
 }

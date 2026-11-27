@@ -6,7 +6,7 @@ description = "An alternative voice assistant for Yandex Station"
 license = "MIT"
 
 [workspace]
-members = ["plugins/openai-compatible", "plugins/sdk", "plugins/timers", "plugins/wake-dataset", "shared/error", "shared/json"]
+members = ["plugins/openai-compatible", "plugins/sdk", "plugins/spotify", "plugins/timers", "plugins/wake-dataset", "shared/error", "shared/json"]
 default-members = ["."]
 resolver = "3"
 

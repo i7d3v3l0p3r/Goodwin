@@ -6,11 +6,13 @@
   overflow: auto;
   overscroll-behavior: contain;
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--edge);
-  border-radius: var(--gw-control-radius);
-  background: var(--paper);
+  padding: 14px 16px;
+  border: 1px solid #334840;
+  border-radius: 12px;
+  background: #1f302b;
+  color: #e1f2e8;
   font: .8rem/1.55 ui-monospace, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.logs pre:focus-visible { outline-offset: 2px; }

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::panel_core::{
-    ChatTest, Failure, Message, PlaybackMode, Report, Source, Stage, VoiceDetails, VoiceModel,
-    VoiceReport, recent_chat,
+    ChatTest, ConversationEvents, Failure, Message, PlaybackMode, Report, Source, Stage,
+    VoiceDetails, VoiceModel, VoiceReport, recent_chat,
 };
 use crate::voice_core::VoiceRequest;
 
@@ -77,14 +77,17 @@ pub(super) struct State {
     pub wake_model: Option<crate::wake_catalog::Selection>,
     active: Option<Request>,
     last: Option<Report>,
+    last_probe: Option<Report>,
     last_voice: Option<VoiceReport>,
     messages: VecDeque<Message>,
+    system_events: ConversationEvents,
     next_message: u64,
     voice_history_after: u64,
     next_request: u64,
 }
 
 struct Request {
+    started_after: u64,
     phase_start: Instant,
     report: Report,
     voice: Option<VoiceDetails>,
@@ -162,6 +165,7 @@ impl State {
             .filter(|elapsed| elapsed.as_secs() >= 1_577_836_800) // 2020-01-01 UTC
             .map_or(0, |elapsed| elapsed.as_millis() as u64);
         let details = VoiceDetails {
+            actions: Vec::new(),
             started_at_ms,
             transcription: self.voice_model(&self.provider.stt_model, Capability::Transcription),
             chat: self.voice_model(&self.provider.chat_model, Capability::Chat),
@@ -187,6 +191,7 @@ impl State {
         voice_request: Option<VoiceRequest>,
     ) {
         self.active = Some(Request {
+            started_after: self.next_message,
             phase_start: Instant::now(),
             report: Report {
                 request_id: voice_request.as_ref().map(|request| request.id),
@@ -227,6 +232,10 @@ impl State {
         };
         request.cancel(Failure::Cancelled);
         true
+    }
+
+    pub fn last_voice_id(&self) -> Option<u64> {
+        self.last_voice.as_ref().and_then(|v| v.report.request_id)
     }
 
     pub fn mute_capture(&self) {
@@ -373,8 +382,24 @@ impl State {
         {
             message.error = error;
         }
-        if let Some(mut details) = active.voice {
+        if active.report.source == Source::WakeProbe {
+            self.last_probe = Some(active.report.clone());
+        } else if let Some(details) = active.voice.as_mut() {
+            if let Some(request) = &active.voice_request {
+                details.actions = request.take_actions();
+            }
             details.error_stage = error.map(|_| active.report.stage);
+        }
+        self.system_events.record(
+            &mut self.next_message,
+            active.started_after,
+            &active.report,
+            active.voice.as_ref(),
+        );
+        if let Some(details) = active
+            .voice
+            .filter(|_| active.report.source != Source::WakeProbe)
+        {
             self.last_voice = Some(VoiceReport {
                 report: active.report.clone(),
                 details,
@@ -385,6 +410,12 @@ impl State {
 
     pub fn clear_chat(&mut self) {
         self.messages.clear();
+        self.system_events = ConversationEvents::default();
+        if let Some(voice) = &mut self.last_voice {
+            voice.details.transcript = None;
+            voice.details.answer = None;
+            voice.details.actions.clear();
+        }
     }
 
     fn push(&mut self, role: &'static str, text: String) -> u64 {
@@ -438,8 +469,8 @@ impl State {
             "system_prompt": self.system_prompt, "microphone": true, "default_microphone_gain": 1,
             "model": self.wake_loaded(), "wake_model": wake_model,
             "active": self.active.as_ref().map(|active| &active.report),
-            "last": self.last, "last_voice": self.last_voice,
-            "messages": self.messages, "plugins": [],
+            "last": self.last, "last_voice": self.last_voice, "last_probe": self.last_probe,
+            "messages": self.messages, "system_events": self.system_events, "plugins": [],
         })
     }
     fn voice_model(

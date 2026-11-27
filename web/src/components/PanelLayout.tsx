@@ -2,19 +2,17 @@ import { useLocation } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, onSettled, Show, type ParentProps } from "solid-js";
 import { createDraftProtection, DraftProtectionContext } from "../helpers/drafts";
 import { createPanel, PanelContext, usePanel } from "../helpers/panel";
-import { pluginPagePath } from "../helpers/plugins";
+import { pluginLandingPage, pluginPagePath } from "../helpers/plugins";
 import { LoginPage } from "../pages/login/LoginPage";
-import { chatPath, pluginsPath } from "../router";
+import { pluginsPath } from "../router";
 import { settingsPath, settingsSectionPath } from "../pages/settings/sections";
 import { assistantPath, setupPath, stationPath } from "../helpers/readiness";
 import { Brand } from "./Brand";
 import { Button } from "./ui-kit/Button";
 import { ConfirmDialog } from "./ui-kit/ConfirmDialog";
-import { Icon } from "./icons";
+import { Icon, pluginIcon } from "./icons";
 import { MobileNavigation, NavigationLinks, type NavigationItem } from "./MobileNavigation";
 import styles from "./PanelLayout.module.css";
-
-const timersPath = pluginPagePath("timers", "");
 
 export function PanelLayout(props: ParentProps) {
   const panel = createPanel();
@@ -40,10 +38,12 @@ function PanelShell(props: ParentProps) {
       links.push({ href, title, icon, primary, current: path === href ? "page" : containsPage ? "location" : undefined });
     }
 
-    link(chatPath, t.chat, "chat", true);
-    const timers = mobile() ? undefined : panel.snapshot()?.plugins.find(plugin => plugin.id === "timers");
-    const shortcut = timers?.web && timers.revision && timers.pages.find(page => page.path === "" && page.navigation);
-    if (shortcut) link(timersPath, shortcut.title[panel.language()], "timer");
+    link("/", t.now.title, "house", true);
+    for (const id of panel.pinnedPlugins()) {
+      const plugin = panel.snapshot()?.plugins.find(item => item.id === id);
+      const page = plugin && pluginLandingPage(plugin);
+      if (page) link(pluginPagePath(id, page.path), page.title[panel.language()], pluginIcon(page.icon));
+    }
     const preferences = settingsSectionPath("panel");
     if (panel.builtinProvider()) {
       link(assistantPath, t.embedded.provider, "sparkles");
@@ -57,8 +57,8 @@ function PanelShell(props: ParentProps) {
       link(assistantPath, t.assistant, "sparkles");
     }
     if (panel.pluginPackages()) {
-      const pluginSection = path.startsWith(`${pluginsPath}/`) && !(shortcut && path === timersPath);
-      link(pluginsPath, t.plugins.title, "plugin", true, pluginSection);
+      const pluginSection = path.startsWith(`${pluginsPath}/`) && !links.some(item => item.href === path);
+      link(pluginsPath, t.plugins.title, "plugin", false, pluginSection);
     }
     if (mobile()) link(preferences, t.panelPreferencesDescription, "settings");
     return links;
@@ -82,7 +82,7 @@ function PanelShell(props: ParentProps) {
       <Show when={!mobile()}>
         <aside class={styles.sidebar}>
           <div class={styles.brandBar}>
-            <Brand class={styles.brand} href={chatPath} />
+            <Brand class={styles.brand} href="/" />
             <PanelOptions onSignOut={signOut} />
           </div>
           <nav class={styles.navigation} aria-label={panel.t().nav}><NavigationLinks items={items()} /></nav>

@@ -4,6 +4,7 @@ import ArrowRight from "@lucide/solid/icons/arrow-right";
 import ArrowUp from "@lucide/solid/icons/arrow-up";
 import AudioLines from "@lucide/solid/icons/audio-lines";
 import CalendarDays from "@lucide/solid/icons/calendar-days";
+import Check from "@lucide/solid/icons/check";
 import ChevronDown from "@lucide/solid/icons/chevron-down";
 import ChevronRight from "@lucide/solid/icons/chevron-right";
 import Database from "@lucide/solid/icons/database";
@@ -32,6 +33,7 @@ const icons = {
   chat: MessageSquareText,
   settings: Settings,
   search: Search,
+  check: Check,
   wifi: Wifi,
   send: ArrowUp,
   plus: Plus,
@@ -75,8 +77,12 @@ const pluginNavigationIcons = new Map<string, keyof typeof icons>([
   ["timer", "timer"],
 ]);
 
+export function pluginIcon(name?: string) {
+  return pluginNavigationIcons.get(name ?? "") ?? "plugin";
+}
+
 export function PluginNavigationIcon(props: { name?: string }) {
-  return <Icon name={pluginNavigationIcons.get(props.name ?? "") ?? "plugin"} />;
+  return <Icon name={pluginIcon(props.name)} />;
 }
 
 export function Icon(props: { name: keyof typeof icons; size?: number }) {

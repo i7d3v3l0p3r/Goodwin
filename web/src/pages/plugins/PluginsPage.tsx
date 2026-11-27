@@ -7,7 +7,7 @@ import { ConfirmDialog } from "../../components/ui-kit/ConfirmDialog";
 import { EmptyState, InlineError, StatusIndicator } from "../../components/ui-kit/Feedback";
 import type { Plugin } from "../../helpers/api";
 import { usePanel } from "../../helpers/panel";
-import { pluginPagePath } from "../../helpers/plugins";
+import { pluginLandingPage, pluginPagePath } from "../../helpers/plugins";
 import { setupPath } from "../../helpers/readiness";
 import { settingsSectionPath } from "../settings/sections";
 import { errorLabel } from "../../helpers/words";
@@ -15,9 +15,12 @@ import { PluginSettingsLink } from "./PluginSettingsLink";
 import styles from "./PluginsPage.module.css";
 
 function landingPage(plugin: Plugin) {
-  if (!plugin.web || !plugin.revision) return undefined;
-  const page = plugin.pages.find(page => page.path === "") ?? plugin.pages.find(page => page.navigation && page.path !== "settings");
+  const page = pluginLandingPage(plugin);
   return page && pluginPagePath(plugin.id, page.path);
+}
+
+function catalogIcon(plugin: Plugin) {
+  return plugin.pages.find(page => page.navigation && page.icon)?.icon ?? (plugin.providers?.length ? "sparkles" : "plug");
 }
 
 export function PluginsPage() {
@@ -55,12 +58,12 @@ export function PluginsPage() {
 
   return <>
     <PageHeader title={words().title} />
-    <section class="gw-page" aria-label={words().title}>
+    <section class={["gw-page", styles.catalog]} aria-label={words().title}>
       <Show when={allowed()} fallback={<p class={styles.note}>{words().password} <a href={settingsSectionPath("panel")}>{panel.t().enablePassword}</a></p>}>
         <div class={styles.upload}>
           <div>
             <Button ref={node => { uploadButton = node; }} type="button" variant="primary" disabled={pending()}
-              onClick={() => archive.click()}>{words().upload}</Button>
+              onClick={() => archive.click()}><Icon name="plus" size={17} />{words().upload}</Button>
             <input ref={archive} type="file" hidden accept=".tar.gz,.tgz,application/gzip" onChange={event => {
               const file = event.currentTarget.files?.[0];
               event.currentTarget.value = "";
@@ -89,7 +92,10 @@ export function PluginsPage() {
       <Show when={matches().length}>
         <ul class={styles.list}>
           <For each={matches()} keyed={plugin => plugin.id}>
-            {plugin => <li class={styles.item}>
+            {plugin => <li class={styles.item} data-status={plugin().status}>
+              <span class={styles.tile} data-icon={catalogIcon(plugin())} aria-hidden="true">
+                <PluginNavigationIcon name={catalogIcon(plugin())} />
+              </span>
               <div class={styles.details}>
                 <h2>{plugin().title[panel.language()]}</h2>
                 <div class={styles.metadata}>
@@ -111,7 +117,7 @@ export function PluginsPage() {
                   </div>
                 </Show>
               </div>
-              <div class="gw-row">
+              <div class={["gw-row", styles.actions]}>
                 <Show when={landingPage(plugin())}>{href =>
                   <ButtonLink href={href()} aria-label={`${words().open} · ${plugin().title[panel.language()]}`}>
                     {words().open}
@@ -120,7 +126,7 @@ export function PluginsPage() {
                 <Show when={plugin().has_settings || (plugin().web && plugin().pages.some(page => page.path === "settings"))}>
                   <PluginSettingsLink plugin={plugin()} quiet={Boolean(landingPage(plugin()))} />
                 </Show>
-                <Show when={allowed()}>
+                <Show when={allowed() || landingPage(plugin())}>
                   <details class={styles.rowMenu} name="plugin-actions" onFocusOut={event => {
                     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
                       event.currentTarget.open = false;
@@ -134,6 +140,14 @@ export function PluginsPage() {
                     <summary class={["gw-button", styles.more]} data-variant="quiet"
                       aria-label={words().actionsFor(plugin().title[panel.language()])}><Icon name="more" /></summary>
                     <div class={styles.menuItems}>
+                      <Show when={landingPage(plugin())}>
+                        <Button type="button" variant="quiet" onClick={event => {
+                          panel.togglePluginPin(plugin().id);
+                          const menu = event.currentTarget.closest("details");
+                          if (menu) { menu.open = false; menu.querySelector("summary")?.focus(); }
+                        }}>{panel.pinnedPlugins().includes(plugin().id) ? panel.t().now.unpin : panel.t().now.pin}</Button>
+                      </Show>
+                      <Show when={allowed()}>
                       <Button type="button" variant="quiet" class={styles.remove} disabled={pending()} onClick={event => {
                         const target = plugin();
                         const menu = event.currentTarget.closest("details");
@@ -142,6 +156,7 @@ export function PluginsPage() {
                         panel.clearError();
                         setRemoving({ id: target.id, title: target.title[panel.language()] });
                       }}>{words().remove}</Button>
+                      </Show>
                     </div>
                   </details>
                 </Show>

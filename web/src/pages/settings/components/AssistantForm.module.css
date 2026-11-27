@@ -1,10 +1,27 @@
 .form, .stageFields { display: grid; gap: 12px; }
-.stages { min-width: 0; border: 0; border-bottom: 1px solid var(--edge); margin: 0; padding: 0; }
-.stage { border-top: 1px solid var(--edge); }
-.stage > summary { --gw-disclosure-height: 54px; }
-.stageFields { padding: 3px 2px 14px; }
+.stages { min-width: 0; border: 0; margin: 0; padding: 0; }
+.stage { position: relative; }
+.stage + .stage { border-top: 1px solid var(--edge); }
+.stage > summary { --gw-disclosure-height: 65px; gap: 13px; }
+.stage > summary > :global(.gw-disclosure-label) { flex: 1; min-width: 0; }
+.node {
+  position: relative; z-index: 1; flex: 0 0 36px; height: 36px;
+  display: grid; place-items: center; border: 1px solid #bcd2df; border-radius: 50%;
+  background: #e7f2fa; color: #365f7b;
+}
+.node[data-stage=chat] { background: #efe9f7; border-color: #d7c9e6; color: #69527f; }
+.node[data-stage=speech] { background: #e2f0e6; border-color: #bdd6c5; color: #346148; }
+.stage:not(:last-child)::before {
+  content: ""; position: absolute; top: 33px; bottom: -33px; inset-inline-start: 19px;
+  border-inline-start: 1px solid var(--edge); pointer-events: none;
+}
+.stageFields { padding: 3px 2px 16px 50px; }
 .stageFields > :not(.primaryField) { grid-column: 1 / -1; }
 @media (min-width: 760px) {
   .stageFields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .note { color: var(--muted); font-size: .84rem; }
+@media (max-width: 540px) {
+  .stageFields { padding-inline-start: 2px; }
+  .stage[open]::before { display: none; }
+}

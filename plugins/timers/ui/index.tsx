@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { EmptyState, InlineError, StatusIndicator } from "../../../web/src/components/ui-kit/Feedback";
 import type { PluginContext } from "../../../web/src/helpers/plugins";
+export { NowCard } from "./NowCard";
 
 const copy = {
   en: {

@@ -37,3 +37,15 @@
   }
   .timers-page .timer-active > span { grid-column: 1 / -1; }
 }
+
+.timers-now { display: grid; gap: 6px; }
+.timers-now p { margin: 0; }
+.timers-now-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.timers-now-row > span { flex: 1 1 50px; overflow-wrap: anywhere; }
+.timers-now-row > strong { font-variant-numeric: tabular-nums; color: #754c1e; font-size: 1.45rem; }
+.timers-now button { min-height: 44px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--edge); border-radius: 9px; font: inherit; color: var(--accent); background: var(--paper); cursor: pointer; }
+.timers-now button:disabled { opacity: .6; }
+.timers-now button.timers-now-save { border: 0; font-size: .85rem; color: var(--muted); }
+.timers-now form, .timers-now label { display: grid; gap: 6px; }
+.timers-now details { border-top: 1px solid var(--edge); }
+.timers-now summary { cursor: pointer; padding-block: 12px; }
