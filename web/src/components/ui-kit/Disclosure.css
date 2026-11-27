@@ -4,9 +4,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--gw-space-3);
   min-height: var(--gw-disclosure-height, 44px);
-  padding: 7px 2px;
+  padding: var(--gw-space-2) var(--gw-disclosure-inset, var(--gw-space-3));
   border-radius: var(--gw-control-radius);
   font-size: .94rem;
   font-weight: 650;
@@ -21,7 +21,7 @@
   content: "";
   flex: 0 0 8px;
   height: 8px;
-  margin-inline: 5px;
+  margin-inline: 2px;
   border: solid currentColor;
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
@@ -36,3 +36,10 @@
 
 .gw-disclosure-label { display: grid; min-width: 0; gap: 2px; }
 .gw-disclosure-description { color: var(--gw-color-muted); font-size: .82rem; font-weight: 400; }
+
+.gw-disclosure-body {
+  display: grid;
+  gap: var(--gw-space-3);
+  min-width: 0;
+  padding: var(--gw-space-3) var(--gw-disclosure-inset, var(--gw-space-3));
+}

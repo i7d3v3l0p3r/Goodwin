@@ -4,6 +4,7 @@
 
 ### English
 
+- Collapsible settings have more compact headers, aligned padding, and a clear gap above the expanded fields.
 - The Spotify card on Now has previous and next track controls. Long titles scroll once in each direction with faded edges.
 - On the Spotify player page, track titles stay on one line. Long titles scroll once in each direction with faded edges.
 - Open panels can install, update, and remove plugins and access wake-word dataset recordings without a password.
@@ -23,6 +24,7 @@
 
 ### Русский
 
+- У раскрывающихся разделов настроек компактнее заголовки, выровнены отступы и добавлен зазор перед полями.
 - В карточке Spotify на странице «Сейчас» появились кнопки предыдущего и следующего трека. Длинные названия плавно прокручиваются до конца и обратно с затуханием по краям.
 - На странице плеера Spotify название трека занимает одну строку. Длинные названия плавно прокручиваются до конца и обратно с затуханием по краям.
 - В открытой панели можно устанавливать, обновлять и удалять плагины, а также работать с записями датасета слова активации без пароля.

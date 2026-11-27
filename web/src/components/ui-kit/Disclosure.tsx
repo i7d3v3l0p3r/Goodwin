@@ -13,6 +13,6 @@ export function Disclosure(props: ParentProps<DetailsProps & { title: string; de
         <Show when={props.description}><small class="gw-disclosure-description">{props.description}</small></Show>
       </span>
     </summary>
-    {props.children}
+    <div class="gw-disclosure-body">{props.children}</div>
   </details>;
 }
